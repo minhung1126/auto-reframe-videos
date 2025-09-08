@@ -1,0 +1,4 @@
+numpy
+requests
+opencv-python
+tqdm
