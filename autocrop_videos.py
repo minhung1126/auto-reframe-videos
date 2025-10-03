@@ -6,7 +6,6 @@ import sys
 import subprocess
 import re
 import shutil
-import multiprocessing
 from tqdm import tqdm
 
 # --- 設定 ---
@@ -28,6 +27,7 @@ FINAL_OUTPUT_BITRATE = "10M"
 MODEL_CHOICE = 'SSD'
 
 # --- 模型通用設定 ---
+TARGET_CLASS = 'person'    # 要偵測的物件類別 (來自 coco.names 或 SSD_CLASSES)
 CONFIDENCE_THRESHOLD = 0.5 # 物件偵測的信心度閾值
 NMS_THRESHOLD = 0.3      # 非極大值抑制的閾值 (YOLO專用)
 SMOOTHING_FACTOR = 0.1   # 攝影機移動平滑度，數值越小越平滑 (0.0 - 1.0)
@@ -139,8 +139,7 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
     current_center_x = original_width // 2
     frame_count = 0
 
-    # Note: tqdm might not display perfectly for parallel processes, but it will show for each file.
-    with tqdm(total=total_frames, desc=f"裁切影片: {os.path.basename(video_path)}", unit="frame", position=multiprocessing.current_process()._identity[0]-1) as pbar:
+    with tqdm(total=total_frames, desc=f"裁切: {os.path.basename(video_path)}", unit="frame", leave=False) as pbar:
         while True:
             ret, frame = cap.read()
             if not ret: break
@@ -159,7 +158,7 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
                             scores = detection[5:]
                             classID = np.argmax(scores)
                             confidence = scores[classID]
-                            if classes[classID] == "person" and confidence > CONFIDENCE_THRESHOLD:
+                            if classes[classID] == TARGET_CLASS and confidence > CONFIDENCE_THRESHOLD:
                                 box = detection[0:4] * np.array([W, H, W, H])
                                 (centerX, centerY, width, height) = box.astype("int")
                                 x = int(centerX - (width / 2))
@@ -181,7 +180,7 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
                         confidence = detections[0, 0, i, 2]
                         if confidence > CONFIDENCE_THRESHOLD:
                             idx = int(detections[0, 0, i, 1])
-                            if classes[idx] == "person":
+                            if classes[idx] == TARGET_CLASS:
                                 box = detections[0, 0, i, 3:7] * np.array([W, H, W, H])
                                 (startX, startY, endX, endY) = box.astype("int")
                                 person_detections.append((startX, startY, endX, endY))
@@ -196,15 +195,12 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
             crop_x = max(0, int(crop_x))
             crop_x = min(int(crop_x), original_width - output_width)
             cropped_frame = frame[:, crop_x : crop_x + output_width]
-            if cropped_frame.shape[1] != output_width or cropped_frame.shape[0] != output_height:
-                cropped_frame = cv2.resize(cropped_frame, (output_width, output_height))
             
             ret, buf = cv2.imencode('.bmp', cropped_frame)
             if ret:
                 try:
                     proc.stdin.write(buf.tobytes())
                 except (OSError, BrokenPipeError) as e:
-                    # This error can happen if ffmpeg closes early.
                     break
             
             frame_count += 1
@@ -217,93 +213,12 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
         print(f"\n[錯誤] 影片裁切失敗: {os.path.basename(video_path)}")
         print(stderr.decode('utf-8', errors='ignore'))
         if os.path.exists(temp_output_path): os.remove(temp_output_path)
-        return
+        raise subprocess.CalledProcessError(proc.returncode, proc.args, stderr=stderr)
 
-    has_audio_command = ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
-    try:
-        result = subprocess.run(has_audio_command, capture_output=True, text=True, encoding='utf-8', check=True)
-        has_audio = result.stdout.strip() != ""
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        has_audio = False
-
-    if has_audio:
-        final_command = ['ffmpeg', '-y', '-i', temp_output_path, '-i', video_path, '-c:v', 'copy', '-c:a', 'copy', '-map', '0:v:0', '-map', '1:a:0', '-shortest', output_path]
-        try:
-            subprocess.run(final_command, check=True, capture_output=True)
-        except subprocess.CalledProcessError as e:
-            print(f"\n[錯誤] 合併音訊失敗: {os.path.basename(video_path)}")
-            print(e.stderr.decode('utf-8', errors='ignore'))
-            os.rename(temp_output_path, output_path) # Keep the video-only part
-            return
-    else:
-        os.rename(temp_output_path, output_path)
-
-    if os.path.exists(temp_output_path): os.remove(temp_output_path)
-
-# --- Multiprocessing Worker Functions ---
-
-g_net = None
-g_classes = None
-g_best_encoder = None
-g_model_choice = None
-
-def worker_init(model_choice, encoder):
-    """Initializer for each worker process."""
-    global g_net, g_classes, g_best_encoder, g_model_choice
-    
-    # Suppress output from worker processes to keep the main console clean
-    sys.stdout = open(os.devnull, 'w')
-    sys.stderr = open(os.devnull, 'w')
-
-    g_model_choice = model_choice
-    g_best_encoder = encoder
-
-    if g_model_choice == 'YOLO':
-        with open(COCO_NAMES_PATH, 'r') as f:
-            g_classes = [line.strip() for line in f.readlines()]
-        g_net = cv2.dnn.readNetFromDarknet(YOLO_CFG_PATH, YOLO_WEIGHTS_PATH)
-    elif g_model_choice == 'SSD':
-        g_classes = SSD_CLASSES
-        g_net = cv2.dnn.readNetFromCaffe(SSD_PROTOTXT_PATH, SSD_MODEL_PATH)
-
-    if cv2.cuda.getCudaEnabledDeviceCount() > 0:
-        g_net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-        g_net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-
-def process_single_video_task(video_file):
-    """A task function that processes a single video file. Runs in a worker process."""
-    global g_net, g_classes, g_best_encoder, g_model_choice
-
-    try:
-        video_path = os.path.join(INPUT_FOLDER, video_file)
-        base_filename = os.path.splitext(video_file)[0]
-        intermediate_output_filename = f"{base_filename}_cropped.mp4"
-        final_output_filename = f"{base_filename}_reframe.mp4"
-        
-        intermediate_output_path = os.path.join(OUTPUT_FOLDER, intermediate_output_filename)
-        final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
-
-        process_video(video_path, intermediate_output_path, g_net, g_best_encoder, g_model_choice, g_classes)
-
-        compress_resize_command = [
-            'ffmpeg', '-y', '-i', intermediate_output_path,
-            '-c:v', g_best_encoder,
-            '-b:v', FINAL_OUTPUT_BITRATE,
-            '-s', f'{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}',
-            '-c:a', 'copy',
-            '-loglevel', 'error', # Suppress ffmpeg output
-            final_output_path
-        ]
-        subprocess.run(compress_resize_command, check=True, capture_output=True)
-        
-        if os.path.exists(intermediate_output_path):
-            os.remove(intermediate_output_path)
-        
-        return f"處理完成: {final_output_filename}"
-    except subprocess.CalledProcessError as e:
-        return f"處理失敗: {video_file} - FFmpeg Error: {e.stderr.decode('utf-8', errors='ignore')}"
-    except Exception as e:
-        return f"處理失敗: {video_file} - {str(e)}"
+    # 將暫存檔重新命名為中介檔路徑，讓主函式接手後續處理
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    os.rename(temp_output_path, output_path)
 
 def main():
     if shutil.which('ffmpeg') is None or shutil.which('ffprobe') is None:
@@ -315,49 +230,140 @@ def main():
         return
     print("模型檔案已就緒。" )
 
+    # --- 直接在主執行緒中載入模型 ---
+    net = None
+    classes = None
+    if MODEL_CHOICE == 'YOLO':
+        with open(COCO_NAMES_PATH, 'r') as f:
+            classes = [line.strip() for line in f.readlines()]
+        net = cv2.dnn.readNetFromDarknet(YOLO_CFG_PATH, YOLO_WEIGHTS_PATH)
+    elif MODEL_CHOICE == 'SSD':
+        classes = SSD_CLASSES
+        net = cv2.dnn.readNetFromCaffe(SSD_PROTOTXT_PATH, SSD_MODEL_PATH)
+
+    if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+        print("[資訊] 偵測到 CUDA，已啟用 GPU 加速 AI 偵測。" )
+    # --- 模型載入結束 ---
+
     if not os.path.exists(INPUT_FOLDER): os.makedirs(INPUT_FOLDER)
     if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
 
     supported_formats = ('.mp4', '.mov', '.avi', '.mkv', '.MP4')
-    video_files = [f for f in os.listdir(INPUT_FOLDER) if f.lower().endswith(supported_formats)]
+    all_video_files = [f for f in os.listdir(INPUT_FOLDER) if f.lower().endswith(supported_formats)]
 
-    if not video_files:
+    if not all_video_files:
         print(f"在 '{INPUT_FOLDER}' 中沒有找到任何影片檔案。" )
         return
+    
+    print(f"在 '{INPUT_FOLDER}' 中共找到 {len(all_video_files)} 個影片檔案。" )
 
-    print(f"在 '{INPUT_FOLDER}' 中找到 {len(video_files)} 個影片檔案，準備開始並行處理。" )
+    # --- 檢查是否已經處理過，以支援續傳 ---
+    files_to_process = []
+    print("正在檢查進度以支援續傳..." )
+    for video_file in all_video_files:
+        base_filename = os.path.splitext(video_file)[0]
+        final_output_filename = f"{base_filename}_reframe.mp4"
+        final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
+
+        if os.path.exists(final_output_path):
+            print(f"  -> 已跳過: {video_file} (已處理)")
+        else:
+            files_to_process.append(video_file)
+
+    # --- 清理上次中斷留下的暫存檔 ---
+    stale_files_found = False
+    for item in os.listdir(OUTPUT_FOLDER):
+        if item.endswith("_cropped.mp4"):
+            if not stale_files_found:
+                print("正在清理上次中斷留下的暫存檔..." )
+                stale_files_found = True
+            try:
+                os.remove(os.path.join(OUTPUT_FOLDER, item))
+                print(f"  -> 已移除: {item}")
+            except OSError as e:
+                print(f"  -> 移除失敗: {item} ({e}) " )
+    # --- 清理結束 ---
+
+    if not files_to_process:
+        print("\n所有影片都已經處理完成，沒有需要處理的新檔案。" )
+        return
+    
+    print(f"\n找到 {len(files_to_process)} 個影片需要處理，準備開始..." )
     
     best_encoder = get_best_encoder()
     
-    # On Windows, 'spawn' is used, so we need to protect the main entry point.
-    # The Pool should be created within this block.
-    if __name__ == '__main__':
-        num_processes = min(multiprocessing.cpu_count(), len(video_files), 8) # Limit to 8 processes to avoid overwhelming system
-        if num_processes == 0:
-            print("沒有影片檔案可處理。" )
-            return
+    results = []
+    # --- 循序處理 ---
+    for video_file in tqdm(files_to_process, desc="整體進度"):
+        try:
+            video_path = os.path.join(INPUT_FOLDER, video_file)
+            base_filename = os.path.splitext(video_file)[0]
+            intermediate_output_filename = f"{base_filename}_cropped.mp4"
+            final_output_filename = f"{base_filename}_reframe.mp4"
+            
+            intermediate_output_path = os.path.join(OUTPUT_FOLDER, intermediate_output_filename)
+            final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
 
-        print(f"將使用 {num_processes} 個背景工作程序進行處理..." )
+            process_video(video_path, intermediate_output_path, net, best_encoder, MODEL_CHOICE, classes)
 
-        with multiprocessing.Pool(processes=num_processes, initializer=worker_init, initargs=(MODEL_CHOICE, best_encoder)) as pool:
-            # Using imap_unordered to get results as they complete
-            results = list(tqdm(pool.imap_unordered(process_single_video_task, video_files), total=len(video_files), desc="整體進度"))
+            # 偵測原始影片是否包含音訊
+            has_audio_command = ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
+            try:
+                result = subprocess.run(has_audio_command, capture_output=True, text=True, encoding='utf-8', check=True)
+                has_audio = result.stdout.strip() != ""
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                has_audio = False
 
-        print("\n" + "="*20 + " 處理報告 " + "="*20)
-        success_count = 0
-        fail_count = 0
-        for res in results:
-            if res.startswith("處理完成"):
-                success_count += 1
+            # 建立最終的 FFmpeg 指令，一步到位完成縮放、壓縮和音訊合併
+            final_command = [
+                'ffmpeg', '-y',
+                '-i', intermediate_output_path,  # 輸入 0: 已裁切的影片
+                '-i', video_path,              # 輸入 1: 原始影片 (用於提取音訊)
+                '-c:v', best_encoder,          # 使用選擇的編碼器
+                '-b:v', FINAL_OUTPUT_BITRATE,  # 設定視訊位元率
+                '-s', f'{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}', # 設定最終解析度
+                '-map', '0:v:0',               # 映射影片流從輸入 0
+                '-preset', 'fast',             # 快速預設
+                '-loglevel', 'error',          # 只顯示錯誤日誌
+            ]
+
+            if has_audio:
+                # 如果有音訊，則複製音訊流
+                final_command.extend(['-c:a', 'copy', '-map', '1:a:0', '-shortest'])
             else:
-                fail_count += 1
-                print(res) # Print errors
-        
-        print("\n" + f"報告總結：成功 {success_count} 個，失敗 {fail_count} 個。" )
-        print("="*54)
+                # 否則，明確指定無音訊
+                final_command.extend(['-an'])
+
+            final_command.append(final_output_path)
+            
+            subprocess.run(final_command, check=True, capture_output=True)
+            
+            # 清理中介檔案
+            if os.path.exists(intermediate_output_path):
+                os.remove(intermediate_output_path)
+            
+            results.append(f"處理完成: {final_output_filename}")
+        except subprocess.CalledProcessError as e:
+            results.append(f"處理失敗: {video_file} - FFmpeg Error: {e.stderr.decode('utf-8', errors='ignore')}")
+        except Exception as e:
+            results.append(f"處理失敗: {video_file} - {str(e)}")
+
+    # --- 顯示處理報告 ---
+    print("\n" + "="*20 + " 處理報告 " + "="*20)
+    success_count = 0
+    fail_count = 0
+    for res in results:
+        if res.startswith("處理完成"):
+            success_count += 1
+        else:
+            fail_count += 1
+            print(res) # Print errors
+    
+    print("\n" + f"報告總結：成功 {success_count} 個，失敗 {fail_count} 個。" )
+    print("="*54)
 
 
 if __name__ == '__main__':
-    # This check is crucial for multiprocessing on Windows
-    multiprocessing.freeze_support() 
     main()
