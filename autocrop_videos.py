@@ -216,8 +216,8 @@ def main():
         USE_TRACKER = True
         print("[資訊] 偵測到進階追蹤模組 (opencv-contrib-python)，已啟用物件追蹤功能。")
     else:
-        print("[警告] 未偵測到進階追蹤模組 (opencv-contrib-python)。將使用基本偵測模式。")
-        print("[提示] 若要啟用更流暢的物件追蹤，請執行: pip install opencv-contrib-python-headless")
+        print("[警告] 未偵測到進階追蹤模組。將使用基本偵測模式。")
+        print("[提示] 若要啟用更流暢的物件追蹤，請更新您的套件版本: pip install -r requirements.txt --upgrade")
 
     if shutil.which('ffmpeg') is None or shutil.which('ffprobe') is None:
         print("[錯誤] 系統中找不到 FFmpeg 或 ffprobe。請安裝 FFmpeg 並將其加入至系統 PATH 環境變數中。" )
