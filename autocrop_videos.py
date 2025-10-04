@@ -10,10 +10,10 @@ import multiprocessing
 from tqdm import tqdm
 
 # --- 並行處理設定 ---
-# 設定最大同時處理的影片數量。預設為 CPU 核心數的一半。
+# 設定最大同時處理的影片數量。預設為 CPU 核心數的1/4。
 # 您可以根據您的硬體效能和記憶體大小來調整此數值。
-# 例如，如果您有 8 核心 CPU，這裡會設定為 4。
-MAX_CONCURRENT_PROCESSES = multiprocessing.cpu_count() // 2
+# 例如，如果您有 8 核心 CPU，這裡會設定為 2。
+MAX_CONCURRENT_PROCESSES = multiprocessing.cpu_count() // 4
 
 # --- 設定 ---
 INPUT_FOLDER = 'input_videos'
