@@ -9,20 +9,17 @@ import shutil
 import time
 from tqdm.notebook import tqdm # Use tqdm.notebook for better Colab integration
 
-# --- Path Setup (Auto-detects Colab) ---
-# In Colab, files are expected to be in Google Drive.
-# Mount your drive first and ensure the folder 'auto-reframe-videos' exists.
-if 'google.colab' in sys.modules:
-    print("[資訊] 偵測到 Google Colab 環境，自動調整檔案路徑至 Google Drive。" )
-    BASE_DIR = '/content/drive/MyDrive/auto-reframe-videos'
-else:
-    # For local execution
-    BASE_DIR = '.'
+# --- Path Setup for Colab Optimization ---
+# We define paths for Google Drive (for final storage) and local Colab runtime (for processing).
+GDRIVE_BASE_DIR = '/content/drive/MyDrive'
+LOCAL_PROCESSING_DIR = '/content/processing_temp' # Fast, temporary local storage
+
+# Google Drive paths
+GDRIVE_INPUT_FOLDER = os.path.join(GDRIVE_BASE_DIR, 'input_videos')
+GDRIVE_OUTPUT_FOLDER = os.path.join(GDRIVE_BASE_DIR, 'output_videos')
+GDRIVE_MODELS_DIR = os.path.join(GDRIVE_BASE_DIR, 'models')
 
 # --- Global Settings ---
-INPUT_FOLDER = os.path.join(BASE_DIR, 'input_videos')
-OUTPUT_FOLDER = os.path.join(BASE_DIR, 'output_videos')
-MODELS_DIR = os.path.join(BASE_DIR, 'models')
 DETECT_EVERY_N_FRAMES = 9 # Process every Nth frame for detection
 TARGET_ASPECT_RATIO = 9 / 16
 
