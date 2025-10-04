@@ -226,6 +226,7 @@ def run_processing_pipeline():
     It sets up the environment, finds videos, and processes them sequentially.
     """
     # --- Initial Setup ---
+    print("="*20 + " 初始化設定 " + "="*20)
     if 'google.colab' in sys.modules and not os.path.exists('/content/drive'):
         print("[錯誤] Google Drive 尚未掛載。請先在 Colab 中執行掛載 Drive 的儲存格。" )
         return
@@ -235,12 +236,18 @@ def run_processing_pipeline():
         print("[提示] 在 Colab 中，請先執行 !apt-get install ffmpeg 來安裝。" )
         return
 
+    print(f"[路徑] Google Drive 輸入資料夾: {GDRIVE_INPUT_FOLDER}")
+    print(f"[路徑] Google Drive 輸出資料夾: {GDRIVE_OUTPUT_FOLDER}")
+    print(f"[路徑] Google Drive 模型資料夾: {GDRIVE_MODELS_DIR}")
+    print(f"[路徑] 本機暫存處理資料夾: {LOCAL_PROCESSING_DIR}")
+
     if not ensure_models_exist():
         print("無法下載必要的模型檔案，程式即將結束。" )
         return
     print("模型檔案已就緒。" )
 
     # --- Load AI Model ---
+    print("\n" + "="*20 + " 載入 AI 模型 " + "="*20)
     net = cv2.dnn.readNetFromCaffe(SSD_PROTOTXT_PATH, SSD_MODEL_PATH)
     if cv2.cuda.getCudaEnabledDeviceCount() > 0:
         net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
@@ -258,6 +265,7 @@ def run_processing_pipeline():
         print("[提示] 若要啟用更流暢的物件追蹤，建議執行: !pip install opencv-contrib-python-headless")
 
     # --- Find Videos to Process ---
+    print("\n" + "="*20 + " 尋找待處理影片 " + "="*20)
     if not os.path.exists(GDRIVE_INPUT_FOLDER): os.makedirs(GDRIVE_INPUT_FOLDER)
     if not os.path.exists(GDRIVE_OUTPUT_FOLDER): os.makedirs(GDRIVE_OUTPUT_FOLDER)
 
@@ -265,39 +273,41 @@ def run_processing_pipeline():
     all_video_files = [f for f in os.listdir(GDRIVE_INPUT_FOLDER) if f.lower().endswith(supported_formats)]
 
     if not all_video_files:
-        print(f"\n在 '{GDRIVE_INPUT_FOLDER}' 中沒有找到任何影片檔案。" )
+        print(f"\n[資訊] 在 '{GDRIVE_INPUT_FOLDER}' 中沒有找到任何影片檔案。" )
         print("請將影片上傳至您的 Google Drive 中的 'input_videos' 資料夾。" )
         return
     
-    print(f"\n在 '{GDRIVE_INPUT_FOLDER}' 中共找到 {len(all_video_files)} 個影片檔案。" )
+    print(f"在 '{GDRIVE_INPUT_FOLDER}' 中共找到 {len(all_video_files)} 個影片檔案: {all_video_files}" )
 
     # --- Filter out already processed files ---
     files_to_process = []
-    print("正在檢查進度以支援續傳..." )
+    print("\n正在檢查進度以支援續傳..." )
     for video_file in all_video_files:
         base_filename = os.path.splitext(video_file)[0]
         final_output_filename = f"{base_filename}_reframe_{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}.mp4"
         final_output_path = os.path.join(GDRIVE_OUTPUT_FOLDER, final_output_filename)
 
         if os.path.exists(final_output_path):
-            print(f"  -> 已跳過: {video_file} (已處理)")
+            print(f"  -> 已跳過: {video_file} (原因: 輸出檔案已存在)")
         else:
             files_to_process.append(video_file)
 
     if not files_to_process:
-        print("\n所有影片都已經處理完成，沒有需要處理的新檔案。" )
+        print("\n[資訊] 所有找到的影片都已經處理完成，沒有需要處理的新檔案。" )
         return
     
-    print(f"\n找到 {len(files_to_process)} 個新影片需要處理，準備開始..." )
+    print(f"\n共找到 {len(files_to_process)} 個新影片需要處理: {files_to_process}" )
     
     best_encoder = get_best_encoder()
     results = []
 
     # --- Main Processing Loop (Colab Optimized) ---
+    print("\n" + "="*20 + " 開始處理循環 " + "="*20)
     # Clean up and create local temp directory for fast processing
     if os.path.exists(LOCAL_PROCESSING_DIR):
         shutil.rmtree(LOCAL_PROCESSING_DIR)
     os.makedirs(LOCAL_PROCESSING_DIR)
+    print(f"已建立本機暫存資料夾: {LOCAL_PROCESSING_DIR}")
 
     for video_file in tqdm(files_to_process, desc="整體進度", unit="video"):
         gdrive_video_path = os.path.join(GDRIVE_INPUT_FOLDER, video_file)
@@ -310,17 +320,19 @@ def run_processing_pipeline():
 
         try:
             # STAGE 0: Copy video from Drive to local runtime for fast access
-            print(f"\n[{video_file}] 正在從 Google Drive 複製到本機暫存區...")
+            print(f"\n[{video_file}] STAGE 0: 正在從 Google Drive 複製到本機...")
             shutil.copy(gdrive_video_path, local_video_path)
+            print(f"[{video_file}] STAGE 0: 複製完成。")
 
             # STAGE 1: Crop the video based on person detection (all local)
-            print(f"[{video_file}] 第 1/2 階段: 進行 AI 偵測與智慧裁切 (本地端)..." )
+            print(f"[{video_file}] STAGE 1: 進行 AI 偵測與智慧裁切 (本地端)..." )
             success = process_video(local_video_path, local_intermediate_path, net, best_encoder, SSD_CLASSES, use_tracker)
             if not success:
                 raise Exception("智慧裁切階段失敗。" )
+            print(f"[{video_file}] STAGE 1: 裁切完成。")
 
             # STAGE 2: Scale to final resolution and merge audio (all local)
-            print(f"[{video_file}] 第 2/2 階段: 縮放至 {FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT} 並合併音訊 (本地端)..." )
+            print(f"[{video_file}] STAGE 2: 縮放至 {FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT} 並合併音訊 (本地端)..." )
 
             has_audio_command = ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', local_video_path]
             try:
@@ -348,10 +360,15 @@ def run_processing_pipeline():
 
             final_command.append(local_final_path)
             subprocess.run(final_command, check=True, capture_output=False)
+            print(f"[{video_file}] STAGE 2: 合成完成。")
 
-            # STAGE 3: Move final video from local runtime to Google Drive
-            print(f"[{video_file}] 處理完成，正在將結果移回 Google Drive...")
+            # STAGE 3: Verify and move final video from local runtime to Google Drive
+            if not os.path.exists(local_final_path):
+                raise FileNotFoundError(f"處理完成但最終檔案未在本地端產生: {local_final_path}")
+
+            print(f"[{video_file}] STAGE 3: 正在將結果移回 Google Drive...")
             shutil.move(local_final_path, gdrive_final_path)
+            print(f"[{video_file}] STAGE 3: 移動完成。")
             
             results.append(f"處理完成: {os.path.basename(gdrive_final_path)}")
 
@@ -370,10 +387,13 @@ def run_processing_pipeline():
     success_count = sum(1 for res in results if res.startswith("處理完成"))
     fail_count = len(results) - success_count
     
+    print("詳細日誌:")
     for res in results:
-        if res.startswith("處理失敗"):
-            print(f"- {res}")
+        print(f"- {res}")
     
     print("\n" + f"報告總結：成功 {success_count} 個，失敗 {fail_count} 個。" )
     print(f"所有完成的影片都已儲存至 '{GDRIVE_OUTPUT_FOLDER}'")
     print("="*60)
+
+if __name__ == "__main__":
+    run_processing_pipeline()
