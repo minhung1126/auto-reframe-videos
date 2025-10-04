@@ -1,11 +1,16 @@
 @echo off
 setlocal
 
-:: 設定輸入和輸出資料夾的名稱
+:: =================== SETTINGS ===================
+:: Set the target video bitrate (e.g., 10M for 10Mbps, 8000k for 8Mbps)
+set BITRATE=10M
+
+:: Set the names for input and output folders
 set INPUT_DIR=input_for_compression
 set OUTPUT_DIR=final_output
+:: ================================================
 
-:: 檢查 FFmpeg 是否存在
+:: Check if FFmpeg exists
 where ffmpeg >nul 2>nul
 if %errorlevel% neq 0 (
     echo [ERROR] FFmpeg not found in your system's PATH.
@@ -14,24 +19,24 @@ if %errorlevel% neq 0 (
     exit /b
 )
 
-:: 建立資料夾 (如果不存在)
+:: Create folders if they don't exist
 if not exist "%INPUT_DIR%" mkdir "%INPUT_DIR%"
 if not exist "%OUTPUT_DIR%" mkdir "%OUTPUT_DIR%"
 
 echo Starting batch compression...
 
-:: 迴圈處理輸入資料夾中的所有 .mp4 檔案
+:: Loop through all .mp4 files in the input directory
 for %%f in ("%INPUT_DIR%\*.mp4") do (
-    echo Compressing "%%~nxf"...
+    echo Compressing "%%~nxf" to %BITRATE%...
     
-    :: 使用 ffmpeg 進行壓縮
-    :: -i: 輸入檔案
-    :: -c:v libx264: 使用 CPU 進行 H.264 編碼 (最通用)
-    :: -b:v 10M: 設定目標視訊位元率為 10Mbps
-    :: -preset medium: 編碼速度與壓縮率的平衡點 (可選: slow, fast, etc.)
-    :: -c:a copy: 直接複製音訊，不重新編碼以節省時間
-    :: -y: 如果輸出檔案已存在，則自動覆蓋
-    ffmpeg -y -i "%%f" -c:v libx264 -b:v 10M -preset medium -c:a copy "%OUTPUT_DIR%\%%~nxf"
+    :: Using ffmpeg for compression
+    :: -i: Input file
+    :: -c:v libx264: Use CPU for H.264 encoding (most compatible)
+    :: -b:v %BITRATE%: Set the target video bitrate from the variable above
+    :: -preset medium: A balance between encoding speed and compression ratio (options: slow, fast, etc.)
+    :: -c:a copy: Copy the audio stream without re-encoding to save time
+    :: -y: Overwrite output file if it exists
+    ffmpeg -y -i "%%f" -c:v libx264 -b:v %BITRATE% -preset medium -c:a copy "%OUTPUT_DIR%\%%~nxf"
 )
 
 echo.
