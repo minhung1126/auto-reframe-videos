@@ -20,25 +20,10 @@ FINAL_OUTPUT_WIDTH = 1080
 FINAL_OUTPUT_HEIGHT = 1920
 FINAL_OUTPUT_BITRATE = "10M"
 
-# --- 模型選擇 ---
-# 請選擇 'YOLO' 或 'SSD'
-# YOLO: YOLOv4-Tiny - 速度非常快，準確度稍低
-# SSD: MobileNet-SSD - 速度較慢，但準確度稍高
-MODEL_CHOICE = 'SSD'
-
 # --- 模型通用設定 ---
 TARGET_CLASS = 'person'    # 要偵測的物件類別 (來自 coco.names 或 SSD_CLASSES)
 CONFIDENCE_THRESHOLD = 0.5 # 物件偵測的信心度閾值
-NMS_THRESHOLD = 0.3      # 非極大值抑制的閾值 (YOLO專用)
 SMOOTHING_FACTOR = 0.1   # 攝影機移動平滑度，數值越小越平滑 (0.0 - 1.0)
-
-# --- YOLOv4-Tiny 模型設定 ---
-# COCO_NAMES_URL = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names'
-# YOLO_CFG_URL = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg'
-# YOLO_WEIGHTS_URL = 'https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights'
-# COCO_NAMES_PATH = os.path.join(MODELS_DIR, 'coco.names')
-# YOLO_CFG_PATH = os.path.join(MODELS_DIR, 'yolov4-tiny.cfg')
-# YOLO_WEIGHTS_PATH = os.path.join(MODELS_DIR, 'yolov4-tiny.weights')
 
 # --- MobileNet-SSD 模型設定 ---
 SSD_PROTOTXT_URL = 'https://github.com/chuanqi305/MobileNet-SSD/raw/master/deploy.prototxt'
@@ -65,19 +50,12 @@ def download_file(url, path):
         print(f"下載失敗: {e}")
         return False
 
-def ensure_models_exist(model_choice):
+def ensure_models_exist():
     if not os.path.exists(MODELS_DIR):
         os.makedirs(MODELS_DIR)
 
-    if model_choice == 'YOLO':
-        if not os.path.exists(COCO_NAMES_PATH) and not download_file(COCO_NAMES_URL, COCO_NAMES_PATH): return False
-        if not os.path.exists(YOLO_CFG_PATH) and not download_file(YOLO_CFG_URL, YOLO_CFG_PATH): return False
-        if not os.path.exists(YOLO_WEIGHTS_PATH) and not download_file(YOLO_WEIGHTS_URL, YOLO_WEIGHTS_PATH): return False
-    elif model_choice == 'SSD':
-        if not os.path.exists(SSD_PROTOTXT_PATH) and not download_file(SSD_PROTOTXT_URL, SSD_PROTOTXT_PATH): return False
-        if not os.path.exists(SSD_MODEL_PATH) and not download_file(SSD_MODEL_URL, SSD_MODEL_PATH): return False
-    else:
-        return False
+    if not os.path.exists(SSD_PROTOTXT_PATH) and not download_file(SSD_PROTOTXT_URL, SSD_PROTOTXT_PATH): return False
+    if not os.path.exists(SSD_MODEL_PATH) and not download_file(SSD_MODEL_URL, SSD_MODEL_PATH): return False
     return True
 
 def get_best_encoder():
@@ -95,7 +73,7 @@ def get_best_encoder():
     print("[警告] 未找到任何硬體編碼器，將使用 CPU 進行編碼。" )
     return 'libx264'
 
-def process_video(video_path, output_path, net, encoder, model_choice, classes):
+def process_video(video_path, output_path, net, encoder, classes, use_tracker):
     """處理單一影片檔案，偵測「人物」並裁剪為 9:16 的直向影片。"""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -115,19 +93,18 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
 
     temp_output_path = os.path.join(os.path.dirname(output_path), "temp_" + os.path.basename(output_path))
 
-    # --- 全新架構: 使用 image2pipe ---
     command = [
         'ffmpeg',
         '-y',
-        '-f', 'image2pipe',      # 設定輸入格式為圖片流
-        '-framerate', str(fps),  # 設定圖片流的幀率
-        '-vcodec', 'bmp',         # 指定傳入的圖片為無損的 bmp 格式
-        '-i', '-',                # 從標準輸入讀取
-        '-an',                   # 暫不處理音訊
-        '-c:v', encoder,         # 使用指定的編碼器
+        '-f', 'image2pipe',
+        '-framerate', str(fps),
+        '-vcodec', 'bmp',
+        '-i', '-',
+        '-an',
+        '-c:v', encoder,
         '-pix_fmt', 'yuv420p',
-        '-s', f'{output_width}x{output_height}', # Set intermediate resolution
-        '-preset', 'fast',      # 使用較快的預設，因為瓶頸已不在偵測
+        '-s', f'{output_width}x{output_height}',
+        '-preset', 'fast',
     ]
     if encoder == 'libx264': command.extend(['-crf', '21'])
     else: command.extend(['-cq', '21'])
@@ -138,41 +115,51 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
     last_person_center_x = original_width // 2
     current_center_x = original_width // 2
     frame_count = 0
+    tracker = None
 
     with tqdm(total=total_frames, desc=f"裁切: {os.path.basename(video_path)}", unit="frame", leave=False) as pbar:
         while True:
             ret, frame = cap.read()
             if not ret: break
 
-            if frame_count % DETECT_EVERY_N_FRAMES == 0:
-                (H, W) = frame.shape[:2]
-                person_detections = []
+            (H, W) = frame.shape[:2]
 
-                if model_choice == 'YOLO':
-                    blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (416, 416), swapRB=True, crop=False)
+            if use_tracker:
+                # --- 追蹤優先邏輯 ---
+                if tracker is not None:
+                    success, tracked_bbox = tracker.update(frame)
+                    if success:
+                        (x, y, w, h) = [int(v) for v in tracked_bbox]
+                        current_center_x = x + w // 2
+                    else:
+                        tracker = None # 追蹤失敗，清除追蹤器
+                
+                if tracker is None and frame_count % DETECT_EVERY_N_FRAMES == 0:
+                    # 如果沒有追蹤器，則執行偵測
+                    person_detections = []
+                    blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
                     net.setInput(blob)
-                    layerOutputs = net.forward(net.getUnconnectedOutLayersNames())
-                    boxes, confidences, classIDs = [], [], []
-                    for output in layerOutputs:
-                        for detection in output:
-                            scores = detection[5:]
-                            classID = np.argmax(scores)
-                            confidence = scores[classID]
-                            if classes[classID] == TARGET_CLASS and confidence > CONFIDENCE_THRESHOLD:
-                                box = detection[0:4] * np.array([W, H, W, H])
-                                (centerX, centerY, width, height) = box.astype("int")
-                                x = int(centerX - (width / 2))
-                                y = int(centerY - (height / 2))
-                                boxes.append([x, y, int(width), int(height)])
-                                confidences.append(float(confidence))
-                                classIDs.append(classID)
-                    idxs = cv2.dnn.NMSBoxes(boxes, confidences, CONFIDENCE_THRESHOLD, NMS_THRESHOLD)
-                    if len(idxs) > 0:
-                        for i in idxs.flatten():
-                            (x, y, w, h) = boxes[i]
-                            person_detections.append((x, y, x + w, y + h))
+                    detections = net.forward()
+                    for i in np.arange(0, detections.shape[2]):
+                        confidence = detections[0, 0, i, 2]
+                        if confidence > CONFIDENCE_THRESHOLD:
+                            idx = int(detections[0, 0, i, 1])
+                            if classes[idx] == TARGET_CLASS:
+                                box = detections[0, 0, i, 3:7] * np.array([W, H, W, H])
+                                person_detections.append(box.astype("int"))
 
-                elif model_choice == 'SSD':
+                    if len(person_detections) > 0:
+                        largest_person_box = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
+                        (startX, startY, endX, endY) = largest_person_box
+                        
+                        tracker = cv2.legacy.TrackerCSRT_create()
+                        tracked_bbox = (startX, startY, endX - startX, endY - startY)
+                        tracker.init(frame, tracked_bbox)
+                        current_center_x = (startX + endX) // 2
+            else:
+                # --- 原始的僅偵測邏輯 ---
+                if frame_count % DETECT_EVERY_N_FRAMES == 0:
+                    person_detections = []
                     blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
                     net.setInput(blob)
                     detections = net.forward()
@@ -185,11 +172,12 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
                                 (startX, startY, endX, endY) = box.astype("int")
                                 person_detections.append((startX, startY, endX, endY))
 
-                if len(person_detections) > 0:
-                    largest_person = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
-                    (startX, _, endX, _) = largest_person
-                    current_center_x = (startX + endX) // 2
+                    if len(person_detections) > 0:
+                        largest_person = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
+                        (startX, _, endX, _) = largest_person
+                        current_center_x = (startX + endX) // 2
 
+            # --- 平滑化攝影機移動 ---
             last_person_center_x = int((1 - SMOOTHING_FACTOR) * last_person_center_x + SMOOTHING_FACTOR * current_center_x)
             crop_x = last_person_center_x - (output_width // 2)
             crop_x = max(0, int(crop_x))
@@ -220,26 +208,29 @@ def process_video(video_path, output_path, net, encoder, model_choice, classes):
         os.remove(output_path)
     os.rename(temp_output_path, output_path)
 
+USE_TRACKER = False
+
 def main():
+    global USE_TRACKER
+    if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create'):
+        USE_TRACKER = True
+        print("[資訊] 偵測到進階追蹤模組 (opencv-contrib-python)，已啟用物件追蹤功能。")
+    else:
+        print("[警告] 未偵測到進階追蹤模組。將使用基本偵測模式。")
+        print("[提示] 若要啟用更流暢的物件追蹤，請更新您的套件版本: pip install -r requirements.txt --upgrade")
+
     if shutil.which('ffmpeg') is None or shutil.which('ffprobe') is None:
         print("[錯誤] 系統中找不到 FFmpeg 或 ffprobe。請安裝 FFmpeg 並將其加入至系統 PATH 環境變數中。" )
         return
 
-    if not ensure_models_exist(MODEL_CHOICE):
+    if not ensure_models_exist():
         print("無法下載必要的模型檔案，程式即將結束。" )
         return
     print("模型檔案已就緒。" )
 
     # --- 直接在主執行緒中載入模型 ---
-    net = None
-    classes = None
-    if MODEL_CHOICE == 'YOLO':
-        with open(COCO_NAMES_PATH, 'r') as f:
-            classes = [line.strip() for line in f.readlines()]
-        net = cv2.dnn.readNetFromDarknet(YOLO_CFG_PATH, YOLO_WEIGHTS_PATH)
-    elif MODEL_CHOICE == 'SSD':
-        classes = SSD_CLASSES
-        net = cv2.dnn.readNetFromCaffe(SSD_PROTOTXT_PATH, SSD_MODEL_PATH)
+    classes = SSD_CLASSES
+    net = cv2.dnn.readNetFromCaffe(SSD_PROTOTXT_PATH, SSD_MODEL_PATH)
 
     if cv2.cuda.getCudaEnabledDeviceCount() > 0:
         net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
@@ -306,7 +297,7 @@ def main():
             intermediate_output_path = os.path.join(OUTPUT_FOLDER, intermediate_output_filename)
             final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
 
-            process_video(video_path, intermediate_output_path, net, best_encoder, MODEL_CHOICE, classes)
+            process_video(video_path, intermediate_output_path, net, best_encoder, classes, USE_TRACKER)
 
             # 偵測原始影片是否包含音訊
             has_audio_command = ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
