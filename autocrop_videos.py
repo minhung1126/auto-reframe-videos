@@ -98,7 +98,8 @@ def process_video(video_path, output_path, net, encoder, classes, use_tracker):
         '-y',
         '-f', 'image2pipe',
         '-framerate', str(fps),
-        '-vcodec', 'bmp',
+        '-vcodec', 'rawvideo',
+        '-pix_fmt', 'bgr24',
         '-i', '-',
         '-an',
         '-c:v', encoder,
@@ -184,12 +185,10 @@ def process_video(video_path, output_path, net, encoder, classes, use_tracker):
             crop_x = min(int(crop_x), original_width - output_width)
             cropped_frame = frame[:, crop_x : crop_x + output_width]
             
-            ret, buf = cv2.imencode('.bmp', cropped_frame)
-            if ret:
-                try:
-                    proc.stdin.write(buf.tobytes())
-                except (OSError, BrokenPipeError) as e:
-                    break
+            try:
+                proc.stdin.write(cropped_frame.tobytes())
+            except (OSError, BrokenPipeError) as e:
+                break
             
             frame_count += 1
             pbar.update(1)
