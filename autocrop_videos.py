@@ -36,8 +36,8 @@ SMOOTHING_FACTOR = 0.1   # Camera movement smoothing (lower is smoother, 0.0-1.0
 # --- MobileNet-SSD Model ---
 SSD_PROTOTXT_URL = 'https://github.com/chuanqi305/MobileNet-SSD/raw/master/deploy.prototxt'
 SSD_MODEL_URL = 'https://github.com/chuanqi305/MobileNet-SSD/raw/master/mobilenet_iter_73000.caffemodel'
-SSD_PROTOTXT_PATH = os.path.join(MODELS_DIR, 'MobileNetSSD_deploy.prototxt')
-SSD_MODEL_PATH = os.path.join(MODELS_DIR, 'MobileNetSSD_deploy.caffemodel')
+SSD_PROTOTXT_PATH = os.path.join(GDRIVE_MODELS_DIR, 'MobileNetSSD_deploy.prototxt')
+SSD_MODEL_PATH = os.path.join(GDRIVE_MODELS_DIR, 'MobileNetSSD_deploy.caffemodel')
 SSD_CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
                "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
                "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
@@ -69,8 +69,8 @@ def download_file(url, path):
 
 def ensure_models_exist():
     """Ensures that the required AI models are downloaded."""
-    if not os.path.exists(MODELS_DIR):
-        os.makedirs(MODELS_DIR)
+    if not os.path.exists(GDRIVE_MODELS_DIR):
+        os.makedirs(GDRIVE_MODELS_DIR)
 
     all_models_exist = True
     if not os.path.exists(SSD_PROTOTXT_PATH):
@@ -258,18 +258,18 @@ def run_processing_pipeline():
         print("[提示] 若要啟用更流暢的物件追蹤，建議執行: !pip install opencv-contrib-python-headless")
 
     # --- Find Videos to Process ---
-    if not os.path.exists(INPUT_FOLDER): os.makedirs(INPUT_FOLDER)
-    if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
+    if not os.path.exists(GDRIVE_INPUT_FOLDER): os.makedirs(GDRIVE_INPUT_FOLDER)
+    if not os.path.exists(GDRIVE_OUTPUT_FOLDER): os.makedirs(GDRIVE_OUTPUT_FOLDER)
 
     supported_formats = ('.mp4', '.mov', '.avi', '.mkv', '.MP4', '.webm')
-    all_video_files = [f for f in os.listdir(INPUT_FOLDER) if f.lower().endswith(supported_formats)]
+    all_video_files = [f for f in os.listdir(GDRIVE_INPUT_FOLDER) if f.lower().endswith(supported_formats)]
 
     if not all_video_files:
-        print(f"\n在 '{INPUT_FOLDER}' 中沒有找到任何影片檔案。" )
-        print("請將影片上傳至您的 Google Drive 中的 'auto-reframe-videos/input_videos' 資料夾。" )
+        print(f"\n在 '{GDRIVE_INPUT_FOLDER}' 中沒有找到任何影片檔案。" )
+        print("請將影片上傳至您的 Google Drive 中的 'input_videos' 資料夾。" )
         return
     
-    print(f"\n在 '{INPUT_FOLDER}' 中共找到 {len(all_video_files)} 個影片檔案。" )
+    print(f"\n在 '{GDRIVE_INPUT_FOLDER}' 中共找到 {len(all_video_files)} 個影片檔案。" )
 
     # --- Filter out already processed files ---
     files_to_process = []
@@ -277,21 +277,12 @@ def run_processing_pipeline():
     for video_file in all_video_files:
         base_filename = os.path.splitext(video_file)[0]
         final_output_filename = f"{base_filename}_reframe_{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}.mp4"
-        final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
+        final_output_path = os.path.join(GDRIVE_OUTPUT_FOLDER, final_output_filename)
 
         if os.path.exists(final_output_path):
             print(f"  -> 已跳過: {video_file} (已處理)")
         else:
             files_to_process.append(video_file)
-
-    # --- Clean up temporary files from previous runs ---
-    for item in os.listdir(OUTPUT_FOLDER):
-        if item.endswith("_cropped.mp4"):
-            try:
-                os.remove(os.path.join(OUTPUT_FOLDER, item))
-                print(f"  -> 已清理暫存檔: {item}")
-            except OSError as e:
-                print(f"  -> 清理暫存檔失敗: {item} ({e})")
 
     if not files_to_process:
         print("\n所有影片都已經處理完成，沒有需要處理的新檔案。" )
@@ -300,46 +291,53 @@ def run_processing_pipeline():
     print(f"\n找到 {len(files_to_process)} 個新影片需要處理，準備開始..." )
     
     best_encoder = get_best_encoder()
-    
     results = []
-    # --- Main Processing Loop ---
+
+    # --- Main Processing Loop (Colab Optimized) ---
+    # Clean up and create local temp directory for fast processing
+    if os.path.exists(LOCAL_PROCESSING_DIR):
+        shutil.rmtree(LOCAL_PROCESSING_DIR)
+    os.makedirs(LOCAL_PROCESSING_DIR)
+
     for video_file in tqdm(files_to_process, desc="整體進度", unit="video"):
-        video_path = os.path.join(INPUT_FOLDER, video_file)
-        base_filename = os.path.splitext(video_file)[0]
-        intermediate_output_filename = f"{base_filename}_cropped.mp4"
-        final_output_filename = f"{base_filename}_reframe_{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}.mp4"
+        gdrive_video_path = os.path.join(GDRIVE_INPUT_FOLDER, video_file)
+        local_video_path = os.path.join(LOCAL_PROCESSING_DIR, video_file)
         
-        intermediate_output_path = os.path.join(OUTPUT_FOLDER, intermediate_output_filename)
-        final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
+        base_filename = os.path.splitext(video_file)[0]
+        local_intermediate_path = os.path.join(LOCAL_PROCESSING_DIR, f"{base_filename}_cropped.mp4")
+        local_final_path = os.path.join(LOCAL_PROCESSING_DIR, f"{base_filename}_reframe_{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}.mp4")
+        gdrive_final_path = os.path.join(GDRIVE_OUTPUT_FOLDER, os.path.basename(local_final_path))
 
         try:
-            # STAGE 1: Crop the video based on person detection
-            print(f"\n[{video_file}] 第 1/2 階段: 進行 AI 偵測與智慧裁切..." )
-            success = process_video(video_path, intermediate_output_path, net, best_encoder, SSD_CLASSES, use_tracker)
+            # STAGE 0: Copy video from Drive to local runtime for fast access
+            print(f"\n[{video_file}] 正在從 Google Drive 複製到本機暫存區...")
+            shutil.copy(gdrive_video_path, local_video_path)
+
+            # STAGE 1: Crop the video based on person detection (all local)
+            print(f"[{video_file}] 第 1/2 階段: 進行 AI 偵測與智慧裁切 (本地端)..." )
+            success = process_video(local_video_path, local_intermediate_path, net, best_encoder, SSD_CLASSES, use_tracker)
             if not success:
                 raise Exception("智慧裁切階段失敗。" )
 
-            # STAGE 2: Scale to final resolution and merge audio
-            print(f"[{video_file}] 第 2/2 階段: 縮放至 {FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT} 並合併音訊..." )
+            # STAGE 2: Scale to final resolution and merge audio (all local)
+            print(f"[{video_file}] 第 2/2 階段: 縮放至 {FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT} 並合併音訊 (本地端)..." )
 
-            # Check if the original video has an audio stream
-            has_audio_command = ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
+            has_audio_command = ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', local_video_path]
             try:
                 result = subprocess.run(has_audio_command, capture_output=True, text=True, encoding='utf-8', check=True)
                 has_audio = result.stdout.strip() != ""
             except (subprocess.CalledProcessError, FileNotFoundError):
                 has_audio = False
 
-            # Build the final FFmpeg command to scale, re-encode, and add audio
             final_command = [
                 'ffmpeg', '-y',
-                '-i', intermediate_output_path,  # Input 0: The cropped video
-                '-i', video_path,              # Input 1: The original video (for audio)
-                '-c:v', best_encoder,          # Re-encode with the best available encoder
-                '-vf', f'scale={FINAL_OUTPUT_WIDTH}:{FINAL_OUTPUT_HEIGHT}', # Scale to final resolution
-                '-b:v', FINAL_OUTPUT_BITRATE,  # Set target bitrate
+                '-i', local_intermediate_path, # Input 0: The locally cropped video
+                '-i', local_video_path,      # Input 1: The local original video (for audio)
+                '-c:v', best_encoder,
+                '-vf', f'scale={FINAL_OUTPUT_WIDTH}:{FINAL_OUTPUT_HEIGHT}',
+                '-b:v', FINAL_OUTPUT_BITRATE,
                 '-preset', 'fast',
-                '-map', '0:v:0',               # Map video stream from input 0
+                '-map', '0:v:0',
                 '-loglevel', 'error',
             ]
 
@@ -348,31 +346,34 @@ def run_processing_pipeline():
             else:
                 final_command.extend(['-an'])
 
-            final_command.append(final_output_path)
+            final_command.append(local_final_path)
+            subprocess.run(final_command, check=True, capture_output=False)
+
+            # STAGE 3: Move final video from local runtime to Google Drive
+            print(f"[{video_file}] 處理完成，正在將結果移回 Google Drive...")
+            shutil.move(local_final_path, gdrive_final_path)
             
-            subprocess.run(final_command, check=True, capture_output=False) # Show ffmpeg output for this stage
-            
-            results.append(f"處理完成: {final_output_filename}")
+            results.append(f"處理完成: {os.path.basename(gdrive_final_path)}")
 
         except subprocess.CalledProcessError as e:
             error_message = e.stderr.decode('utf-8', errors='ignore') if e.stderr else "FFmpeg 未提供錯誤訊息。"
             results.append(f"處理失敗: {video_file} - FFmpeg 錯誤: {error_message}")
         except Exception as e:
             results.append(f"處理失敗: {video_file} - {str(e)}")
-        finally:
-            # Clean up the intermediate file
-            if os.path.exists(intermediate_output_path):
-                os.remove(intermediate_output_path)
 
-    # --- Final Report ---
+    # --- Final Cleanup & Report ---
+    if os.path.exists(LOCAL_PROCESSING_DIR):
+        shutil.rmtree(LOCAL_PROCESSING_DIR)
+        print("\n已清理本機暫存檔案。")
+
     print("\n" + "="*25 + " 處理報告 " + "="*25)
     success_count = sum(1 for res in results if res.startswith("處理完成"))
     fail_count = len(results) - success_count
     
     for res in results:
         if res.startswith("處理失敗"):
-            print(res)
+            print(f"- {res}")
     
     print("\n" + f"報告總結：成功 {success_count} 個，失敗 {fail_count} 個。" )
-    print(f"所有完成的影片都已儲存至 '{OUTPUT_FOLDER}'")
+    print(f"所有完成的影片都已儲存至 '{GDRIVE_OUTPUT_FOLDER}'")
     print("="*60)
