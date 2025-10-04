@@ -12,7 +12,7 @@ from tqdm import tqdm
 INPUT_FOLDER = 'input_videos'
 OUTPUT_FOLDER = 'output_videos'
 MODELS_DIR = 'models'
-DETECT_EVERY_N_FRAMES = 3 # 每 N 幀偵測一次
+DETECT_EVERY_N_FRAMES = 9 # 每 N 幀偵測一次
 TARGET_ASPECT_RATIO = 9 / 16
 
 # Final output video settings
@@ -152,7 +152,7 @@ def process_video(video_path, output_path, net, encoder, classes, use_tracker):
                         largest_person_box = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
                         (startX, startY, endX, endY) = largest_person_box
                         
-                        tracker = cv2.legacy.TrackerCSRT_create()
+                        tracker = cv2.legacy.TrackerKCF_create()
                         tracked_bbox = (startX, startY, endX - startX, endY - startY)
                         tracker.init(frame, tracked_bbox)
                         current_center_x = (startX + endX) // 2
