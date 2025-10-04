@@ -7,13 +7,23 @@ import subprocess
 import re
 import shutil
 import time
-from tqdm import tqdm
+from tqdm.notebook import tqdm # Use tqdm.notebook for better Colab integration
 
-# --- 設定 ---
-INPUT_FOLDER = 'input_videos'
-OUTPUT_FOLDER = 'output_videos'
-MODELS_DIR = 'models'
-DETECT_EVERY_N_FRAMES = 9 # 每 N 幀偵測一次
+# --- Path Setup (Auto-detects Colab) ---
+# In Colab, files are expected to be in Google Drive.
+# Mount your drive first and ensure the folder 'auto-reframe-videos' exists.
+if 'google.colab' in sys.modules:
+    print("[資訊] 偵測到 Google Colab 環境，自動調整檔案路徑至 Google Drive。" )
+    BASE_DIR = '/content/drive/MyDrive/auto-reframe-videos'
+else:
+    # For local execution
+    BASE_DIR = '.'
+
+# --- Global Settings ---
+INPUT_FOLDER = os.path.join(BASE_DIR, 'input_videos')
+OUTPUT_FOLDER = os.path.join(BASE_DIR, 'output_videos')
+MODELS_DIR = os.path.join(BASE_DIR, 'models')
+DETECT_EVERY_N_FRAMES = 9 # Process every Nth frame for detection
 TARGET_ASPECT_RATIO = 9 / 16
 
 # Final output video settings
@@ -21,12 +31,12 @@ FINAL_OUTPUT_WIDTH = 1080
 FINAL_OUTPUT_HEIGHT = 1920
 FINAL_OUTPUT_BITRATE = "10M"
 
-# --- 模型通用設定 ---
-TARGET_CLASS = 'person'    # 要偵測的物件類別 (來自 coco.names 或 SSD_CLASSES)
-CONFIDENCE_THRESHOLD = 0.5 # 物件偵測的信心度閾值
-SMOOTHING_FACTOR = 0.1   # 攝影機移動平滑度，數值越小越平滑 (0.0 - 1.0)
+# --- Model Configuration ---
+TARGET_CLASS = 'person'    # Class to detect (from coco.names or SSD_CLASSES)
+CONFIDENCE_THRESHOLD = 0.5 # Confidence threshold for detection
+SMOOTHING_FACTOR = 0.1   # Camera movement smoothing (lower is smoother, 0.0-1.0)
 
-# --- MobileNet-SSD 模型設定 ---
+# --- MobileNet-SSD Model ---
 SSD_PROTOTXT_URL = 'https://github.com/chuanqi305/MobileNet-SSD/raw/master/deploy.prototxt'
 SSD_MODEL_URL = 'https://github.com/chuanqi305/MobileNet-SSD/raw/master/mobilenet_iter_73000.caffemodel'
 SSD_PROTOTXT_PATH = os.path.join(MODELS_DIR, 'MobileNetSSD_deploy.prototxt')
@@ -35,16 +45,25 @@ SSD_CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat",
                "bottle", "bus", "car", "cat", "chair", "cow", "diningtable",
                "dog", "horse", "motorbike", "person", "pottedplant", "sheep",
                "sofa", "train", "tvmonitor"]
-# --- 設定結束 ---
+# --- End of Settings ---
 
 def download_file(url, path):
+    """Downloads a file from a URL to a given path with a progress bar."""
     try:
         print(f"正在下載 {os.path.basename(path)}...")
         response = requests.get(url, stream=True)
         response.raise_for_status()
-        with open(path, 'wb') as f:
+        total_size = int(response.headers.get('content-length', 0))
+        with open(path, 'wb') as f, tqdm(
+            desc=os.path.basename(path),
+            total=total_size,
+            unit='iB',
+            unit_scale=True,
+            unit_divisor=1024,
+        ) as bar:
             for data in response.iter_content(1024):
-                f.write(data)
+                size = f.write(data)
+                bar.update(size)
         print(f"下載完成: {path}")
         return True
     except requests.exceptions.RequestException as e:
@@ -52,213 +71,171 @@ def download_file(url, path):
         return False
 
 def ensure_models_exist():
+    """Ensures that the required AI models are downloaded."""
     if not os.path.exists(MODELS_DIR):
         os.makedirs(MODELS_DIR)
 
-    if not os.path.exists(SSD_PROTOTXT_PATH) and not download_file(SSD_PROTOTXT_URL, SSD_PROTOTXT_PATH): return False
-    if not os.path.exists(SSD_MODEL_PATH) and not download_file(SSD_MODEL_URL, SSD_MODEL_PATH): return False
-    return True
+    all_models_exist = True
+    if not os.path.exists(SSD_PROTOTXT_PATH):
+        if not download_file(SSD_PROTOTXT_URL, SSD_PROTOTXT_PATH):
+            all_models_exist = False
+    if not os.path.exists(SSD_MODEL_PATH):
+        if not download_file(SSD_MODEL_URL, SSD_MODEL_PATH):
+            all_models_exist = False
+    return all_models_exist
 
 def get_best_encoder():
+    """Detects the best available hardware-accelerated FFmpeg encoder."""
     print("正在自動偵測最佳影片編碼器...")
-    ENCODER_PRIORITY = {"h264_nvenc": "NVIDIA GPU (NVENC)", "h264_amf": "AMD GPU (AMF)", "h264_qsv": "Intel iGPU (QSV)", "libx264": "CPU (libx264)"}
+    # In Colab with GPU, 'h264_nvenc' is the priority for NVIDIA hardware acceleration.
+    ENCODER_PRIORITY = {
+        "h264_nvenc": "NVIDIA GPU (NVENC)",
+        "h264_amf": "AMD GPU (AMF)",
+        "h264_qsv": "Intel iGPU (QSV)",
+        "libx264": "CPU (libx264)"
+    }
     try:
         result = subprocess.run(['ffmpeg', '-encoders'], capture_output=True, text=True, encoding='utf-8')
         available_encoders = result.stdout
     except (FileNotFoundError, UnicodeDecodeError):
-        available_encoders = ""
+        print("[警告] FFmpeg 未安裝或無法讀取其輸出，將預設使用 CPU 編碼。" )
+        return 'libx264'
+
     for encoder, name in ENCODER_PRIORITY.items():
         if re.search(r'\b' + re.escape(encoder) + r'\b', available_encoders):
             print(f"[偵測成功] 找到最佳可用編碼器: {name}")
             return encoder
-    print("[警告] 未找到任何硬體編碼器，將使用 CPU 進行編碼。" )
+
+    print("[警告] 未找到任何硬體編碼器，將使用 CPU 進行編碼 (速度較慢)。")
     return 'libx264'
 
 def process_video(video_path, output_path, net, encoder, classes, use_tracker):
-    """處理單一影片檔案，偵測「人物」並裁剪為 9:16 的直向影片。"""
+    """
+    Handles Stage 1: Detects persons, calculates a smooth crop window,
+    and pipes the cropped frames to FFmpeg to create an intermediate video.
+    Returns True on success, False on failure.
+    """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         print(f"錯誤：無法開啟影片檔案 {video_path}")
-        return
+        return False
 
     original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+    # Calculate crop dimensions for the intermediate file
     output_height = original_height
     output_width = int(output_height * TARGET_ASPECT_RATIO)
     if output_width % 2 != 0: output_width -= 1
     if output_width > original_width:
         output_width = original_width
 
-    temp_output_path = os.path.join(os.path.dirname(output_path), "temp_" + os.path.basename(output_path))
-
+    # FFmpeg command to encode the piped, cropped frames
     command = [
-        'ffmpeg',
-        '-y',
-        '-f', 'image2pipe',
-        '-framerate', str(fps),
+        'ffmpeg', '-y',
+        '-f', 'rawvideo',
         '-vcodec', 'rawvideo',
         '-pix_fmt', 'bgr24',
+        '-s', f'{output_width}x{output_height}', # The size of the frames we are piping
+        '-r', str(fps),
         '-i', '-',
-        '-an',
+        '-an', # No audio for this intermediate file
         '-c:v', encoder,
         '-pix_fmt', 'yuv420p',
-        '-s', f'{output_width}x{output_height}',
         '-preset', 'fast',
+        '-loglevel', 'error',
     ]
     if encoder == 'libx264': command.extend(['-crf', '21'])
     else: command.extend(['-cq', '21'])
-    command.append(temp_output_path)
+    command.append(output_path)
 
-    proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(command, stdin=subprocess.PIPE)
 
     last_person_center_x = original_width // 2
     current_center_x = original_width // 2
     frame_count = 0
     tracker = None
 
-    # --- Logging Setup ---
-    time_reading, time_detection, time_tracking, time_writing, time_cropping, time_smoothing = 0, 0, 0, 0, 0, 0
-    total_processed_frames = 0
-    # --- End Logging Setup ---
-
-    with tqdm(total=total_frames, desc=f"裁切: {os.path.basename(video_path)}", unit="frame", leave=False) as pbar:
+    with tqdm(total=total_frames, desc=f"裁切分析", unit="frame", leave=False) as pbar:
         while True:
-            start_t = time.time()
             ret, frame = cap.read()
             if not ret: break
-            time_reading += time.time() - start_t
 
             (H, W) = frame.shape[:2]
 
-            if use_tracker:
-                if tracker is not None:
-                    start_t = time.time()
-                    success, tracked_bbox = tracker.update(frame)
-                    time_tracking += time.time() - start_t
-                    if success:
-                        (x, y, w, h) = [int(v) for v in tracked_bbox]
-                        current_center_x = x + w // 2
-                    else:
-                        tracker = None
+            # --- Detection/Tracking (same as original) ---
+            person_found_in_frame = False
+            if use_tracker and tracker is not None:
+                success, tracked_bbox = tracker.update(frame)
+                if success:
+                    (x, y, w, h) = [int(v) for v in tracked_bbox]
+                    current_center_x = x + w // 2
+                    person_found_in_frame = True
+                else:
+                    tracker = None
+
+            if not person_found_in_frame and (frame_count % DETECT_EVERY_N_FRAMES == 0):
+                blob = cv2.dnn.blobFromImage(frame, 0.007843, (300, 300), 127.5)
+                net.setInput(blob)
+                detections = net.forward()
+                person_detections = []
+                for i in np.arange(0, detections.shape[2]):
+                    confidence = detections[0, 0, i, 2]
+                    if confidence > CONFIDENCE_THRESHOLD:
+                        idx = int(detections[0, 0, i, 1])
+                        if classes[idx] == TARGET_CLASS:
+                            box = detections[0, 0, i, 3:7] * np.array([W, H, W, H])
+                            person_detections.append(box.astype("int"))
                 
-                if tracker is None and frame_count % DETECT_EVERY_N_FRAMES == 0:
-                    start_t = time.time()
-                    person_detections = []
-                    blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
-                    net.setInput(blob)
-                    detections = net.forward()
-                    for i in np.arange(0, detections.shape[2]):
-                        confidence = detections[0, 0, i, 2]
-                        if confidence > CONFIDENCE_THRESHOLD:
-                            idx = int(detections[0, 0, i, 1])
-                            if classes[idx] == TARGET_CLASS:
-                                box = detections[0, 0, i, 3:7] * np.array([W, H, W, H])
-                                person_detections.append(box.astype("int"))
-
-                    if len(person_detections) > 0:
-                        largest_person_box = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
-                        (startX, startY, endX, endY) = largest_person_box
-                        
+                if len(person_detections) > 0:
+                    largest_person_box = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
+                    (startX, startY, endX, endY) = largest_person_box
+                    current_center_x = (startX + endX) // 2
+                    if use_tracker:
                         tracker = cv2.legacy.TrackerKCF_create()
-                        tracked_bbox = (startX, startY, endX - startX, endY - startY)
-                        tracker.init(frame, tracked_bbox)
-                        current_center_x = (startX + endX) // 2
-                    time_detection += time.time() - start_t
-            else:
-                if frame_count % DETECT_EVERY_N_FRAMES == 0:
-                    start_t = time.time()
-                    person_detections = []
-                    blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
-                    net.setInput(blob)
-                    detections = net.forward()
-                    for i in np.arange(0, detections.shape[2]):
-                        confidence = detections[0, 0, i, 2]
-                        if confidence > CONFIDENCE_THRESHOLD:
-                            idx = int(detections[0, 0, i, 1])
-                            if classes[idx] == TARGET_CLASS:
-                                box = detections[0, 0, i, 3:7] * np.array([W, H, W, H])
-                                (startX, startY, endX, endY) = box.astype("int")
-                                person_detections.append((startX, startY, endX, endY))
+                        tracker.init(frame, (startX, startY, endX - startX, endY - startY))
 
-                    if len(person_detections) > 0:
-                        largest_person = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
-                        (startX, _, endX, _) = largest_person
-                        current_center_x = (startX + endX) // 2
-                    time_detection += time.time() - start_t
-
-            start_t = time.time()
+            # --- Smoothing and Cropping ---
             last_person_center_x = int((1 - SMOOTHING_FACTOR) * last_person_center_x + SMOOTHING_FACTOR * current_center_x)
-            time_smoothing += time.time() - start_t
-
-            start_t = time.time()
-            crop_x = last_person_center_x - (output_width // 2)
-            crop_x = max(0, int(crop_x))
+            crop_x = max(0, int(last_person_center_x - (output_width // 2)))
             crop_x = min(int(crop_x), original_width - output_width)
             cropped_frame = frame[:, crop_x : crop_x + output_width]
-            time_cropping += time.time() - start_t
             
-            start_t = time.time()
             try:
                 proc.stdin.write(cropped_frame.tobytes())
-            except (OSError, BrokenPipeError) as e:
+            except (OSError, BrokenPipeError):
                 break
-            time_writing += time.time() - start_t
             
             frame_count += 1
-            total_processed_frames += 1
             pbar.update(1)
 
-    stdout, stderr = proc.communicate()
+    proc.stdin.close()
+    proc.wait()
     cap.release()
 
-    # --- Print Performance Log ---
-    print("\n" + "="*20 + " Performance Log " + "="*20)
-    if total_processed_frames > 0:
-        total_time = time_reading + time_detection + time_tracking + time_smoothing + time_cropping + time_writing
-        print(f"Total frames processed: {total_processed_frames}")
-        if total_time > 0:
-            print(f"Total time spent in loop: {total_time:.2f} seconds")
-            print(f"  - Frame Reading:   {time_reading:.2f}s ({time_reading/total_time*100:.1f}%)")
-            print(f"  - AI Detection:    {time_detection:.2f}s ({time_detection/total_time*100:.1f}%)")
-            print(f"  - Object Tracking: {time_tracking:.2f}s ({time_tracking/total_time*100:.1f}%)")
-            print(f"  - Smoothing:       {time_smoothing:.2f}s ({time_smoothing/total_time*100:.1f}%)")
-            print(f"  - Frame Cropping:  {time_cropping:.2f}s ({time_cropping/total_time*100:.1f}%)")
-            print(f"  - Frame Writing:   {time_writing:.2f}s ({time_writing/total_time*100:.1f}%)")
-            print(f"Average time per frame: {total_time/total_processed_frames*1000:.2f} ms")
-        else:
-            print("Processing was too fast to measure.")
-    else:
-        print("No frames were processed.")
-    print("="*57 + "\n")
-    # --- End Log ---
-
     if proc.returncode != 0:
-        print(f"\n[錯誤] 影片裁切失敗: {os.path.basename(video_path)}")
-        print(stderr.decode('utf-8', errors='ignore'))
-        if os.path.exists(temp_output_path): os.remove(temp_output_path)
-        raise subprocess.CalledProcessError(proc.returncode, proc.args, stderr=stderr)
+        print(f"\n[錯誤] 影片裁切階段失敗: {os.path.basename(video_path)}")
+        # stderr was not captured, so we can't print it. The command has -loglevel error.
+        return False
+    
+    return True
 
-    # 將暫存檔重新命名為中介檔路徑，讓主函式接手後續處理
-    if os.path.exists(output_path):
-        os.remove(output_path)
-    os.rename(temp_output_path, output_path)
-
-USE_TRACKER = False
-
-def main():
-    global USE_TRACKER
-    if hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create'):
-        USE_TRACKER = True
-        print("[資訊] 偵測到進階追蹤模組 (opencv-contrib-python)，已啟用物件追蹤功能。")
-    else:
-        print("[警告] 未偵測到進階追蹤模組。將使用基本偵測模式。")
-        print("[提示] 若要啟用更流暢的物件追蹤，請更新您的套件版本: pip install -r requirements.txt --upgrade")
+def run_processing_pipeline():
+    """
+    Main function to run the entire video processing pipeline.
+    This is the entry point for the Colab notebook.
+    It sets up the environment, finds videos, and processes them sequentially.
+    """
+    # --- Initial Setup ---
+    if 'google.colab' in sys.modules and not os.path.exists('/content/drive'):
+        print("[錯誤] Google Drive 尚未掛載。請先在 Colab 中執行掛載 Drive 的儲存格。" )
+        return
 
     if shutil.which('ffmpeg') is None or shutil.which('ffprobe') is None:
-        print("[錯誤] 系統中找不到 FFmpeg 或 ffprobe。請安裝 FFmpeg 並將其加入至系統 PATH 環境變數中。" )
+        print("[錯誤] 系統中找不到 FFmpeg 或 ffprobe。" )
+        print("[提示] 在 Colab 中，請先執行 !apt-get install ffmpeg 來安裝。" )
         return
 
     if not ensure_models_exist():
@@ -266,34 +243,43 @@ def main():
         return
     print("模型檔案已就緒。" )
 
-    # --- 直接在主執行緒中載入模型 ---
-    classes = SSD_CLASSES
+    # --- Load AI Model ---
     net = cv2.dnn.readNetFromCaffe(SSD_PROTOTXT_PATH, SSD_MODEL_PATH)
-
     if cv2.cuda.getCudaEnabledDeviceCount() > 0:
         net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
         net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
         print("[資訊] 偵測到 CUDA，已啟用 GPU 加速 AI 偵測。" )
-    # --- 模型載入結束 ---
+    else:
+        print("[警告] 未偵測到 CUDA。AI 偵測將使用 CPU 執行。" )
 
+    # --- Check for Contrib Tracker ---
+    use_tracker = hasattr(cv2, 'legacy') and hasattr(cv2.legacy, 'TrackerCSRT_create')
+    if use_tracker:
+        print("[資訊] 偵測到進階追蹤模組 (opencv-contrib-python)，已啟用物件追蹤功能。" )
+    else:
+        print("[警告] 未偵測到進階追蹤模組 (opencv-contrib-python)。將使用基本偵測模式。" )
+        print("[提示] 若要啟用更流暢的物件追蹤，建議執行: !pip install opencv-contrib-python-headless")
+
+    # --- Find Videos to Process ---
     if not os.path.exists(INPUT_FOLDER): os.makedirs(INPUT_FOLDER)
     if not os.path.exists(OUTPUT_FOLDER): os.makedirs(OUTPUT_FOLDER)
 
-    supported_formats = ('.mp4', '.mov', '.avi', '.mkv', '.MP4')
+    supported_formats = ('.mp4', '.mov', '.avi', '.mkv', '.MP4', '.webm')
     all_video_files = [f for f in os.listdir(INPUT_FOLDER) if f.lower().endswith(supported_formats)]
 
     if not all_video_files:
-        print(f"在 '{INPUT_FOLDER}' 中沒有找到任何影片檔案。" )
+        print(f"\n在 '{INPUT_FOLDER}' 中沒有找到任何影片檔案。" )
+        print("請將影片上傳至您的 Google Drive 中的 'auto-reframe-videos/input_videos' 資料夾。" )
         return
     
-    print(f"在 '{INPUT_FOLDER}' 中共找到 {len(all_video_files)} 個影片檔案。" )
+    print(f"\n在 '{INPUT_FOLDER}' 中共找到 {len(all_video_files)} 個影片檔案。" )
 
-    # --- 檢查是否已經處理過，以支援續傳 ---
+    # --- Filter out already processed files ---
     files_to_process = []
     print("正在檢查進度以支援續傳..." )
     for video_file in all_video_files:
         base_filename = os.path.splitext(video_file)[0]
-        final_output_filename = f"{base_filename}_reframe.mp4"
+        final_output_filename = f"{base_filename}_reframe_{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}.mp4"
         final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
 
         if os.path.exists(final_output_path):
@@ -301,43 +287,45 @@ def main():
         else:
             files_to_process.append(video_file)
 
-    # --- 清理上次中斷留下的暫存檔 ---
-    stale_files_found = False
+    # --- Clean up temporary files from previous runs ---
     for item in os.listdir(OUTPUT_FOLDER):
         if item.endswith("_cropped.mp4"):
-            if not stale_files_found:
-                print("正在清理上次中斷留下的暫存檔..." )
-                stale_files_found = True
             try:
                 os.remove(os.path.join(OUTPUT_FOLDER, item))
-                print(f"  -> 已移除: {item}")
+                print(f"  -> 已清理暫存檔: {item}")
             except OSError as e:
-                print(f"  -> 移除失敗: {item} ({e}) " )
-    # --- 清理結束 ---
+                print(f"  -> 清理暫存檔失敗: {item} ({e})")
 
     if not files_to_process:
         print("\n所有影片都已經處理完成，沒有需要處理的新檔案。" )
         return
     
-    print(f"\n找到 {len(files_to_process)} 個影片需要處理，準備開始..." )
+    print(f"\n找到 {len(files_to_process)} 個新影片需要處理，準備開始..." )
     
     best_encoder = get_best_encoder()
     
     results = []
-    # --- 循序處理 ---
-    for video_file in tqdm(files_to_process, desc="整體進度"):
+    # --- Main Processing Loop ---
+    for video_file in tqdm(files_to_process, desc="整體進度", unit="video"):
+        video_path = os.path.join(INPUT_FOLDER, video_file)
+        base_filename = os.path.splitext(video_file)[0]
+        intermediate_output_filename = f"{base_filename}_cropped.mp4"
+        final_output_filename = f"{base_filename}_reframe_{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}.mp4"
+        
+        intermediate_output_path = os.path.join(OUTPUT_FOLDER, intermediate_output_filename)
+        final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
+
         try:
-            video_path = os.path.join(INPUT_FOLDER, video_file)
-            base_filename = os.path.splitext(video_file)[0]
-            intermediate_output_filename = f"{base_filename}_cropped.mp4"
-            final_output_filename = f"{base_filename}_reframe.mp4"
-            
-            intermediate_output_path = os.path.join(OUTPUT_FOLDER, intermediate_output_filename)
-            final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
+            # STAGE 1: Crop the video based on person detection
+            print(f"\n[{video_file}] 第 1/2 階段: 進行 AI 偵測與智慧裁切..." )
+            success = process_video(video_path, intermediate_output_path, net, best_encoder, SSD_CLASSES, use_tracker)
+            if not success:
+                raise Exception("智慧裁切階段失敗。" )
 
-            process_video(video_path, intermediate_output_path, net, best_encoder, classes, USE_TRACKER)
+            # STAGE 2: Scale to final resolution and merge audio
+            print(f"[{video_file}] 第 2/2 階段: 縮放至 {FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT} 並合併音訊..." )
 
-            # 偵測原始影片是否包含音訊
+            # Check if the original video has an audio stream
             has_audio_command = ['ffprobe', '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', video_path]
             try:
                 result = subprocess.run(has_audio_command, capture_output=True, text=True, encoding='utf-8', check=True)
@@ -345,53 +333,49 @@ def main():
             except (subprocess.CalledProcessError, FileNotFoundError):
                 has_audio = False
 
-            # 建立最終的 FFmpeg 指令，合併音訊，但不重新壓縮或縮放
+            # Build the final FFmpeg command to scale, re-encode, and add audio
             final_command = [
                 'ffmpeg', '-y',
-                '-i', intermediate_output_path,  # 輸入 0: 已裁切的影片
-                '-i', video_path,              # 輸入 1: 原始影片 (用於提取音訊)
-                '-c:v', 'copy',                # 直接複製影片流，不重新編碼
-                '-map', '0:v:0',               # 映射影片流從輸入 0
-                '-preset', 'fast',             # 快速預設
-                '-loglevel', 'error',          # 只顯示錯誤日誌
+                '-i', intermediate_output_path,  # Input 0: The cropped video
+                '-i', video_path,              # Input 1: The original video (for audio)
+                '-c:v', best_encoder,          # Re-encode with the best available encoder
+                '-vf', f'scale={FINAL_OUTPUT_WIDTH}:{FINAL_OUTPUT_HEIGHT}', # Scale to final resolution
+                '-b:v', FINAL_OUTPUT_BITRATE,  # Set target bitrate
+                '-preset', 'fast',
+                '-map', '0:v:0',               # Map video stream from input 0
+                '-loglevel', 'error',
             ]
 
             if has_audio:
-                # 如果有音訊，則複製音訊流
                 final_command.extend(['-c:a', 'copy', '-map', '1:a:0', '-shortest'])
             else:
-                # 否則，明確指定無音訊
                 final_command.extend(['-an'])
 
             final_command.append(final_output_path)
             
-            subprocess.run(final_command, check=True, capture_output=True)
-            
-            # 清理中介檔案
-            if os.path.exists(intermediate_output_path):
-                os.remove(intermediate_output_path)
+            subprocess.run(final_command, check=True, capture_output=False) # Show ffmpeg output for this stage
             
             results.append(f"處理完成: {final_output_filename}")
+
         except subprocess.CalledProcessError as e:
-            results.append(f"處理失敗: {video_file} - FFmpeg Error: {e.stderr.decode('utf-8', errors='ignore')}")
+            error_message = e.stderr.decode('utf-8', errors='ignore') if e.stderr else "FFmpeg 未提供錯誤訊息。"
+            results.append(f"處理失敗: {video_file} - FFmpeg 錯誤: {error_message}")
         except Exception as e:
             results.append(f"處理失敗: {video_file} - {str(e)}")
+        finally:
+            # Clean up the intermediate file
+            if os.path.exists(intermediate_output_path):
+                os.remove(intermediate_output_path)
 
-    # --- 顯示處理報告 ---
-    print("\n" + "="*20 + " 處理報告 " + "="*20)
-    success_count = 0
-    fail_count = 0
+    # --- Final Report ---
+    print("\n" + "="*25 + " 處理報告 " + "="*25)
+    success_count = sum(1 for res in results if res.startswith("處理完成"))
+    fail_count = len(results) - success_count
+    
     for res in results:
-        if res.startswith("處理完成"):
-            success_count += 1
-        else:
-            fail_count += 1
-            print(res) # Print errors
+        if res.startswith("處理失敗"):
+            print(res)
     
     print("\n" + f"報告總結：成功 {success_count} 個，失敗 {fail_count} 個。" )
-    print("="*54)
-    os.system("PAUSE")
-
-
-if __name__ == '__main__':
-    main()
+    print(f"所有完成的影片都已儲存至 '{OUTPUT_FOLDER}'")
+    print("="*60)
