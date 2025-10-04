@@ -33,12 +33,12 @@ NMS_THRESHOLD = 0.3      # 非極大值抑制的閾值 (YOLO專用)
 SMOOTHING_FACTOR = 0.1   # 攝影機移動平滑度，數值越小越平滑 (0.0 - 1.0)
 
 # --- YOLOv4-Tiny 模型設定 ---
-COCO_NAMES_URL = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names'
-YOLO_CFG_URL = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg'
-YOLO_WEIGHTS_URL = 'https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights'
-COCO_NAMES_PATH = os.path.join(MODELS_DIR, 'coco.names')
-YOLO_CFG_PATH = os.path.join(MODELS_DIR, 'yolov4-tiny.cfg')
-YOLO_WEIGHTS_PATH = os.path.join(MODELS_DIR, 'yolov4-tiny.weights')
+# COCO_NAMES_URL = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/data/coco.names'
+# YOLO_CFG_URL = 'https://raw.githubusercontent.com/AlexeyAB/darknet/master/cfg/yolov4-tiny.cfg'
+# YOLO_WEIGHTS_URL = 'https://github.com/AlexeyAB/darknet/releases/download/darknet_yolo_v4_pre/yolov4-tiny.weights'
+# COCO_NAMES_PATH = os.path.join(MODELS_DIR, 'coco.names')
+# YOLO_CFG_PATH = os.path.join(MODELS_DIR, 'yolov4-tiny.cfg')
+# YOLO_WEIGHTS_PATH = os.path.join(MODELS_DIR, 'yolov4-tiny.weights')
 
 # --- MobileNet-SSD 模型設定 ---
 SSD_PROTOTXT_URL = 'https://github.com/chuanqi305/MobileNet-SSD/raw/master/deploy.prototxt'
@@ -363,6 +363,7 @@ def main():
     
     print("\n" + f"報告總結：成功 {success_count} 個，失敗 {fail_count} 個。" )
     print("="*54)
+    os.system("PAUSE")
 
 
 if __name__ == '__main__':
