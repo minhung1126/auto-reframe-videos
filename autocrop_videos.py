@@ -9,6 +9,12 @@ import shutil
 import multiprocessing
 from tqdm import tqdm
 
+# --- 並行處理設定 ---
+# 設定最大同時處理的影片數量。預設為 CPU 核心數的一半。
+# 您可以根據您的硬體效能和記憶體大小來調整此數值。
+# 例如，如果您有 8 核心 CPU，這裡會設定為 4。
+MAX_CONCURRENT_PROCESSES = multiprocessing.cpu_count() // 2
+
 # --- 設定 ---
 INPUT_FOLDER = 'input_videos'
 OUTPUT_FOLDER = 'output_videos'
@@ -251,10 +257,6 @@ def worker_init(model_choice, encoder):
     """Initializer for each worker process."""
     global g_net, g_classes, g_best_encoder, g_model_choice
     
-    # Suppress output from worker processes to keep the main console clean
-    sys.stdout = open(os.devnull, 'w')
-    sys.stderr = open(os.devnull, 'w')
-
     g_model_choice = model_choice
     g_best_encoder = encoder
 
@@ -332,7 +334,7 @@ def main():
     # On Windows, 'spawn' is used, so we need to protect the main entry point.
     # The Pool should be created within this block.
     if __name__ == '__main__':
-        num_processes = min(multiprocessing.cpu_count(), len(video_files), 8) # Limit to 8 processes to avoid overwhelming system
+        num_processes = min(MAX_CONCURRENT_PROCESSES, len(video_files))
         if num_processes == 0:
             print("沒有影片檔案可處理。" )
             return
