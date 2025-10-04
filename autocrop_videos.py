@@ -6,6 +6,7 @@ import sys
 import subprocess
 import re
 import shutil
+import time
 from tqdm import tqdm
 
 # --- 設定 ---
@@ -118,25 +119,33 @@ def process_video(video_path, output_path, net, encoder, classes, use_tracker):
     frame_count = 0
     tracker = None
 
+    # --- Logging Setup ---
+    time_reading, time_detection, time_tracking, time_writing, time_cropping, time_smoothing = 0, 0, 0, 0, 0, 0
+    total_processed_frames = 0
+    # --- End Logging Setup ---
+
     with tqdm(total=total_frames, desc=f"裁切: {os.path.basename(video_path)}", unit="frame", leave=False) as pbar:
         while True:
+            start_t = time.time()
             ret, frame = cap.read()
             if not ret: break
+            time_reading += time.time() - start_t
 
             (H, W) = frame.shape[:2]
 
             if use_tracker:
-                # --- 追蹤優先邏輯 ---
                 if tracker is not None:
+                    start_t = time.time()
                     success, tracked_bbox = tracker.update(frame)
+                    time_tracking += time.time() - start_t
                     if success:
                         (x, y, w, h) = [int(v) for v in tracked_bbox]
                         current_center_x = x + w // 2
                     else:
-                        tracker = None # 追蹤失敗，清除追蹤器
+                        tracker = None
                 
                 if tracker is None and frame_count % DETECT_EVERY_N_FRAMES == 0:
-                    # 如果沒有追蹤器，則執行偵測
+                    start_t = time.time()
                     person_detections = []
                     blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
                     net.setInput(blob)
@@ -157,9 +166,10 @@ def process_video(video_path, output_path, net, encoder, classes, use_tracker):
                         tracked_bbox = (startX, startY, endX - startX, endY - startY)
                         tracker.init(frame, tracked_bbox)
                         current_center_x = (startX + endX) // 2
+                    time_detection += time.time() - start_t
             else:
-                # --- 原始的僅偵測邏輯 ---
                 if frame_count % DETECT_EVERY_N_FRAMES == 0:
+                    start_t = time.time()
                     person_detections = []
                     blob = cv2.dnn.blobFromImage(cv2.resize(frame, (300, 300)), 0.007843, (300, 300), 127.5)
                     net.setInput(blob)
@@ -177,24 +187,53 @@ def process_video(video_path, output_path, net, encoder, classes, use_tracker):
                         largest_person = max(person_detections, key=lambda rect: (rect[2] - rect[0]) * (rect[3] - rect[1]))
                         (startX, _, endX, _) = largest_person
                         current_center_x = (startX + endX) // 2
+                    time_detection += time.time() - start_t
 
-            # --- 平滑化攝影機移動 ---
+            start_t = time.time()
             last_person_center_x = int((1 - SMOOTHING_FACTOR) * last_person_center_x + SMOOTHING_FACTOR * current_center_x)
+            time_smoothing += time.time() - start_t
+
+            start_t = time.time()
             crop_x = last_person_center_x - (output_width // 2)
             crop_x = max(0, int(crop_x))
             crop_x = min(int(crop_x), original_width - output_width)
             cropped_frame = frame[:, crop_x : crop_x + output_width]
+            time_cropping += time.time() - start_t
             
+            start_t = time.time()
             try:
                 proc.stdin.write(cropped_frame.tobytes())
             except (OSError, BrokenPipeError) as e:
                 break
+            time_writing += time.time() - start_t
             
             frame_count += 1
+            total_processed_frames += 1
             pbar.update(1)
 
     stdout, stderr = proc.communicate()
     cap.release()
+
+    # --- Print Performance Log ---
+    print("\n" + "="*20 + " Performance Log " + "="*20)
+    if total_processed_frames > 0:
+        total_time = time_reading + time_detection + time_tracking + time_smoothing + time_cropping + time_writing
+        print(f"Total frames processed: {total_processed_frames}")
+        if total_time > 0:
+            print(f"Total time spent in loop: {total_time:.2f} seconds")
+            print(f"  - Frame Reading:   {time_reading:.2f}s ({time_reading/total_time*100:.1f}%)")
+            print(f"  - AI Detection:    {time_detection:.2f}s ({time_detection/total_time*100:.1f}%)")
+            print(f"  - Object Tracking: {time_tracking:.2f}s ({time_tracking/total_time*100:.1f}%)")
+            print(f"  - Smoothing:       {time_smoothing:.2f}s ({time_smoothing/total_time*100:.1f}%)")
+            print(f"  - Frame Cropping:  {time_cropping:.2f}s ({time_cropping/total_time*100:.1f}%)")
+            print(f"  - Frame Writing:   {time_writing:.2f}s ({time_writing/total_time*100:.1f}%)")
+            print(f"Average time per frame: {total_time/total_processed_frames*1000:.2f} ms")
+        else:
+            print("Processing was too fast to measure.")
+    else:
+        print("No frames were processed.")
+    print("="*57 + "\n")
+    # --- End Log ---
 
     if proc.returncode != 0:
         print(f"\n[錯誤] 影片裁切失敗: {os.path.basename(video_path)}")
