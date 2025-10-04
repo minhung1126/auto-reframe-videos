@@ -307,14 +307,12 @@ def main():
             except (subprocess.CalledProcessError, FileNotFoundError):
                 has_audio = False
 
-            # 建立最終的 FFmpeg 指令，一步到位完成縮放、壓縮和音訊合併
+            # 建立最終的 FFmpeg 指令，合併音訊，但不重新壓縮或縮放
             final_command = [
                 'ffmpeg', '-y',
                 '-i', intermediate_output_path,  # 輸入 0: 已裁切的影片
                 '-i', video_path,              # 輸入 1: 原始影片 (用於提取音訊)
-                '-c:v', best_encoder,          # 使用選擇的編碼器
-                '-b:v', FINAL_OUTPUT_BITRATE,  # 設定視訊位元率
-                '-s', f'{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}', # 設定最終解析度
+                '-c:v', 'copy',                # 直接複製影片流，不重新編碼
                 '-map', '0:v:0',               # 映射影片流從輸入 0
                 '-preset', 'fast',             # 快速預設
                 '-loglevel', 'error',          # 只顯示錯誤日誌
