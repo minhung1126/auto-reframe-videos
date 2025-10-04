@@ -11,7 +11,7 @@ from tqdm.notebook import tqdm # Use tqdm.notebook for better Colab integration
 
 # --- Path Setup for Colab Optimization ---
 # We define paths for Google Drive (for final storage) and local Colab runtime (for processing).
-GDRIVE_BASE_DIR = '/content/drive/MyDrive'
+GDRIVE_BASE_DIR = os.environ.get('GDRIVE_DIR', '/content/drive/MyDrive')
 LOCAL_PROCESSING_DIR = '/content/processing_temp' # Fast, temporary local storage
 
 # Google Drive paths
