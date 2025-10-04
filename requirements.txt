@@ -1,4 +1,4 @@
 numpy
 requests
-opencv-contrib-python-headless
+opencv-contrib-python
 tqdm
