@@ -39,41 +39,21 @@ def process_video(video_path, output_path, net, encoder, classes):
 
     proc = ffmpeg_utils.open_ffmpeg_pipe_for_cropping(fps, encoder, output_width, output_height, temp_output_path)
 
-    # --- State variables for tracking and smoothing ---
+    # --- State variables for smoothing ---
     last_person_center_x = original_width // 2
     current_center_x = original_width // 2
-    frame_count = 0
-    tracker = None
-    tracker_initialized = False
 
     with tqdm(total=total_frames, desc=f"裁切影片: {os.path.basename(video_path)}", unit="frame", position=multiprocessing.current_process()._identity[0]-1) as pbar:
         while True:
             ret, frame = cap.read()
             if not ret: break
 
-            # --- Tracker-based Detection Logic ---
-            # Re-run full detection every REDETECT_INTERVAL frames or if tracker is not initialized
-            if not tracker_initialized or frame_count % config.REDETECT_INTERVAL == 0:
-                bbox = detection.detect_people(frame, net, classes)
-                if bbox is not None:
-                    # Initialize a new tracker
-                    tracker = cv2.TrackerCSRT_create()
-                    tracker.init(frame, bbox)
-                    tracker_initialized = True
-                    # Update center based on the new detection
-                    current_center_x = bbox[0] + bbox[2] / 2
-                else:
-                    # No person detected, de-initialize tracker
-                    tracker_initialized = False
-            else:
-                # Update tracker
-                success, bbox = tracker.update(frame)
-                if success:
-                    # Update center based on tracker's result
-                    current_center_x = bbox[0] + bbox[2] / 2
-                else:
-                    # Tracker lost the object
-                    tracker_initialized = False
+            # --- Detection Logic (every frame) ---
+            bbox = detection.detect_people(frame, net, classes)
+            if bbox is not None:
+                # Update center based on the new detection
+                current_center_x = bbox[0] + bbox[2] / 2
+            # If no person is detected, the center remains at its last known position.
 
             # --- Smoothing and Cropping ---
             last_person_center_x = int((1 - config.SMOOTHING_FACTOR) * last_person_center_x + config.SMOOTHING_FACTOR * current_center_x)
@@ -92,7 +72,6 @@ def process_video(video_path, output_path, net, encoder, classes):
                 except (OSError, BrokenPipeError) as e:
                     break
             
-            frame_count += 1
             pbar.update(1)
 
     stdout, stderr = proc.communicate()
