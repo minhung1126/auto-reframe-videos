@@ -53,21 +53,20 @@ def has_embedded_thumbnail(video_path):
         cmd = [
             'ffprobe', '-v', 'error', '-select_streams', 'v',
             '-show_entries', 'stream_disposition=attached_pic',
-            '-of', 'csv=p=0', # Use CSV output for simpler parsing
-            video_path
+            '-of', 'csv=p=0', video_path
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return 'attached_pic' in result.stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
-def generate_thumbnail_ffmpeg(video_path, output_dir, base_name, timestamp_sec=2):
+def generate_thumbnail_ffmpeg(video_path, output_dir, timestamp_sec=2):
     """
     Generates a thumbnail for the video using FFmpeg.
-    Saves the thumbnail in the specified output directory.
     Returns the path to the thumbnail on success, otherwise None.
     """
-    file_name, _ = os.path.splitext(os.path.basename(video_path))
+    base_name = os.path.basename(video_path)
+    file_name, _ = os.path.splitext(base_name)
     thumbnail_path = os.path.join(output_dir, f"{file_name}.jpg")
     
     try:
@@ -79,11 +78,11 @@ def generate_thumbnail_ffmpeg(video_path, output_dir, base_name, timestamp_sec=2
         duration = float(result.stdout)
         
         if timestamp_sec > duration:
-            print(f"[{base_name}] 警告：請求的縮圖時間戳 ({timestamp_sec}s) 超過影片長度 ({duration:.2f}s)。將使用影片中點作為替代。")
+            print(f"[{base_name}] 警告：請求的縮圖時間戳 ({timestamp_sec}s) 超過影片長度 ({duration:.2f}s)。將使用影片中點。")
             timestamp_sec = duration / 2
             
     except (subprocess.CalledProcessError, FileNotFoundError, ValueError) as e:
-        print(f"[{base_name}] 警告：無法取得影片長度，將使用預設時間戳。錯誤： {e}")
+        print(f"[{base_name}] 警告：無法取得影片長度。錯誤： {e}")
 
     ffmpeg_cmd = [
         'ffmpeg', '-y', '-ss', str(timestamp_sec), '-i', video_path,
@@ -92,21 +91,21 @@ def generate_thumbnail_ffmpeg(video_path, output_dir, base_name, timestamp_sec=2
 
     try:
         subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
-        print(f"[{base_name}] 成功使用 FFmpeg 產生縮圖並儲存至： {thumbnail_path}")
+        print(f"[{base_name}] 成功產生縮圖： {thumbnail_path}")
         return thumbnail_path
     except subprocess.CalledProcessError as e:
-        print(f"[{base_name}] 錯誤：使用 FFmpeg 產生縮圖失敗。")
-        print(f"FFmpeg 命令：{' '.join(ffmpeg_cmd)}")
+        print(f"\n[{base_name}] 錯誤：產生縮圖失敗。")
         print(f"FFmpeg 錯誤訊息：\n{e.stderr.decode(errors='ignore')}")
         return None
     except FileNotFoundError:
-        print(f"[{base_name}] 錯誤：找不到 FFmpeg/ffprobe。請確保它們已安裝並在其系統 PATH 中。")
+        print("\n錯誤：找不到 FFmpeg/ffprobe。")
         return None
 
-def embed_thumbnail_and_cleanup(video_path, thumbnail_path, base_name):
+def embed_thumbnail_and_cleanup(video_path, thumbnail_path):
     """
     Embeds the thumbnail into the video file and deletes the external thumbnail.
     """
+    base_name = os.path.basename(video_path)
     temp_video_path = video_path + ".thumb.mp4"
 
     ffmpeg_cmd = [
@@ -116,29 +115,25 @@ def embed_thumbnail_and_cleanup(video_path, thumbnail_path, base_name):
     ]
 
     try:
-        print(f"[{base_name}] 正在將縮圖嵌入影片中...")
+        print(f"[{base_name}] 正在嵌入縮圖...")
         subprocess.run(ffmpeg_cmd, check=True, capture_output=True)
 
         os.remove(video_path)
         os.rename(temp_video_path, video_path)
         os.remove(thumbnail_path)
-        print(f"[{base_name}] 成功嵌入縮圖並清除暫存檔案。")
+        print(f"[{base_name}] 成功嵌入縮圖。")
 
     except subprocess.CalledProcessError as e:
-        print(f"[{base_name}] 錯誤：嵌入縮圖失敗。")
-        print(f"FFmpeg 命令：{' '.join(ffmpeg_cmd)}")
+        print(f"\n[{base_name}] 錯誤：嵌入縮圖失敗。")
         print(f"FFmpeg 錯誤訊息：\n{e.stderr.decode(errors='ignore')}")
         if os.path.exists(temp_video_path):
             os.remove(temp_video_path)
     except FileNotFoundError:
-        print(f"[{base_name}] 錯誤：找不到 FFmpeg。請確保 FFmpeg 已安裝並在其系統 PATH 中。")
+        print("\n錯誤：找不到 FFmpeg。")
     except Exception as e:
-        print(f"[{base_name}] 清理檔案時發生未預期的錯誤: {e}")
+        print(f"\n[{base_name}] 未預期的錯誤: {e}")
 
 def process_video(input_path, output_dir, worker_id=0):
-    """
-    Orchestrates the video processing pipeline with resume capability.
-    """
     base_name = os.path.basename(input_path)
     file_name, _ = os.path.splitext(base_name)
     
@@ -149,14 +144,16 @@ def process_video(input_path, output_dir, worker_id=0):
 
     high_quality_output_path = os.path.join(raw_dir, f"{file_name}_portrait_raw.mp4")
     compressed_output_path = os.path.join(compressed_dir, f"{file_name}_portrait_1080p_12mbps.mp4")
+    high_quality_output_path_tmp = high_quality_output_path + ".tmp"
+    compressed_output_path_tmp = compressed_output_path + ".tmp"
 
     if has_embedded_thumbnail(compressed_output_path):
-        print(f"[{base_name}] ✅ 偵測到已完成且帶有縮圖的檔案，跳過所有處理。")
+        print(f"[{base_name}] ✅ 已完成，跳過。")
         return
 
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
-        print(f"錯誤：無法開啟影片檔案： {input_path}")
+        print(f"錯誤：無法開啟影片： {input_path}")
         return
     orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -165,13 +162,13 @@ def process_video(input_path, output_dir, worker_id=0):
     cap.release()
 
     if not os.path.exists(high_quality_output_path):
-        print(f"[{base_name}] ▶️ 第 1 階段：開始高品質畫面重構...")
+        print(f"[{base_name}] ▶️ 第 1 階段：高品質重構...")
         hq_target_h = orig_h
         hq_target_w = int(hq_target_h * 9 / 16)
         SMOOTHING_FACTOR = 0.01
 
         mp_pose = mp.solutions.pose
-        pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, enable_segmentation=False, min_detection_confidence=0.5)
+        pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5)
         cap = cv2.VideoCapture(input_path)
         
         crop_h = orig_h
@@ -188,62 +185,61 @@ def process_video(input_path, output_dir, worker_id=0):
             '-s', f'{hq_target_w}x{hq_target_h}', '-r', str(fps), '-i', '-',
             '-i', input_path, '-c:v', chosen_vcodec, *chosen_params,
             '-c:a', 'aac', '-b:a', '192k', '-map', '0:v:0', '-map', '1:a:0?',
-            '-movflags', '+faststart', '-shortest', high_quality_output_path
+            '-movflags', '+faststart', '-shortest', high_quality_output_path_tmp
         ]
 
         try:
             ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=None)
         except FileNotFoundError:
-            print(f"[{base_name}] 錯誤：找不到 FFmpeg。請確保 FFmpeg 已安裝並在其系統 PATH 中。")
+            print(f"[{base_name}] 錯誤：找不到 FFmpeg。")
             return
 
         smoothed_x1 = float((orig_w - crop_w) // 2)
         progress_bar = tqdm(total=total_frames, desc=f"重構 {file_name}", position=worker_id)
 
-        while True:
-            ret, frame = cap.read()
-            if not ret: break
+        try:
+            while True:
+                ret, frame = cap.read()
+                if not ret: break
 
-            if progress_bar.n % LANDMARK_DETECTION_INTERVAL == 0:
-                image_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                results = pose.process(image_rgb)
-                if results.pose_landmarks:
-                    landmarks_x = [lm.x for lm in results.pose_landmarks.landmark]
-                    person_center_x_rel = (min(landmarks_x) + max(landmarks_x)) / 2
-                    person_center_x_px = int(person_center_x_rel * orig_w)
-                    target_x1 = person_center_x_px - crop_w // 2
-                    smoothed_x1 = (SMOOTHING_FACTOR * target_x1) + ((1 - SMOOTHING_FACTOR) * smoothed_x1)
-            
-            crop_x1 = int(smoothed_x1)
-            if crop_x1 < 0: crop_x1 = 0
-            if crop_x1 + crop_w > orig_w: crop_x1 = orig_w - crop_w
-            smoothed_x1 = float(crop_x1)
-            
-            cropped_frame = frame[:, crop_x1:crop_x1 + crop_w]
-            resized_frame = cv2.resize(cropped_frame, (hq_target_w, hq_target_h), interpolation=cv2.INTER_LANCZOS4)
-
-            try:
+                if progress_bar.n % LANDMARK_DETECTION_INTERVAL == 0:
+                    results = pose.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                    if results.pose_landmarks:
+                        landmarks_x = [lm.x for lm in results.pose_landmarks.landmark]
+                        person_center_x_rel = (min(landmarks_x) + max(landmarks_x)) / 2
+                        person_center_x_px = int(person_center_x_rel * orig_w)
+                        target_x1 = person_center_x_px - crop_w // 2
+                        smoothed_x1 = (SMOOTHING_FACTOR * target_x1) + ((1 - SMOOTHING_FACTOR) * smoothed_x1)
+                
+                crop_x1 = int(smoothed_x1)
+                if crop_x1 < 0: crop_x1 = 0
+                if crop_x1 + crop_w > orig_w: crop_x1 = orig_w - crop_w
+                smoothed_x1 = float(crop_x1)
+                
+                cropped_frame = frame[:, crop_x1:crop_x1 + crop_w]
+                resized_frame = cv2.resize(cropped_frame, (hq_target_w, hq_target_h), interpolation=cv2.INTER_LANCZOS4)
                 ffmpeg_process_hq.stdin.write(resized_frame.tobytes())
-            except (IOError, BrokenPipeError):
-                print(f"[{base_name}] 錯誤：與 FFmpeg 的連線中斷。")
-                break
-            progress_bar.update(1)
+                progress_bar.update(1)
+        except (IOError, BrokenPipeError):
+            print(f"\n[{base_name}] 錯誤：與 FFmpeg 的連線中斷。")
+        finally:
+            progress_bar.close()
+            if ffmpeg_process_hq.stdin: ffmpeg_process_hq.stdin.close()
+            ffmpeg_process_hq.communicate()
+            cap.release()
+            pose.close()
 
-        progress_bar.close()
-        if ffmpeg_process_hq.stdin: ffmpeg_process_hq.stdin.close()
-        
-        ffmpeg_process_hq.communicate()
-        cap.release()
-        pose.close()
-
-        if ffmpeg_process_hq.returncode != 0:
-            print(f"[{base_name}] ❌ 錯誤：第 1 階段高品質重構失敗。")
-            print(f"FFmpeg 的錯誤訊息應該已顯示在主控台中。")
+        if ffmpeg_process_hq.returncode == 0:
+            os.rename(high_quality_output_path_tmp, high_quality_output_path)
+            print(f"[{base_name}] ✅ 第 1 階段完成。")
+        else:
+            print(f"\n[{base_name}] ❌ 錯誤：第 1 階段失敗。")
+            if os.path.exists(high_quality_output_path_tmp):
+                os.remove(high_quality_output_path_tmp)
             return
-        print(f"[{base_name}] ✅ 第 1 階段完成。")
 
     if not os.path.exists(compressed_output_path):
-        print(f"[{base_name}] ▶️ 第 2 階段：開始壓縮至 FHD 12Mbps...")
+        print(f"[{base_name}] ▶️ 第 2 階段：壓縮...")
         chosen_vcodec, chosen_params = find_best_encoder(verbose=False)
         compress_params = []
         if 'nvenc' in chosen_vcodec or 'qsv' in chosen_vcodec:
@@ -254,51 +250,49 @@ def process_video(input_path, output_dir, worker_id=0):
         ffmpeg_cmd_compress = [
             'ffmpeg', '-y', '-i', high_quality_output_path, '-c:v', chosen_vcodec,
             '-vf', 'scale=1080:1920', '-b:v', '12M', *compress_params,
-            '-c:a', 'copy', '-movflags', '+faststart', compressed_output_path
+            '-c:a', 'copy', '-movflags', '+faststart', compressed_output_path_tmp
         ]
 
         try:
             subprocess.run(ffmpeg_cmd_compress, check=True, capture_output=True)
+            os.rename(compressed_output_path_tmp, compressed_output_path)
             print(f"[{base_name}] ✅ 第 2 階段完成。")
         except subprocess.CalledProcessError as e:
-            print(f"[{base_name}] ❌ 錯誤：第 2 階段壓縮失敗。")
+            print(f"\n[{base_name}] ❌ 錯誤：第 2 階段失敗。")
             print(f"FFmpeg 錯誤訊息：\n{e.stderr.decode(errors='ignore')}")
+            if os.path.exists(compressed_output_path_tmp):
+                os.remove(compressed_output_path_tmp)
             return
         except FileNotFoundError:
-            print(f"[{base_name}] 錯誤：找不到 FFmpeg。請確保 FFmpeg 已安裝並在其系統 PATH 中。")
+            print(f"\n[{base_name}] 錯誤：找不到 FFmpeg。")
             return
 
     print(f"[{base_name}] ▶️ 第 3/4 階段：產生並嵌入縮圖...")
-    temp_thumb_path = generate_thumbnail_ffmpeg(compressed_output_path, compressed_dir, base_name)
+    temp_thumb_path = generate_thumbnail_ffmpeg(compressed_output_path, compressed_dir)
     if temp_thumb_path:
-        print(f"[{base_name}] 縮圖已產生於: {temp_thumb_path}")
-        embed_thumbnail_and_cleanup(compressed_output_path, temp_thumb_path, base_name)
+        embed_thumbnail_and_cleanup(compressed_output_path, temp_thumb_path)
     else:
-        print(f"[{base_name}] ❌ 錯誤：無法產生或嵌入縮圖。從 generate_thumbnail_ffmpeg 收到 None。")
+        print(f"[{base_name}] ❌ 錯誤：無法產生或嵌入縮圖。")
         return
     
     print(f"[{base_name}] 🎉 處理完成。")
 
 def main():
-    """
-    Main function to find and process all videos in the input directory.
-    """
     INPUT_DIR = "input_videos"
     OUTPUT_DIR = "output_videos"
     SUPPORTED_EXTENSIONS = ['.mp4', '.mov', '.avi', '-mkv', '.wmv', '.flv']
 
     os.makedirs(INPUT_DIR, exist_ok=True)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    print(f"資訊：確保 '{INPUT_DIR}' 和 '{OUTPUT_DIR}' 資料夾存在。")
+    print(f"確保 '{INPUT_DIR}' 和 '{OUTPUT_DIR}' 資料夾存在。")
 
     video_files = [f for f in os.listdir(INPUT_DIR) if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS]
 
     if not video_files:
-        print(f"在 '{INPUT_DIR}' 資料夾中找不到任何支援的影片檔案。")
-        print("請將影片檔案新增至該資料夾再執行。")
+        print(f"在 '{INPUT_DIR}' 中找不到影片。")
         return
 
-    print(f"在 '{INPUT_DIR}' 中找到 {len(video_files)} 個影片，將開始處理...")
+    print(f"找到 {len(video_files)} 個影片，開始處理...")
     if MAX_WORKERS > 1: print(f"使用 {MAX_WORKERS} 個併行處理程序。")
 
     video_files.sort()
