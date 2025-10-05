@@ -7,6 +7,7 @@ import argparse
 from tqdm import tqdm
 import concurrent.futures
 import subprocess
+import sys
 
 # --- Constants ---
 MAX_WORKERS = max(1, os.cpu_count() // 4)
@@ -189,13 +190,13 @@ def process_video(input_path, output_dir, worker_id=0):
         ]
 
         try:
-            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=None)
         except FileNotFoundError:
             print(f"[{base_name}] 錯誤：找不到 FFmpeg。")
             return
 
         smoothed_x1 = float((orig_w - crop_w) // 2)
-        progress_bar = tqdm(total=total_frames, desc=f"重構 {file_name}", position=worker_id)
+        progress_bar = tqdm(total=total_frames, desc=f"重構 {file_name}", position=worker_id, file=sys.stdout)
 
         try:
             while True:
