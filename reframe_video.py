@@ -1,4 +1,3 @@
-
 import cv2
 import mediapipe as mp
 import numpy as np
@@ -7,7 +6,6 @@ import argparse
 from tqdm import tqdm
 import concurrent.futures
 import subprocess
-import sys
 
 # --- Constants ---
 MAX_WORKERS = max(1, os.cpu_count() // 4)
@@ -97,6 +95,8 @@ def generate_thumbnail_ffmpeg(video_path, output_dir, timestamp_sec=2):
     except subprocess.CalledProcessError as e:
         print(f"\n[{base_name}] 錯誤：產生縮圖失敗。")
         print(f"FFmpeg 錯誤訊息：\n{e.stderr.decode(errors='ignore')}")
+        if os.path.exists(thumbnail_path):
+            os.remove(thumbnail_path)
         return None
     except FileNotFoundError:
         print("\n錯誤：找不到 FFmpeg/ffprobe。")
@@ -190,13 +190,13 @@ def process_video(input_path, output_dir, worker_id=0):
         ]
 
         try:
-            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=None)
+            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             print(f"[{base_name}] 錯誤：找不到 FFmpeg。")
             return
 
         smoothed_x1 = float((orig_w - crop_w) // 2)
-        progress_bar = tqdm(total=total_frames, desc=f"重構 {file_name}", position=worker_id, file=sys.stdout)
+        progress_bar = tqdm(total=total_frames, desc=f"重構 {file_name}", position=worker_id)
 
         try:
             while True:
