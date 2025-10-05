@@ -318,15 +318,16 @@ def main():
     OUTPUT_DIR = "output_videos"
     SUPPORTED_EXTENSIONS = ['.mp4', '.mov', '.avi', '-mkv', '.wmv', '.flv']
 
-    if not os.path.isdir(INPUT_DIR):
-        print(f"錯誤：找不到輸入資料夾 '{INPUT_DIR}'。")
-        print("請建立該資料夾並將您的影片放入其中。")
-        return
+    # Create input and output directories if they don't exist
+    os.makedirs(INPUT_DIR, exist_ok=True)
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    print(f"資訊：確保 '{INPUT_DIR}' 和 '{OUTPUT_DIR}' 資料夾存在。")
 
     video_files = [f for f in os.listdir(INPUT_DIR) if os.path.splitext(f)[1].lower() in SUPPORTED_EXTENSIONS]
 
     if not video_files:
         print(f"在 '{INPUT_DIR}' 資料夾中找不到任何支援的影片檔案。")
+        print("請將影片檔案新增至該資料夾再執行。")
         return
 
     print(f"在 '{INPUT_DIR}' 中找到 {len(video_files)} 個影片，將開始處理...")
