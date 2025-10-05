@@ -220,7 +220,9 @@ def process_video(input_path, output_dir, worker_id=0):
         ]
 
         try:
-            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            # Set stderr=None to prevent pipe buffer from filling up and causing a deadlock.
+            # FFmpeg errors will be printed directly to the console.
+            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=None)
         except FileNotFoundError:
             print("\n錯誤：找不到 FFmpeg。請確保 FFmpeg 已安裝並在其系統 PATH 中。")
             return
@@ -259,14 +261,15 @@ def process_video(input_path, output_dir, worker_id=0):
 
         progress_bar.close()
         if ffmpeg_process_hq.stdin: ffmpeg_process_hq.stdin.close()
-        # Capture stderr to check for errors
-        _, stderr_data = ffmpeg_process_hq.communicate()
+        
+        # Wait for the process to finish.
+        ffmpeg_process_hq.communicate()
         cap.release()
         pose.close()
 
         if ffmpeg_process_hq.returncode != 0:
             print(f"\n[{base_name}] ❌ 錯誤：第 1 階段高品質重構失敗。")
-            print(f"FFmpeg 錯誤訊息：\n{stderr_data.decode(errors='ignore')}")
+            print(f"FFmpeg 的錯誤訊息應該已顯示在主控台中。")
             return
         print(f"[{base_name}] ✅ 第 1 階段完成。")
 
