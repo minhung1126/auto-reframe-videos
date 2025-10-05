@@ -276,14 +276,18 @@ def process_single_video_task(video_file):
     """A task function that processes a single video file. Runs in a worker process."""
     global g_net, g_classes, g_best_encoder, g_model_choice
 
+    base_filename = os.path.splitext(video_file)[0]
+    final_output_filename = f"{base_filename}_reframe.mp4"
+    final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
+
+    if os.path.exists(final_output_path):
+        return f"已跳過 (檔案已存在): {final_output_filename}"
+
+    intermediate_output_path = None
     try:
         video_path = os.path.join(INPUT_FOLDER, video_file)
-        base_filename = os.path.splitext(video_file)[0]
         intermediate_output_filename = f"{base_filename}_cropped.mp4"
-        final_output_filename = f"{base_filename}_reframe.mp4"
-        
         intermediate_output_path = os.path.join(OUTPUT_FOLDER, intermediate_output_filename)
-        final_output_path = os.path.join(OUTPUT_FOLDER, final_output_filename)
 
         process_video(video_path, intermediate_output_path, g_net, g_best_encoder, g_model_choice, g_classes)
 
@@ -293,19 +297,19 @@ def process_single_video_task(video_file):
             '-b:v', FINAL_OUTPUT_BITRATE,
             '-s', f'{FINAL_OUTPUT_WIDTH}x{FINAL_OUTPUT_HEIGHT}',
             '-c:a', 'copy',
-            '-loglevel', 'error', # Suppress ffmpeg output
+            '-loglevel', 'error',
             final_output_path
         ]
         subprocess.run(compress_resize_command, check=True, capture_output=True)
-        
-        if os.path.exists(intermediate_output_path):
-            os.remove(intermediate_output_path)
         
         return f"處理完成: {final_output_filename}"
     except subprocess.CalledProcessError as e:
         return f"處理失敗: {video_file} - FFmpeg Error: {e.stderr.decode('utf-8', errors='ignore')}"
     except Exception as e:
         return f"處理失敗: {video_file} - {str(e)}"
+    finally:
+        if intermediate_output_path and os.path.exists(intermediate_output_path):
+            os.remove(intermediate_output_path)
 
 def main():
     if shutil.which('ffmpeg') is None or shutil.which('ffprobe') is None:
@@ -357,6 +361,7 @@ def main():
         
         print("\n" + f"報告總結：成功 {success_count} 個，失敗 {fail_count} 個。" )
         print("="*54)
+        input("\n處理完成，請按 Enter 鍵結束...")
 
 
 if __name__ == '__main__':
