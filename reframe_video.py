@@ -185,7 +185,7 @@ def process_video(input_path, output_dir, worker_id=0):
             '-s', f'{hq_target_w}x{hq_target_h}', '-r', str(fps), '-i', '-',
             '-i', input_path, '-c:v', chosen_vcodec, *chosen_params,
             '-c:a', 'aac', '-b:a', '192k', '-map', '0:v:0', '-map', '1:a:0?',
-            '-movflags', '+faststart', '-shortest', high_quality_output_path_tmp
+            '-movflags', '+faststart', '-shortest', '-f', 'mp4', high_quality_output_path_tmp
         ]
 
         try:
@@ -250,7 +250,7 @@ def process_video(input_path, output_dir, worker_id=0):
         ffmpeg_cmd_compress = [
             'ffmpeg', '-y', '-i', high_quality_output_path, '-c:v', chosen_vcodec,
             '-vf', 'scale=1080:1920', '-b:v', '12M', *compress_params,
-            '-c:a', 'copy', '-movflags', '+faststart', compressed_output_path_tmp
+            '-c:a', 'copy', '-movflags', '+faststart', '-f', 'mp4', compressed_output_path_tmp
         ]
 
         try:
