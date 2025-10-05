@@ -189,7 +189,7 @@ def process_video(input_path, output_dir, worker_id=0):
         ]
 
         try:
-            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=None)
+            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except FileNotFoundError:
             print(f"[{base_name}] 錯誤：找不到 FFmpeg。")
             return
