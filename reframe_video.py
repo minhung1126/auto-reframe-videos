@@ -121,7 +121,6 @@ def embed_thumbnail_and_cleanup(video_path, thumbnail_path):
 
         os.remove(video_path)
         os.rename(temp_video_path, video_path)
-        os.remove(thumbnail_path)
         print(f"[{base_name}] 成功嵌入縮圖。")
 
     except subprocess.CalledProcessError as e:
@@ -133,6 +132,9 @@ def embed_thumbnail_and_cleanup(video_path, thumbnail_path):
         print("\n錯誤：找不到 FFmpeg。")
     except Exception as e:
         print(f"\n[{base_name}] 未預期的錯誤: {e}")
+    finally:
+        if os.path.exists(thumbnail_path):
+            os.remove(thumbnail_path)
 
 def process_video(input_path, output_dir, worker_id=0):
     base_name = os.path.basename(input_path)
@@ -310,6 +312,7 @@ def main():
                 print(f"處理影片時發生未預期的錯誤: {e}")
 
     print("\n所有影片均已處理完畢！")
+    input("\n按下 ENTER 鍵退出...")
 
 if __name__ == "__main__":
     main()
