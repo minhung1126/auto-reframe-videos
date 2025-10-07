@@ -18,10 +18,10 @@ def find_best_encoder(verbose=True):
     Falls back to a high-quality software encoder if none are found.
     """
     encoder_profiles = [
-        {'name': 'NVIDIA NVENC', 'vcodec': 'h264_nvenc', 'params': ['-preset', 'fast', '-cq:v', '20']},
-        {'name': 'Intel QSV',    'vcodec': 'h264_qsv',   'params': ['-preset', 'fast', '-cq:v', '20']},
-        {'name': 'AMD AMF',      'vcodec': 'h264_amf',   'params': ['-quality', 'quality', '-rc', 'cqp', '-qp_i', '20', '-qp_p', '20', '-qp_b', '20']},
-        {'name': 'Software (libx264)', 'vcodec': 'libx264', 'params': ['-preset', 'medium', '-crf', '20']}
+        {'name': 'NVIDIA NVENC', 'vcodec': 'h264_nvenc', 'params': ['-preset', 'medium', '-cq:v', '18']},
+        {'name': 'Intel QSV',    'vcodec': 'h264_qsv',   'params': ['-preset', 'medium', '-cq:v', '18']},
+        {'name': 'AMD AMF',      'vcodec': 'h264_amf',   'params': ['-quality', 'quality', '-rc', 'cqp', '-qp_i', '18', '-qp_p', '18', '-qp_b', '18']},
+        {'name': 'Software (libx264)', 'vcodec': 'libx264', 'params': ['-preset', 'slow', '-crf', '18']}
     ]
 
     if verbose: print("正在偵測可用的最佳品質編碼器...")
@@ -82,10 +82,10 @@ def process_video(input_path, output_dir, worker_id=0):
         print(f"[{base_name}] >> 第 1 階段：高品質重構...")
         hq_target_h = orig_h
         hq_target_w = int(hq_target_h * 9 / 16)
-        SMOOTHING_FACTOR = 0.01
+        SMOOTHING_FACTOR = 0.05
 
         mp_pose = mp.solutions.pose
-        pose = mp_pose.Pose(static_image_mode=False, model_complexity=1, min_detection_confidence=0.5)
+        pose = mp_pose.Pose(static_image_mode=False, model_complexity=2, min_detection_confidence=0.5)
         cap = cv2.VideoCapture(input_path)
         
         crop_h = orig_h
