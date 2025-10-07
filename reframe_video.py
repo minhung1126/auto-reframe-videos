@@ -55,6 +55,9 @@ def process_video(input_path, output_dir, worker_id=0):
     compressed_dir = os.path.join(output_dir, "compressed_fhd_12mbps")
     os.makedirs(raw_dir, exist_ok=True)
     os.makedirs(compressed_dir, exist_ok=True)
+    logs_dir = os.path.join(output_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    log_path = os.path.join(logs_dir, f"{file_name}.log")
 
     high_quality_output_path = os.path.join(raw_dir, f"{file_name}_portrait_raw.mp4")
     compressed_output_path = os.path.join(compressed_dir, f"{file_name}_portrait_1080p_12mbps.mp4")
@@ -103,10 +106,12 @@ def process_video(input_path, output_dir, worker_id=0):
             '-movflags', '+faststart', '-shortest', '-f', 'mp4', high_quality_output_path_tmp
         ]
 
+        log_file_hq = open(log_path, 'w', encoding='utf-8')
         try:
-            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            ffmpeg_process_hq = subprocess.Popen(ffmpeg_cmd_hq, stdin=subprocess.PIPE, stdout=log_file_hq, stderr=log_file_hq)
         except FileNotFoundError:
             print(f"[{base_name}] 錯誤：找不到 FFmpeg。")
+            log_file_hq.close()
             return
 
         smoothed_x1 = float((orig_w - crop_w) // 2)
@@ -141,6 +146,7 @@ def process_video(input_path, output_dir, worker_id=0):
             progress_bar.close()
             if ffmpeg_process_hq.stdin: ffmpeg_process_hq.stdin.close()
             ffmpeg_process_hq.communicate()
+            log_file_hq.close()
             cap.release()
             pose.close()
 
@@ -170,7 +176,15 @@ def process_video(input_path, output_dir, worker_id=0):
         ]
 
         try:
-            subprocess.run(ffmpeg_cmd_compress, check=True, capture_output=True)
+            result = subprocess.run(ffmpeg_cmd_compress, check=False, capture_output=True)
+            with open(log_path, 'a', encoding='utf-8') as log_file:
+                log_file.write("\n" + "="*20 + " STAGE 2: COMPRESSION " + "="*20 + "\n")
+                log_file.write(result.stdout.decode(errors='ignore'))
+                log_file.write(result.stderr.decode(errors='ignore'))
+            
+            if result.returncode != 0:
+                raise subprocess.CalledProcessError(result.returncode, ffmpeg_cmd_compress, output=result.stdout, stderr=result.stderr)
+
             os.rename(compressed_output_path_tmp, compressed_output_path)
             print(f"[{base_name}] OK 第 2 階段完成。")
         except subprocess.CalledProcessError as e:
