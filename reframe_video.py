@@ -52,7 +52,7 @@ def process_video(input_path, output_dir, worker_id=0):
     file_name, _ = os.path.splitext(base_name)
     
     raw_dir = os.path.join(output_dir, "raw")
-    compressed_dir = os.path.join(output_dir, "compressed_fhd_12mbps")
+    compressed_dir = os.path.join(output_dir, "compressed_fhd_20mbps")
     os.makedirs(raw_dir, exist_ok=True)
     os.makedirs(compressed_dir, exist_ok=True)
     logs_dir = os.path.join(output_dir, "logs")
@@ -60,7 +60,7 @@ def process_video(input_path, output_dir, worker_id=0):
     log_path = os.path.join(logs_dir, f"{file_name}.log")
 
     high_quality_output_path = os.path.join(raw_dir, f"{file_name}_portrait_raw.mp4")
-    compressed_output_path = os.path.join(compressed_dir, f"{file_name}_portrait_1080p_12mbps.mp4")
+    compressed_output_path = os.path.join(compressed_dir, f"{file_name}_portrait_1080p_20mbps.mp4")
     high_quality_output_path_tmp = high_quality_output_path + ".tmp"
     compressed_output_path_tmp = compressed_output_path + ".tmp"
 
@@ -164,13 +164,13 @@ def process_video(input_path, output_dir, worker_id=0):
         chosen_vcodec, chosen_params = find_best_encoder(verbose=False)
         compress_params = []
         if 'nvenc' in chosen_vcodec or 'qsv' in chosen_vcodec:
-            compress_params.extend(['-preset', 'fast'])
+            compress_params.extend(['-preset', 'medium'])
         elif 'libx264' in chosen_vcodec:
-            compress_params.extend(['-preset', 'fast', '-maxrate', '12M', '-bufsize', '24M'])
+            compress_params.extend(['-preset', 'medium', '-maxrate', '20M', '-bufsize', '40M'])
 
         ffmpeg_cmd_compress = [
             'ffmpeg', '-y', '-i', high_quality_output_path, '-c:v', chosen_vcodec,
-            '-vf', 'scale=1080:1920', '-b:v', '12M', *compress_params,
+            '-vf', 'scale=1080:1920', '-b:v', '20M', *compress_params,
             '-pix_fmt', 'yuv420p',
             '-c:a', 'copy', '-movflags', '+faststart', '-f', 'mp4', compressed_output_path_tmp
         ]
