@@ -82,10 +82,11 @@ def process_video(input_path, output_dir, worker_id=0):
         print(f"[{base_name}] >> 第 1 階段：高品質重構...")
         hq_target_h = orig_h
         hq_target_w = int(hq_target_h * 9 / 16)
-        SMOOTHING_FACTOR = 0.05
+        SMOOTHING_FACTOR = 0.01
 
         mp_pose = mp.solutions.pose
-        pose = mp_pose.Pose(static_image_mode=False, model_complexity=2, min_detection_confidence=0.5)
+        pose = mp_pose.Pose(static_image_mode=False,
+                            model_complexity=1, min_detection_confidence=0.5)
         cap = cv2.VideoCapture(input_path)
         
         crop_h = orig_h
