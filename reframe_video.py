@@ -18,10 +18,10 @@ def find_best_encoder(verbose=True):
     Falls back to a high-quality software encoder if none are found.
     """
     encoder_profiles = [
-        {'name': 'NVIDIA NVENC', 'vcodec': 'h264_nvenc', 'params': ['-preset', 'medium', '-cq:v', '18']},
-        {'name': 'Intel QSV',    'vcodec': 'h264_qsv',   'params': ['-preset', 'medium', '-cq:v', '18']},
+        {'name': 'NVIDIA NVENC', 'vcodec': 'h264_nvenc', 'params': ['-preset', 'slow', '-profile:v', 'high', '-cq:v', '18']},
+        {'name': 'Intel QSV',    'vcodec': 'h264_qsv',   'params': ['-preset', 'slow', '-profile:v', 'high', '-cq:v', '18']},
         {'name': 'AMD AMF',      'vcodec': 'h264_amf',   'params': ['-quality', 'quality', '-rc', 'cqp', '-qp_i', '18', '-qp_p', '18', '-qp_b', '18']},
-        {'name': 'Software (libx264)', 'vcodec': 'libx264', 'params': ['-preset', 'slow', '-crf', '18']}
+        {'name': 'Software (libx264)', 'vcodec': 'libx264', 'params': ['-preset', 'slower', '-profile:v', 'high', '-crf', '18']}
     ]
 
     if verbose: print("正在偵測可用的最佳品質編碼器...")
