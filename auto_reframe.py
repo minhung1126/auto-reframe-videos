@@ -445,10 +445,10 @@ def build_ffmpeg_command(
 
 
 
-def process_single_video(input_file, encoder, hwaccel):
+def process_single_video(input_file, encoder, hwaccel, current_idx=1, total_count=1):
     """處理單一影片檔案"""
     print(f"\n{'='*60}")
-    print(f"[處理] {input_file.name}")
+    print(f"[處理 {current_idx}/{total_count}] {input_file.name}")
     print(f"{'='*60}")
 
     # 讀取影片資訊
@@ -612,8 +612,7 @@ def main():
     failed = []
 
     for i, video_file in enumerate(video_files, 1):
-        print(f"\n[{i}/{total}] 處理中...")
-        if process_single_video(video_file, encoder, hwaccel):
+        if process_single_video(video_file, encoder, hwaccel, i, total):
             success += 1
         else:
             failed.append(video_file.name)
