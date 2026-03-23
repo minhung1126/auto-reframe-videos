@@ -461,6 +461,7 @@ def process_single_video(input_file, encoder, hwaccel):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     success_count = 0
+    expected_outputs = 0
 
     for t_w, t_h in TARGET_RATIOS:
         print(f"\n  --- 目標比例: {t_w}:{t_h} ---")
@@ -474,39 +475,51 @@ def process_single_video(input_file, encoder, hwaccel):
 
         # 選擇解析度
         out_w, out_h, res_label = select_resolution(dims["final_w"], dims["final_h"])
-        print(f"  輸出解析度: {out_w}×{out_h} ({res_label})")
+        
+        resolutions_to_process = [(out_w, out_h, res_label)]
+        if res_label in ("4K", "2K"):
+            # 附加 FHD 壓縮版本
+            resolutions_to_process.append((1080, 1920, "FHD"))
+            
+        expected_outputs += len(resolutions_to_process)
 
-        # 選擇位元率
-        vbr = select_bitrate(out_h, info["fps"])
-        print(f"  視訊位元率: {vbr}")
+        for curr_w, curr_h, curr_label in resolutions_to_process:
+            if len(resolutions_to_process) > 1:
+                print(f"\n  >> 處理版本: {curr_label} ({curr_w}×{curr_h})")
+            else:
+                print(f"  輸出解析度: {curr_w}×{curr_h} ({curr_label})")
 
-        # 輸出檔名：原檔名_比例.mp4
-        output_file = output_dir / f"{stem}_{t_w}x{t_h}.mp4"
+            # 選擇位元率
+            vbr = select_bitrate(curr_h, info["fps"])
+            print(f"  視訊位元率: {vbr}")
 
-        # 構建指令
-        cmd = build_ffmpeg_command(
-            input_file, output_file,
-            info, dims,
-            out_w, out_h, vbr,
-            encoder, hwaccel,
-        )
+            # 輸出檔名：原檔名_比例_解析度.mp4
+            output_file = output_dir / f"{stem}_{t_w}x{t_h}_{curr_label}.mp4"
 
-        print(f"  輸出: {output_file}")
+            # 構建指令
+            cmd = build_ffmpeg_command(
+                input_file, output_file,
+                info, dims,
+                curr_w, curr_h, vbr,
+                encoder, hwaccel,
+            )
 
-        # 執行 ffmpeg
-        print("  [執行中] 編碼中...")
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        if result.returncode != 0:
-            print(f"  [錯誤] 編碼失敗:\n{result.stderr[-500:]}")
-            ok = False
-        else:
-            print("  [成功] 編碼完成")
-            ok = True
+            print(f"  輸出: {output_file}")
 
-        if ok:
-            success_count += 1
+            # 執行 ffmpeg
+            print("  [執行中] 編碼中...")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"  [錯誤] 編碼失敗:\n{result.stderr[-500:]}")
+                ok = False
+            else:
+                print("  [成功] 編碼完成")
+                ok = True
 
-    return success_count == len(TARGET_RATIOS)
+            if ok:
+                success_count += 1
+
+    return expected_outputs > 0 and success_count == expected_outputs
 
 
 def main():
