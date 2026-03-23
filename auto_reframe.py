@@ -60,6 +60,7 @@ class ReframeConfig:
     video_extensions: set = field(default_factory=lambda: {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"})
     skip_existing: bool = True
     max_workers: int = 1  # 預設同時處理 1 支影片，視硬體效能可調高
+    debug: bool = False   # 設為 True 時會即時印出 FFmpeg 的所有原始紀錄，方便除錯
 
     # 執行階段產生，不需手動設定
     top_text_content: str = ""
@@ -351,9 +352,19 @@ class VideoReframer:
                 sys.stdout.flush()
 
             stderr_log = []
+            
+            debug_fd = None
+            if self.config.debug:
+                debug_fd = open("ffmpeg_logging.txt", "a", encoding="utf-8")
+                debug_fd.write(f"\n[{file_path.name} - {rt_w}:{rt_h}]\n{' '.join(cmd)}\n")
+
             for line in proc.stdout:
                 stderr_log.append(line)
                 if len(stderr_log) > 15: stderr_log.pop(0)
+                
+                if self.config.debug and debug_fd:
+                    debug_fd.write(line)
+                    debug_fd.flush()
                 
                 if 'time=' in line:
                     match = re.search(r'time=(\d{2}:\d{2}:\d{2}\.\d{2})', line)
@@ -364,6 +375,7 @@ class VideoReframer:
             
             proc.wait()
             if pbar: pbar.close()
+            if debug_fd: debug_fd.close()
 
             if proc.returncode != 0:
                 if not HAS_TQDM: print(" [失敗!]")
