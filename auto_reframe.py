@@ -324,7 +324,10 @@ class VideoReframer:
             finals = []
             
             for (w, h, lbl) in res_tiers:
-                target_f = out_dir / f"{file_path.stem}_{rt_w}x{rt_h}_{lbl}.mp4"
+                suffix_name = f"{rt_w}x{rt_h}_{lbl}"
+                sub_dir = out_dir / suffix_name
+                sub_dir.mkdir(parents=True, exist_ok=True)
+                target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
                 if self.config.skip_existing and target_f.exists(): continue
                 tmp_f = target_f.with_name(target_f.name + ".tmp")
                 bitrate = self.select_bitrate(h, info["fps"])
