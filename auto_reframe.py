@@ -63,6 +63,11 @@ FFPROBE_PATH = "ffprobe"   # ffprobe 執行檔路徑
 # --- 支援的影片副檔名 ---
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"}
 
+# --- 續傳設定 ---
+# 若輸出檔案已存在，是否跳過處理。設為 True 可在中斷後繼續處理未完成的檔案。
+# 處理中會使用 .tmp 作為暫存副檔名，確保不完整的檔案不會被誤認為已完成。
+SKIP_EXISTING = True
+
 # ============================================================
 # ==================== 以下為程式邏輯 ==========================
 # ============================================================
@@ -495,16 +500,23 @@ def process_single_video(input_file, encoder, hwaccel):
 
             # 輸出檔名：原檔名_比例_解析度.mp4
             output_file = output_dir / f"{stem}_{t_w}x{t_h}_{curr_label}.mp4"
+            temp_output_file = output_file.with_name(output_file.name + ".tmp")
+
+            if SKIP_EXISTING and output_file.exists():
+                print(f"  [略過] 檔案已存在: {output_file.name}")
+                success_count += 1
+                continue
 
             # 構建指令
+            # 先輸出為 .tmp 暫存檔，編碼成功後再更名，避免中斷產生不完整的檔案
             cmd = build_ffmpeg_command(
-                input_file, output_file,
+                input_file, temp_output_file,
                 info, dims,
                 curr_w, curr_h, vbr,
                 encoder, hwaccel,
             )
 
-            print(f"  輸出: {output_file}")
+            print(f"  輸出: {output_file} (暫存檔: .tmp)")
 
             # 執行 ffmpeg
             print("  [執行中] 編碼中...")
@@ -512,9 +524,28 @@ def process_single_video(input_file, encoder, hwaccel):
             if result.returncode != 0:
                 print(f"  [錯誤] 編碼失敗:\n{result.stderr[-500:]}")
                 ok = False
+                # 刪除失敗的暫存檔
+                if temp_output_file.exists():
+                    try:
+                        temp_output_file.unlink()
+                    except Exception as e:
+                        print(f"  [警告] 無法刪除暫存檔: {e}")
             else:
-                print("  [成功] 編碼完成")
-                ok = True
+                # 編碼成功，將暫存檔更名為最終檔名
+                if temp_output_file.exists():
+                    try:
+                        # 若目標檔案已存在則先刪除，避免 rename 報錯 (Windows)
+                        if output_file.exists():
+                            output_file.unlink()
+                        temp_output_file.rename(output_file)
+                        print("  [成功] 編碼完成")
+                        ok = True
+                    except Exception as e:
+                        print(f"  [錯誤] 檔案更名失敗: {e}")
+                        ok = False
+                else:
+                    print("  [錯誤] 找不到預期的輸出檔案")
+                    ok = False
 
             if ok:
                 success_count += 1
@@ -564,6 +595,7 @@ def main():
         print(f"  下方文字: {repr(bottom_text)}")
     else:
         print(f"  下方文字: (無，檔案: {BOTTOM_TEXT_FILE})")
+    print(f"  續傳處理: {'[開啟] 跳過已存在檔案' if SKIP_EXISTING else '[關閉] 覆寫已存在檔案'}")
 
     # 若有新建文字檔，暫停讓使用者編輯
     if top_created or bottom_created:
