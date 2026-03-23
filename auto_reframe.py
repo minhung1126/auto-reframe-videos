@@ -275,14 +275,14 @@ class VideoReframer:
             final_video_maps.append(curr_lbl)
             filters.append(seq)
             
-        cmd += ["-filter_complex", "".join(filters)]
+        cmd += ["-filter_complex", ";".join(filters)]
 
         # 指定 Mapping 與編碼參數
         for i, (out_w, out_h, label, vbr, out_file) in enumerate(resolutions_map):
             cmd += ["-map", final_video_maps[i]]
             if info["has_audio"]: cmd += ["-map", "0:a:0"]
             
-            v_tag = f"v:{i}"
+            v_tag = "v:0"
             cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr]
             
             if self.encoder == "h264_nvenc":
@@ -297,10 +297,10 @@ class VideoReframer:
             
             cmd += ["-pix_fmt", "yuv420p"]
             if info["has_audio"]:
-                a_tag = f"a:{i}"
+                a_tag = "a:0"
                 cmd += [f"-c:{a_tag}", "aac", f"-b:{a_tag}", "192k"]
                 
-            cmd += ["-movflags", "+faststart", str(out_file)]
+            cmd += ["-f", "mp4", "-movflags", "+faststart", str(out_file)]
             
         return cmd
 
@@ -350,7 +350,11 @@ class VideoReframer:
                 sys.stdout.write(f"\n{desc} 處理中...")
                 sys.stdout.flush()
 
+            stderr_log = []
             for line in proc.stdout:
+                stderr_log.append(line)
+                if len(stderr_log) > 15: stderr_log.pop(0)
+                
                 if 'time=' in line:
                     match = re.search(r'time=(\d{2}:\d{2}:\d{2}\.\d{2})', line)
                     if match and pbar:
@@ -363,6 +367,8 @@ class VideoReframer:
 
             if proc.returncode != 0:
                 if not HAS_TQDM: print(" [失敗!]")
+                print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
+                print(f"指令輸出結尾：\n{''.join(stderr_log)}")
                 for t in tmps:
                     if t.exists(): t.unlink()
                 return False
