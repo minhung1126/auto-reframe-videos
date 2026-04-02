@@ -8,9 +8,9 @@ Auto Reframe Video — 橫轉直影片工具 (v2.0)
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
-import threading
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
@@ -72,7 +72,6 @@ class VideoReframer:
     def __init__(self, config: ReframeConfig):
         self.config = config
         self.script_dir = Path(__file__).resolve().parent
-        self._debug_lock = threading.Lock()
 
         # 1. 初始化讀取：只讀一次，省去每次迴圈讀檔的 I/O 損耗
         self.load_texts()
@@ -207,6 +206,13 @@ class VideoReframer:
         if out_h >= 2560: return "24M" if high_fps else "16M"
         return "12M" if high_fps else "8M"
 
+    def _double_bitrate(self, vbr: str) -> str:
+        """將 '12M' → '24M'，安全地將 bitrate 數值倍增（相容任意單位後綴 M/K/G）"""
+        m = re.fullmatch(r"(\d+)([A-Za-z]+)", str(vbr))
+        if not m:
+            raise ValueError(f"無法解析 bitrate 字串: {vbr!r}")
+        return f"{int(m.group(1)) * 2}{m.group(2)}"
+
     def parse_ffmpeg_time(self, time_str):
         try:
             h, m, s = time_str.split(':')
@@ -318,7 +324,7 @@ class VideoReframer:
                 cmd += [f"-c:{v_tag}", self.encoder,
                         "-preset", "medium", "-crf", "18",
                         f"-maxrate:{v_tag}", vbr,
-                        f"-bufsize:{v_tag}", f"{int(vbr[:-1])*2}M"]
+                        f"-bufsize:{v_tag}", self._double_bitrate(vbr)]
             
             cmd += ["-pix_fmt", "yuv420p"]
             if info["has_audio"]:
@@ -386,11 +392,14 @@ class VideoReframer:
             if self.config.debug:
                 debug_log_path = self.script_dir / f"ffmpeg_debug_{file_path.stem}_{rt_w}x{rt_h}.log"
 
+            # debug_fd 在 try 外宣告，確保 finally 中一定可以安全存取
+            debug_fd = None
             try:
-                debug_fd = None
                 if debug_log_path:
                     debug_fd = open(debug_log_path, "w", encoding="utf-8")
-                    debug_fd.write(f"[{file_path.name} - {rt_w}:{rt_h}]\n{' '.join(cmd)}\n\n")
+                    # shlex.quote 保護含空格的路徑，log 可直接貼到終端重現指令
+                    debug_fd.write(f"[{file_path.name} - {rt_w}:{rt_h}]\n"
+                                   f"{' '.join(shlex.quote(s) for s in cmd)}\n\n")
 
                 for line in proc.stdout:
                     stderr_log.append(line)
