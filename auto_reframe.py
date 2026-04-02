@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
@@ -71,6 +72,7 @@ class VideoReframer:
     def __init__(self, config: ReframeConfig):
         self.config = config
         self.script_dir = Path(__file__).resolve().parent
+        self._debug_lock = threading.Lock()
 
         # 1. 初始化讀取：只讀一次，省去每次迴圈讀檔的 I/O 損耗
         self.load_texts()
@@ -102,6 +104,17 @@ class VideoReframer:
                 return "", False
         return text.rstrip("\r\n"), False
 
+    def _parse_fps(self, fps_str: str) -> float:
+        """安全解析 FFmpeg 的 fps 字串（如 '30000/1001' 或 '29.97'）"""
+        try:
+            if '/' in fps_str:
+                num, den = fps_str.split('/')
+                den_f = float(den)
+                return float(num) / den_f if den_f != 0 else 30.0
+            return float(fps_str)
+        except (ValueError, ZeroDivisionError):
+            return 30.0
+
     def detect_hw_encoder(self):
         try:
             res = subprocess.run([self.config.ffmpeg_path, "-hide_banner", "-encoders"], 
@@ -117,7 +130,7 @@ class VideoReframer:
                 test = subprocess.run(
                     [self.config.ffmpeg_path, "-hide_banner", "-f", "lavfi", "-i", 
                      "nullsrc=s=256x256:d=1", "-c:v", enc, "-f", "null", "-"],
-                    capture_output=True, text=True, timeout=15
+                    capture_output=True, text=True, timeout=30
                 )
                 if test.returncode == 0:
                     print(f"  [核心系統] 已啟用硬體加速編碼器: {enc} ({hw})")
@@ -134,17 +147,19 @@ class VideoReframer:
                 capture_output=True, text=True, timeout=30
             )
             data = json.loads(res.stdout)
-        except Exception:
+        except Exception as e:
+            print(f"  [警告] 無法取得影片資訊: {input_file.name} ({e})")
             return None
 
         v_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
         a_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "audio"), None)
 
         if not v_stream:
+            print(f"  [警告] 影片 {input_file.name} 中未找到視訊串流，已跳過。")
             return None
 
         fps_str = v_stream.get("r_frame_rate", "30/1")
-        fps = float(fps_str.split('/')[0]) / float(fps_str.split('/')[1]) if '/' in fps_str and float(fps_str.split('/')[1]) != 0 else float(fps_str)
+        fps = self._parse_fps(fps_str)
         
         return {
             "width": int(v_stream.get("width", 0)),
@@ -169,7 +184,8 @@ class VideoReframer:
 
         f_w, f_h = self.config.final_ratio
         final_w, final_h = crop_w, int(crop_w * f_h / f_w)
-        final_h += final_h % 2
+        final_w += final_w % 2  # 確保寬度為偶數
+        final_h += final_h % 2  # 確保高度為偶數
 
         pad_top = max(0, (final_h - crop_h) // 2)
         pad_bottom = max(0, (final_h - crop_h) - pad_top)
@@ -245,12 +261,12 @@ class VideoReframer:
                 fz = int(self.config.top_font_size * scale_rate)
                 bw = max(1, int(fz * 0.03))
                 mar = int(self.config.text_margin * scale_rate)
-                ptop = int(dims["pad_top"] * (out_h / dims["final_h"]))
                 lines = top_txt.splitlines()
                 
                 for ln_i, ln in enumerate(lines):
-                    esc = ln.replace("'", "'\\''").replace(":", "\\:")
-                    y_pos = f"{ptop}-{mar}-text_h-({len(lines)-1-ln_i})*line_h*{self.config.text_line_spacing}"
+                    esc = ln.replace("'", "'\\''" ).replace(":", "\\:").replace("%", "%%")
+                    # 累進式排版：從頂部 margin 開始向下排列
+                    y_pos = f"{mar}+{ln_i}*line_h*{self.config.text_line_spacing}"
                     next_lbl = f"[t_{i}_{ln_i}]"
                     seq += f";{curr_lbl}drawtext=fontfile='{font_path}':text='{esc}':fontsize={fz}:" \
                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:" \
@@ -265,7 +281,8 @@ class VideoReframer:
                 lines = btm_txt.splitlines()
                 
                 for ln_i, ln in enumerate(lines):
-                    esc = ln.replace("'", "'\\''").replace(":", "\\:")
+                    esc = ln.replace("'", "'\\''" ).replace(":", "\\:").replace("%", "%%")
+                    # 累進式排版：從底部黑邊頂端 + margin 開始向下排列
                     y_pos = f"{out_h}-{pbtm}+{mar}+{ln_i}*line_h*{self.config.text_line_spacing}"
                     next_lbl = f"[b_{i}_{ln_i}]"
                     seq += f";{curr_lbl}drawtext=fontfile='{font_path}':text='{esc}':fontsize={fz}:" \
@@ -279,21 +296,28 @@ class VideoReframer:
         cmd += ["-filter_complex", ";".join(filters)]
 
         # 指定 Mapping 與編碼參數
+        # 註：FFmpeg 多輸出模式下，每組 -map ~ 輸出檔 之間的選項屬於該輸出，
+        #     v:0 / a:0 指的是「該輸出內的第 0 條 video/audio stream」，各輸出獨立計數。
         for i, (out_w, out_h, label, vbr, out_file) in enumerate(resolutions_map):
             cmd += ["-map", final_video_maps[i]]
             if info["has_audio"]: cmd += ["-map", "0:a:0"]
             
             v_tag = "v:0"
-            cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr]
             
             if self.encoder == "h264_nvenc":
-                cmd += ["-preset", "p4", "-rc", "vbr", "-cq", "20"]
+                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+                        "-preset", "p4", "-rc", "vbr", "-cq", "20"]
             elif self.encoder == "h264_amf":
-                cmd += ["-quality", "balanced", "-rc", "vbr_latency"]
+                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+                        "-quality", "balanced", "-rc", "vbr_latency"]
             elif self.encoder == "h264_qsv":
-                cmd += ["-preset", "medium", "-global_quality", "22"]
+                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+                        "-preset", "medium", "-global_quality", "22"]
             else:
-                cmd += ["-preset", "medium", "-crf", "18", f"-maxrate:{v_tag}", vbr, 
+                # libx264: CRF 品質模式 + maxrate 限速，不使用 -b:v 避免 ABR 衝突
+                cmd += [f"-c:{v_tag}", self.encoder,
+                        "-preset", "medium", "-crf", "18",
+                        f"-maxrate:{v_tag}", vbr,
                         f"-bufsize:{v_tag}", f"{int(vbr[:-1])*2}M"]
             
             cmd += ["-pix_fmt", "yuv420p"]
@@ -348,7 +372,7 @@ class VideoReframer:
             desc = f"({idx}/{total}) {file_path.stem[:12]} [{rt_w}:{rt_h}]"
             pbar = None
             if HAS_TQDM:
-                pbar = tqdm(total=info["duration"], desc=desc, position=idx-1, leave=True,
+                pbar = tqdm(total=info["duration"], desc=desc, position=0, leave=True,
                             bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}")
             else:
                 sys.stdout.write(f"\n{desc} 處理中...")
@@ -356,29 +380,42 @@ class VideoReframer:
 
             stderr_log = []
             
-            debug_fd = None
+            # 使用 context manager 確保 debug log 不會洩漏
+            # 每個影片使用獨立 log 檔避免多執行緒寫入衝突
+            debug_log_path = None
             if self.config.debug:
-                debug_fd = open("ffmpeg_logging.txt", "a", encoding="utf-8")
-                debug_fd.write(f"\n[{file_path.name} - {rt_w}:{rt_h}]\n{' '.join(cmd)}\n")
+                debug_log_path = self.script_dir / f"ffmpeg_debug_{file_path.stem}_{rt_w}x{rt_h}.log"
 
-            for line in proc.stdout:
-                stderr_log.append(line)
-                if len(stderr_log) > 15: stderr_log.pop(0)
+            try:
+                debug_fd = None
+                if debug_log_path:
+                    debug_fd = open(debug_log_path, "w", encoding="utf-8")
+                    debug_fd.write(f"[{file_path.name} - {rt_w}:{rt_h}]\n{' '.join(cmd)}\n\n")
+
+                for line in proc.stdout:
+                    stderr_log.append(line)
+                    if len(stderr_log) > 15: stderr_log.pop(0)
+                    
+                    if debug_fd:
+                        debug_fd.write(line)
+                        debug_fd.flush()
+                    
+                    if 'time=' in line:
+                        match = re.search(r'time=(\d{2}:\d{2}:\d{2}\.\d{2})', line)
+                        if match and pbar:
+                            sec = self.parse_ffmpeg_time(match.group(1))
+                            pbar.n = min(sec, info["duration"])
+                            pbar.refresh()
                 
-                if self.config.debug and debug_fd:
-                    debug_fd.write(line)
-                    debug_fd.flush()
-                
-                if 'time=' in line:
-                    match = re.search(r'time=(\d{2}:\d{2}:\d{2}\.\d{2})', line)
-                    if match and pbar:
-                        sec = self.parse_ffmpeg_time(match.group(1))
-                        pbar.n = min(sec, info["duration"])
-                        pbar.refresh()
-            
-            proc.wait()
-            if pbar: pbar.close()
-            if debug_fd: debug_fd.close()
+                proc.wait()
+            except Exception:
+                # 確保 FFmpeg 子進程不會變成孤兒進程
+                proc.terminate()
+                proc.wait()
+                raise
+            finally:
+                if pbar: pbar.close()
+                if debug_fd: debug_fd.close()
 
             if proc.returncode != 0:
                 if not HAS_TQDM: print(" [失敗!]")
@@ -398,12 +435,29 @@ class VideoReframer:
 
         return successes == len(self.config.target_ratios)
 
+    def _cleanup_tmp_files(self, out_dir: Path):
+        """清理先前執行殘留的 .tmp 暫存檔"""
+        if not out_dir.exists():
+            return
+        tmp_files = list(out_dir.rglob("*.tmp"))
+        if tmp_files:
+            print(f"  [清理] 發現 {len(tmp_files)} 個殘留暫存檔，正在刪除...")
+            for tmp in tmp_files:
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+
     def run(self):
         in_dir = Path(self.config.input_dir)
         if not in_dir.exists():
             in_dir.mkdir(parents=True)
             print(f"\n[提示] 未找到 '{in_dir.resolve()}'，已自動創建，請放置影片後重新執行。")
             return
+
+        # 清理先前殘留的 .tmp 暫存檔
+        out_dir = Path(self.config.output_dir)
+        self._cleanup_tmp_files(out_dir)
             
         videos = [f for f in in_dir.iterdir() if f.is_file() and f.suffix.lower() in self.config.video_extensions]
         if not videos:
