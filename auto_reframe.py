@@ -272,9 +272,8 @@ class VideoReframer:
                 
                 for ln_i, ln in enumerate(lines):
                     esc = ln.replace("'", "'\\''" ).replace(":", "\\:").replace("%", "%%")
-                    # 累進式排版：向影片上方靠齊 (底部對齊)
-                    rev_i = len(lines) - 1 - ln_i
-                    y_pos = f"{ptop}-{mar}-line_h-{rev_i}*line_h*{self.config.text_line_spacing}"
+                    # 累進式排版：從頂部 margin 開始向下排列
+                    y_pos = f"{mar}+{ln_i}*line_h*{self.config.text_line_spacing}"
                     next_lbl = f"[t_{i}_{ln_i}]"
                     seq += f";{curr_lbl}drawtext=fontfile='{font_path}':text='{esc}':fontsize={fz}:" \
                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:" \
