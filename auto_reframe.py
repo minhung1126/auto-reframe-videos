@@ -60,7 +60,7 @@ class ReframeConfig:
     ffprobe_path: str = "ffprobe"
     video_extensions: set = field(default_factory=lambda: {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"})
     skip_existing: bool = True
-    max_workers: int = 1  # 預設同時處理 1 支影片，視硬體效能可調高
+    max_workers: int = 0  # 平行處理數量，設為 0 將視硬體效能自動判斷 (預設為 CPU 核心數的一半)
     debug: bool = False   # 設為 True 時會即時印出 FFmpeg 的所有原始紀錄，方便除錯
 
     # 執行階段產生，不需手動設定
@@ -475,12 +475,17 @@ class VideoReframer:
             print(f"\n[提示] 資料夾內無可支援的影片檔。")
             return
 
-        print(f"\n找到 {len(videos)} 個目標將開始轉換 (平行任務數: {self.config.max_workers})...\n")
+        # 若 max_workers 設為 0，自動以系統核心數的一半作為基準，避免與 FFmpeg 內部多執行緒衝突過載
+        workers = self.config.max_workers
+        if workers <= 0:
+            workers = max(1, (os.cpu_count() or 2) // 2)
+
+        print(f"\n找到 {len(videos)} 個目標將開始轉換 (平行任務數: {workers})...\n")
 
         success_count, failed_files = 0, []
         tasks = [(i, len(videos), v) for i, v in enumerate(sorted(videos), 1)]
 
-        with ThreadPoolExecutor(max_workers=self.config.max_workers) as executor:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(self.process_single_video, t): t for t in tasks}
             for fut in as_completed(futures):
                 t = futures[fut]
