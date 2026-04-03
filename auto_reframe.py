@@ -15,6 +15,10 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from video_utils import (
+    detect_hw_encoder, get_video_info, double_bitrate,
+    parse_ffmpeg_time, cleanup_tmp_files, get_youtube_bitrate
+)
 
 # 嘗試匯入 tqdm 顯示進度條
 try:
@@ -77,7 +81,7 @@ class VideoReframer:
         self.load_texts()
 
         # 2. 偵測可用的硬體加速
-        self.encoder, self.hwaccel = self.detect_hw_encoder()
+        self.encoder, self.hwaccel = detect_hw_encoder(self.config.ffmpeg_path)
 
     def load_texts(self):
         """讀取上下方的文字檔內容"""
@@ -103,70 +107,7 @@ class VideoReframer:
                 return "", False
         return text.rstrip("\r\n"), False
 
-    def _parse_fps(self, fps_str: str) -> float:
-        """安全解析 FFmpeg 的 fps 字串（如 '30000/1001' 或 '29.97'）"""
-        try:
-            if '/' in fps_str:
-                num, den = fps_str.split('/')
-                den_f = float(den)
-                return float(num) / den_f if den_f != 0 else 30.0
-            return float(fps_str)
-        except (ValueError, ZeroDivisionError):
-            return 30.0
 
-    def detect_hw_encoder(self):
-        try:
-            res = subprocess.run([self.config.ffmpeg_path, "-hide_banner", "-encoders"], 
-                                 capture_output=True, text=True, timeout=10)
-            encoders = res.stdout
-        except Exception:
-            print(f"[錯誤] 呼叫 {self.config.ffmpeg_path} 失敗，請確認其是否存在。")
-            sys.exit(1)
-
-        # 優先順序: NVENC > AMF > QSV
-        for enc, hw in [("h264_nvenc", "cuda"), ("h264_amf", "d3d11va"), ("h264_qsv", "qsv")]:
-            if enc in encoders:
-                test = subprocess.run(
-                    [self.config.ffmpeg_path, "-hide_banner", "-f", "lavfi", "-i", 
-                     "nullsrc=s=256x256:d=1", "-c:v", enc, "-f", "null", "-"],
-                    capture_output=True, text=True, timeout=30
-                )
-                if test.returncode == 0:
-                    print(f"  [核心系統] 已啟用硬體加速編碼器: {enc} ({hw})")
-                    return enc, hw
-
-        print("  [核心系統] 未發現可用硬體加速，回退至軟體編碼 (libx264)")
-        return "libx264", None
-
-    def get_video_info(self, input_file: Path):
-        try:
-            res = subprocess.run(
-                [self.config.ffprobe_path, "-v", "quiet", "-print_format", "json",
-                 "-show_streams", "-show_format", str(input_file)],
-                capture_output=True, text=True, timeout=30
-            )
-            data = json.loads(res.stdout)
-        except Exception as e:
-            print(f"  [警告] 無法取得影片資訊: {input_file.name} ({e})")
-            return None
-
-        v_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
-        a_stream = next((s for s in data.get("streams", []) if s.get("codec_type") == "audio"), None)
-
-        if not v_stream:
-            print(f"  [警告] 影片 {input_file.name} 中未找到視訊串流，已跳過。")
-            return None
-
-        fps_str = v_stream.get("r_frame_rate", "30/1")
-        fps = self._parse_fps(fps_str)
-        
-        return {
-            "width": int(v_stream.get("width", 0)),
-            "height": int(v_stream.get("height", 0)),
-            "fps": round(fps, 3),
-            "duration": float(data.get("format", {}).get("duration", 0)),
-            "has_audio": a_stream is not None,
-        }
 
     def calculate_dimensions(self, src_w, src_h, target_ratio):
         t_w, t_h = target_ratio
@@ -200,25 +141,7 @@ class VideoReframer:
         if short >= 1440: return [(1440, 2560, "2K"), (1080, 1920, "FHD")]
         return [(1080, 1920, "FHD")]
 
-    def select_bitrate(self, out_h, fps):
-        high_fps = fps > 30
-        if out_h >= 3840: return "60M" if high_fps else "40M"
-        if out_h >= 2560: return "24M" if high_fps else "16M"
-        return "12M" if high_fps else "8M"
 
-    def _double_bitrate(self, vbr: str) -> str:
-        """將 '12M' → '24M'，安全地將 bitrate 數值倍增（相容任意單位後綴 M/K/G）"""
-        m = re.fullmatch(r"(\d+)([A-Za-z]+)", str(vbr))
-        if not m:
-            raise ValueError(f"無法解析 bitrate 字串: {vbr!r}")
-        return f"{int(m.group(1)) * 2}{m.group(2)}"
-
-    def parse_ffmpeg_time(self, time_str):
-        try:
-            h, m, s = time_str.split(':')
-            return int(h) * 3600 + int(m) * 60 + float(s)
-        except Exception:
-            return 0.0
 
     def build_ffmpeg_split_command(self, input_file, dims, resolutions_map, info):
         """利用 FFmpeg -filter_complex 實作單次解碼多路輸出"""
@@ -326,7 +249,7 @@ class VideoReframer:
                 cmd += [f"-c:{v_tag}", self.encoder,
                         "-preset", "medium", "-crf", "18",
                         f"-maxrate:{v_tag}", vbr,
-                        f"-bufsize:{v_tag}", self._double_bitrate(vbr)]
+                        f"-bufsize:{v_tag}", double_bitrate(vbr)]
             
             cmd += ["-pix_fmt", "yuv420p"]
             if info["has_audio"]:
@@ -339,7 +262,7 @@ class VideoReframer:
 
     def process_single_video(self, task_info: Tuple[int, int, Path]) -> bool:
         idx, total, file_path = task_info
-        info = self.get_video_info(file_path)
+        info = get_video_info(self.config.ffprobe_path, file_path)
         if not info: return False
 
         out_dir = Path(self.config.output_dir)
@@ -362,7 +285,7 @@ class VideoReframer:
                 target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
                 if self.config.skip_existing and target_f.exists(): continue
                 tmp_f = target_f.with_name(target_f.name + ".tmp")
-                bitrate = self.select_bitrate(h, info["fps"])
+                bitrate = get_youtube_bitrate(min(w, h), info["fps"])
                 active_maps.append((w, h, lbl, bitrate, tmp_f))
                 tmps.append(tmp_f)
                 finals.append(target_f)
@@ -414,7 +337,7 @@ class VideoReframer:
                     if 'time=' in line:
                         match = re.search(r'time=(\d{2}:\d{2}:\d{2}\.\d{2})', line)
                         if match and pbar:
-                            sec = self.parse_ffmpeg_time(match.group(1))
+                            sec = parse_ffmpeg_time(match.group(1))
                             pbar.n = min(sec, info["duration"])
                             pbar.refresh()
                 
@@ -446,19 +369,6 @@ class VideoReframer:
 
         return successes == len(self.config.target_ratios)
 
-    def _cleanup_tmp_files(self, out_dir: Path):
-        """清理先前執行殘留的 .tmp 暫存檔"""
-        if not out_dir.exists():
-            return
-        tmp_files = list(out_dir.rglob("*.tmp"))
-        if tmp_files:
-            print(f"  [清理] 發現 {len(tmp_files)} 個殘留暫存檔，正在刪除...")
-            for tmp in tmp_files:
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
-
     def run(self):
         in_dir = Path(self.config.input_dir)
         if not in_dir.exists():
@@ -468,7 +378,7 @@ class VideoReframer:
 
         # 清理先前殘留的 .tmp 暫存檔
         out_dir = Path(self.config.output_dir)
-        self._cleanup_tmp_files(out_dir)
+        cleanup_tmp_files(out_dir)
             
         videos = [f for f in in_dir.iterdir() if f.is_file() and f.suffix.lower() in self.config.video_extensions]
         if not videos:
