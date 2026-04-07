@@ -37,14 +37,24 @@ if hasattr(sys.stderr, "reconfigure"):
 
 @dataclass
 class CompressConfig:
+    # --- 輸入 / 輸出 ---
+    # 輸入影片的資料夾路徑
     input_dir: str = "input"
+    # 輸出影片的資料夾路徑
     output_dir: str = "output"
     
+    # --- 系統與平行化設定 ---
+    # FFmpeg 執行檔路徑
     ffmpeg_path: str = "ffmpeg"
+    # FFprobe 執行檔路徑
     ffprobe_path: str = "ffprobe"
+    # 支援的影片副檔名集合
     video_extensions: set = field(default_factory=lambda: {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"})
+    # 是否跳過已存在的輸出檔案
     skip_existing: bool = True
+    # 平行處理的任務數量，設為 0 將自動判斷 (上限為 4)
     max_workers: int = 0
+    # 是否開啟除錯模式
     debug: bool = False
 
 
@@ -263,7 +273,13 @@ class VideoCompressor:
 
         workers = self.config.max_workers
         if workers <= 0:
-            workers = max(1, (os.cpu_count() or 2) // 2)
+            workers = (os.cpu_count() or 2) // 2
+            
+        # 限制最大平行任務數為 4
+        if workers > 4:
+            workers = 4
+        if workers < 1:
+            workers = 1
 
         print(f"\n找到 {len(videos)} 個目標將開始進行多重解析度壓縮 (平行任務數: {workers})...\n")
 

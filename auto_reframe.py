@@ -38,37 +38,56 @@ if hasattr(sys.stderr, "reconfigure"):
 @dataclass
 class ReframeConfig:
     # --- 輸入 / 輸出 ---
+    # 輸入影片的資料夾路徑
     input_dir: str = "input"
+    # 輸出影片的資料夾路徑
     output_dir: str = "output"
 
-    # --- 裁切比例 (寬:高) ---
+    # --- 裁切與比例 ---
+    # 裁切的目標比例列表 (例如 4:5, 1:1)
     target_ratios: List[Tuple[int, int]] = field(default_factory=lambda: [(4, 5), (1, 1)])
+    # 最終輸出的影片比例 (預設為 9:16 直式)
     final_ratio: Tuple[int, int] = (9, 16)
 
-    # --- 上方文字設定 ---
+    # --- 字幕與文字疊加 ---
+    # 上方文字內容的來源檔案
     top_text_file: str = "top_text.txt"
+    # 上方文字的字型大小
     top_font_size: int = 48
 
-    # --- 下方文字設定 ---
+    # 下方文字內容的來源檔案
     bottom_text_file: str = "bottom_text.txt"
+    # 下方文字的字型大小
     bottom_font_size: int = 24
 
-    # --- 字型設定 ---
+    # --- 字型與樣式 ---
+    # 字型檔案路徑
     font_path: str = "fonts/NotoSerifTC.ttf"
+    # 文字顏色
     font_color: str = "white"
+    # 文字與邊框的邊距
     text_margin: int = 20
+    # 多行文字間的行距
     text_line_spacing: float = 1.2
 
-    # --- 系統與平行化 ---
+    # --- 系統與平行化設定 ---
+    # FFmpeg 執行檔路徑
     ffmpeg_path: str = "ffmpeg"
+    # FFprobe 執行檔路徑
     ffprobe_path: str = "ffprobe"
+    # 支援的影片副檔名集合
     video_extensions: set = field(default_factory=lambda: {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"})
+    # 是否跳過已存在的輸出檔案
     skip_existing: bool = True
-    max_workers: int = 0  # 平行處理數量，設為 0 將視硬體效能自動判斷 (預設為 CPU 核心數的一半)
-    debug: bool = False   # 設為 True 時會即時印出 FFmpeg 的所有原始紀錄，方便除錯
+    # 平行處理的任務數量，設為 0 將自動判斷 (上限為 4)
+    max_workers: int = 0
+    # 是否開啟除錯模式，開啟時會記錄 FFmpeg 詳細輸出
+    debug: bool = False
 
-    # 執行階段產生，不需手動設定
+    # --- 執行階段產生的內部變數 ---
+    # 執行階段產生的內容，不需手動設定 (上方文字內容)
     top_text_content: str = ""
+    # 執行階段產生的內容，不需手動設定 (下方文字內容)
     bottom_text_content: str = ""
 
 
@@ -385,10 +404,16 @@ class VideoReframer:
             print(f"\n[提示] 資料夾內無可支援的影片檔。")
             return
 
-        # 若 max_workers 設為 0，自動以系統核心數的一半作為基準，避免與 FFmpeg 內部多執行緒衝突過載
+        # 若 max_workers 設為 0，自動以系統核心數的一半作為基準，但最高限制為 4，避免 Bug 或過載
         workers = self.config.max_workers
         if workers <= 0:
-            workers = max(1, (os.cpu_count() or 2) // 2)
+            workers = (os.cpu_count() or 2) // 2
+        
+        # 強制限制最大平行數為 4
+        if workers > 4:
+            workers = 4
+        if workers < 1:
+            workers = 1
 
         print(f"\n找到 {len(videos)} 個目標將開始轉換 (平行任務數: {workers})...\n")
 
