@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Auto Compress Video 
+Auto Compress Video (H.265)
 將輸入資料夾的影片，依照 YouTube 建議的位元率壓縮出所有可能解析度 (4K, 2K, FHD)。
-共用核心邏輯包含在 video_utils.py 之中。
+採用 H.265 (HEVC) 編碼以提供更高效率。
 """
 
 import os
@@ -14,6 +14,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
 
 from video_utils import (
     detect_hw_encoder, get_video_info, double_bitrate,
@@ -137,22 +138,23 @@ class VideoCompressor:
             if info["has_audio"]: cmd += ["-map", "0:a:0"]
             
             v_tag = "v:0"
-            if self.encoder == "h264_nvenc":
+            if self.encoder == "hevc_nvenc":
                 cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
-                        "-preset", "p4", "-rc", "vbr", "-cq", "20"]
-            elif self.encoder == "h264_amf":
+                        "-preset", "p4", "-rc", "vbr"]
+            elif self.encoder == "hevc_amf":
                 cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
                         "-quality", "balanced", "-rc", "vbr_latency"]
-            elif self.encoder == "h264_qsv":
+            elif self.encoder == "hevc_qsv":
                 cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
-                        "-preset", "medium", "-global_quality", "22"]
+                        "-preset", "medium"]
             else:
+                # libx265: 使用 YouTube 建議位元率進行平均位元率編碼 (ABR)
                 cmd += [f"-c:{v_tag}", self.encoder,
-                        "-preset", "medium", "-crf", "18",
-                        f"-maxrate:{v_tag}", vbr,
+                        "-preset", "medium", f"-b:{v_tag}", vbr,
+                        f"-maxrate:{v_tag}", double_bitrate(vbr),
                         f"-bufsize:{v_tag}", double_bitrate(vbr)]
             
-            cmd += ["-pix_fmt", "yuv420p"]
+            cmd += ["-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
             if info["has_audio"]:
                 a_tag = "a:0"
                 cmd += [f"-c:{a_tag}", "aac", f"-b:{a_tag}", "192k"]
@@ -196,8 +198,9 @@ class VideoCompressor:
         
         desc = f"({idx}/{total}) {file_path.stem[:12]} [Auto Compress]"
         pbar = None
+        pos = self.position_q.get() if hasattr(self, 'position_q') else 0
         if HAS_TQDM:
-            pbar = tqdm(total=info["duration"], desc=desc, position=0, leave=True,
+            pbar = tqdm(total=info["duration"], desc=desc, position=pos, leave=False,
                         bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}")
         else:
             sys.stdout.write(f"\n{desc} 處理中...")
@@ -238,16 +241,23 @@ class VideoCompressor:
         finally:
             if pbar: pbar.close()
             if debug_fd: debug_fd.close()
+            if hasattr(self, 'position_q'): self.position_q.put(pos)
 
         if proc.returncode != 0:
-            if not HAS_TQDM: print(" [失敗!]")
+            if HAS_TQDM:
+                tqdm.write(f" [失敗!] ({idx}/{total}) {file_path.name}")
+            else:
+                print(" [失敗!]")
             print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
             print(f"指令輸出結尾：\n{''.join(stderr_log)}")
             for t in tmps:
                 if t.exists(): t.unlink()
             return False
 
-        if not HAS_TQDM: print(" [完成!]")
+        if HAS_TQDM:
+            tqdm.write(f"({idx}/{total}) {file_path.name} 處理完成!")
+        else:
+            print(" [完成!]")
 
         for t, f in zip(tmps, finals):
             if t.exists():
@@ -281,6 +291,10 @@ class VideoCompressor:
         if workers < 1:
             workers = 1
 
+        self.position_q = Queue()
+        for i in range(workers):
+            self.position_q.put(i)
+
         print(f"\n找到 {len(videos)} 個目標將開始進行多重解析度壓縮 (平行任務數: {workers})...\n")
 
         success_count, failed_files = 0, []
@@ -307,7 +321,7 @@ class VideoCompressor:
 
 def main():
     print("=" * 60)
-    print("  Auto Compress Video - 多重解析度壓縮工具")
+    print("  Auto Compress Video - H.265 多重解析度壓縮工具")
     print("=" * 60)
     
     config = CompressConfig()

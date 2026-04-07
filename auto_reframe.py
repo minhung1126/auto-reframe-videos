@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Auto Reframe Video — 橫轉直影片工具 (v2.0)
+Auto Reframe Video — 橫轉直影片工具 (v2.0 - H.265)
 將橫向影片透過 ffmpeg 轉為手機直式影片 (9:16)
-優化項目：平行處理、單次解碼多路輸出、避免重複讀檔、即時運算進度條、物件導向重構
+優化項目：H.265 (HEVC) 高效壓縮、平行處理、單次解碼多路輸出、避免重複讀檔、即時運算進度條、物件導向重構
 """
 
 import json
@@ -15,6 +15,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue
 from video_utils import (
     detect_hw_encoder, get_video_info, double_bitrate,
     parse_ffmpeg_time, cleanup_tmp_files, get_youtube_bitrate
@@ -254,23 +255,23 @@ class VideoReframer:
             
             v_tag = "v:0"
             
-            if self.encoder == "h264_nvenc":
+            if self.encoder == "hevc_nvenc":
                 cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
-                        "-preset", "p4", "-rc", "vbr", "-cq", "20"]
-            elif self.encoder == "h264_amf":
+                        "-preset", "p4", "-rc", "vbr"]
+            elif self.encoder == "hevc_amf":
                 cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
                         "-quality", "balanced", "-rc", "vbr_latency"]
-            elif self.encoder == "h264_qsv":
+            elif self.encoder == "hevc_qsv":
                 cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
-                        "-preset", "medium", "-global_quality", "22"]
+                        "-preset", "medium"]
             else:
-                # libx264: CRF 品質模式 + maxrate 限速，不使用 -b:v 避免 ABR 衝突
+                # libx265: 使用 YouTube 建議位元率進行平均位元率編碼 (ABR)
                 cmd += [f"-c:{v_tag}", self.encoder,
-                        "-preset", "medium", "-crf", "18",
-                        f"-maxrate:{v_tag}", vbr,
+                        "-preset", "medium", f"-b:{v_tag}", vbr,
+                        f"-maxrate:{v_tag}", double_bitrate(vbr),
                         f"-bufsize:{v_tag}", double_bitrate(vbr)]
             
-            cmd += ["-pix_fmt", "yuv420p"]
+            cmd += ["-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
             if info["has_audio"]:
                 a_tag = "a:0"
                 cmd += [f"-c:{a_tag}", "aac", f"-b:{a_tag}", "192k"]
@@ -321,8 +322,9 @@ class VideoReframer:
             
             desc = f"({idx}/{total}) {file_path.stem[:12]} [{rt_w}:{rt_h}]"
             pbar = None
+            pos = self.position_q.get() if hasattr(self, 'position_q') else 0
             if HAS_TQDM:
-                pbar = tqdm(total=info["duration"], desc=desc, position=0, leave=True,
+                pbar = tqdm(total=info["duration"], desc=desc, position=pos, leave=False,
                             bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}")
             else:
                 sys.stdout.write(f"\n{desc} 處理中...")
@@ -369,16 +371,23 @@ class VideoReframer:
             finally:
                 if pbar: pbar.close()
                 if debug_fd: debug_fd.close()
+                if hasattr(self, 'position_q'): self.position_q.put(pos)
 
             if proc.returncode != 0:
-                if not HAS_TQDM: print(" [失敗!]")
+                if HAS_TQDM:
+                    tqdm.write(f" [失敗!] ({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}]")
+                else:
+                    print(" [失敗!]")
                 print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
                 print(f"指令輸出結尾：\n{''.join(stderr_log)}")
                 for t in tmps:
                     if t.exists(): t.unlink()
                 return False
 
-            if not HAS_TQDM: print(" [完成!]")
+            if HAS_TQDM:
+                tqdm.write(f"({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}] 完成!")
+            else:
+                print(" [完成!]")
 
             for t, f in zip(tmps, finals):
                 if t.exists():
@@ -415,6 +424,10 @@ class VideoReframer:
         if workers < 1:
             workers = 1
 
+        self.position_q = Queue()
+        for i in range(workers):
+            self.position_q.put(i)
+
         print(f"\n找到 {len(videos)} 個目標將開始轉換 (平行任務數: {workers})...\n")
 
         success_count, failed_files = 0, []
@@ -441,7 +454,7 @@ class VideoReframer:
 
 def main():
     print("=" * 60)
-    print("  Auto Reframe Video v2.0 - 高效能優化版")
+    print("  Auto Reframe Video v2.0 - H.265 高效能優化版")
     print("=" * 60)
     
     config = ReframeConfig()

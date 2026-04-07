@@ -27,8 +27,8 @@ def detect_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:
         print(f"[錯誤] 呼叫 {ffmpeg_path} 失敗，請確認其是否存在。")
         sys.exit(1)
 
-    # 優先順序: NVENC > AMF > QSV
-    for enc, hw in [("h264_nvenc", "cuda"), ("h264_amf", "d3d11va"), ("h264_qsv", "qsv")]:
+    # 優先順序: HEVC_NVENC > HEVC_AMF > HEVC_QSV
+    for enc, hw in [("hevc_nvenc", "cuda"), ("hevc_amf", "d3d11va"), ("hevc_qsv", "qsv")]:
         if enc in encoders:
             test = subprocess.run(
                 [ffmpeg_path, "-hide_banner", "-f", "lavfi", "-i", 
@@ -39,8 +39,8 @@ def detect_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:
                 print(f"  [核心系統] 已啟用硬體加速編碼器: {enc} ({hw})")
                 return enc, hw
 
-    print("  [核心系統] 未發現可用硬體加速，回退至軟體編碼 (libx264)")
-    return "libx264", None
+    print("  [核心系統] 未發現可用硬體加速，回退至軟體編碼 (libx265)")
+    return "libx265", None
 
 
 def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, Any]]:
@@ -75,15 +75,34 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
     }
 
 
-def get_youtube_bitrate(short_side: int, fps: float) -> str:
-    """根據 YouTube 標準建議與影像短邊高度決定 bitrate"""
+def get_youtube_bitrate(short_side: int, fps: float, multiplier: float = 1.5) -> str:
+    """根據 YouTube 標準建議與影像短邊高度決定 bitrate，並乘上自訂倍率"""
     high_fps = fps > 30
-    if short_side >= 2160: return "60M" if high_fps else "40M"
-    if short_side >= 1440: return "24M" if high_fps else "16M"
-    if short_side >= 1080: return "12M" if high_fps else "8M"
-    if short_side >= 720: return "7500K" if high_fps else "5M"
-    if short_side >= 480: return "4M" if high_fps else "2500K"
-    return "1500K" if high_fps else "1M"
+    
+    # 定義基底 Bitrate (以 Mbps 為單位)
+    if short_side >= 2160: 
+        base_mbps = 60.0 if high_fps else 40.0
+    elif short_side >= 1440: 
+        base_mbps = 24.0 if high_fps else 16.0
+    elif short_side >= 1080: 
+        base_mbps = 12.0 if high_fps else 8.0
+    elif short_side >= 720: 
+        base_mbps = 7.5 if high_fps else 5.0
+    elif short_side >= 480: 
+        base_mbps = 4.0 if high_fps else 2.5
+    else: 
+        base_mbps = 1.5 if high_fps else 1.0
+
+    # 乘上倍率
+    final_mbps = base_mbps * multiplier
+    
+    # 如果大於等於 1 Mbps，回傳 M；若小於 1 Mbps 則換算成 K
+    if final_mbps >= 1.0:
+        # 優化：如果是整數則轉成 int 避免 .0，如果是小數則保留 (FFmpeg 支援如 11.25M)
+        val_str = f"{int(final_mbps)}" if final_mbps.is_integer() else f"{final_mbps}"
+        return f"{val_str}M"
+    else:
+        return f"{int(final_mbps * 1000)}K"
 
 
 def double_bitrate(vbr: str) -> str:
