@@ -17,7 +17,7 @@ from typing import List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 from video_utils import (
-    detect_hw_encoder, get_video_info, double_bitrate,
+    detect_h265_hw_encoder, get_video_info, double_bitrate,
     parse_ffmpeg_time, cleanup_tmp_files, get_youtube_bitrate
 )
 
@@ -101,7 +101,7 @@ class VideoReframer:
         self.load_texts()
 
         # 2. 偵測可用的硬體加速
-        self.encoder, self.hwaccel = detect_hw_encoder(self.config.ffmpeg_path)
+        self.encoder, self.hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
 
     def load_texts(self):
         """讀取上下方的文字檔內容"""

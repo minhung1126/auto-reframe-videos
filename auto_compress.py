@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
-Auto Compress Video (H.265)
+Auto Compress Video (H.264 / H.265)
 將輸入資料夾的影片，依據原始畫質選擇適當的 YouTube 建議位元率壓縮單一解析度。
-採用 H.265 (HEVC) 編碼以提供更高效率。
+同時輸出 H.265 (HEVC) 與 H.264 (AVC) 兩種版本，採用單次解碼 + filter_complex split 以提高效能。
 """
 
 import os
@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
 
 from video_utils import (
-    detect_hw_encoder, get_video_info, double_bitrate,
+    detect_h265_hw_encoder, detect_h264_hw_encoder, get_video_info, double_bitrate,
     parse_ffmpeg_time, cleanup_tmp_files, get_youtube_bitrate
 )
 
@@ -63,7 +63,8 @@ class VideoCompressor:
     def __init__(self, config: CompressConfig):
         self.config = config
         self.script_dir = Path(__file__).resolve().parent
-        self.encoder, self.hwaccel = detect_hw_encoder(self.config.ffmpeg_path)
+        self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
+        self.h264_encoder, self.h264_hwaccel = detect_h264_hw_encoder(self.config.ffmpeg_path)
 
     def get_compress_tiers(self, info: dict) -> List[Tuple[int, int, str, str]]:
         tiers = []
@@ -109,57 +110,90 @@ class VideoCompressor:
 
     def build_ffmpeg_split_command(self, input_file: Path, tiers_map: list, info: dict) -> list:
         cmd = [self.config.ffmpeg_path, "-hide_banner", "-y"]
-        if self.hwaccel:
-            cmd += ["-hwaccel", self.hwaccel]
+
+        # 只有當所有 codec 的 hwaccel 後端一致時才啟用，避免廠商不同導致衝突
+        hwaccels = set()
+        for _, _, _, _, _, vcodec in tiers_map:
+            hw = self.h265_hwaccel if vcodec == "h265" else self.h264_hwaccel
+            if hw:
+                hwaccels.add(hw)
+        if len(hwaccels) == 1:
+            cmd += ["-hwaccel", next(iter(hwaccels))]
+
         cmd += ["-i", str(input_file)]
 
+        # 依解析度分組：相同解析度只需 scale 一次，再 split 給各 codec
+        # 例：4K × {h265, h264} → scale 一次 → split=2 → 各自編碼
+        from collections import OrderedDict
+        res_groups: OrderedDict = OrderedDict()
+        for i, entry in enumerate(tiers_map):
+            key = (entry[0], entry[1])  # (out_w, out_h)
+            res_groups.setdefault(key, []).append(i)
+
+        num_resolutions = len(res_groups)
         filters = []
-        splits_cnt = len(tiers_map)
-        if splits_cnt > 1:
-            split_lbls = "".join([f"[base_{i}]" for i in range(splits_cnt)])
-            filters.append(f"[0:v]split={splits_cnt}{split_lbls}")
-            base_inputs = [f"[base_{i}]" for i in range(splits_cnt)]
+        final_video_maps = [None] * len(tiers_map)
+
+        # 若有多個不同解析度，先 split 原始串流
+        if num_resolutions > 1:
+            split_lbls = "".join([f"[raw_{j}]" for j in range(num_resolutions)])
+            filters.append(f"[0:v]split={num_resolutions}{split_lbls}")
+            raw_inputs = [f"[raw_{j}]" for j in range(num_resolutions)]
         else:
-            base_inputs = ["[0:v]"]
-            
-        final_video_maps = []
-        for i, (out_w, out_h, label, vbr, out_file) in enumerate(tiers_map):
-            scale_lbl = f"[out_{i}]"
-            # 單純壓縮縮放，不加任何濾鏡
-            seq = f"{base_inputs[i]}scale={out_w}:{out_h}:flags=lanczos{scale_lbl}"
-            filters.append(seq)
-            final_video_maps.append(scale_lbl)
-            
+            raw_inputs = ["[0:v]"]
+
+        # 每個解析度 scale 一次，再依 codec 數量決定是否再 split
+        for j, ((out_w, out_h), indices) in enumerate(res_groups.items()):
+            num_codecs = len(indices)
+            if num_codecs > 1:
+                # scale → split → 各 codec（核心效能優化：相同解析度只縮放一次）
+                scaled_lbl = f"[scaled_{j}]"
+                filters.append(f"{raw_inputs[j]}scale={out_w}:{out_h}:flags=lanczos{scaled_lbl}")
+                codec_split_lbls = "".join([f"[out_{idx}]" for idx in indices])
+                filters.append(f"{scaled_lbl}split={num_codecs}{codec_split_lbls}")
+            else:
+                # 只有單一 codec，直接 scale 到輸出 label
+                idx = indices[0]
+                filters.append(f"{raw_inputs[j]}scale={out_w}:{out_h}:flags=lanczos[out_{idx}]")
+
+            for idx in indices:
+                final_video_maps[idx] = f"[out_{idx}]"
+
         cmd += ["-filter_complex", ";".join(filters)]
 
-        for i, (out_w, out_h, label, vbr, out_file) in enumerate(tiers_map):
+        for i, (out_w, out_h, label, vbr, out_file, vcodec) in enumerate(tiers_map):
             cmd += ["-map", final_video_maps[i]]
             if info["has_audio"]: cmd += ["-map", "0:a:0"]
-            
+
             v_tag = "v:0"
-            if self.encoder == "hevc_nvenc":
-                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+            encoder = self.h265_encoder if vcodec == "h265" else self.h264_encoder
+
+            if encoder in ["hevc_nvenc", "h264_nvenc"]:
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-preset", "p4", "-rc", "vbr"]
-            elif self.encoder == "hevc_amf":
-                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+            elif encoder in ["hevc_amf", "h264_amf"]:
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-quality", "balanced", "-rc", "vbr_latency"]
-            elif self.encoder == "hevc_qsv":
-                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+            elif encoder in ["hevc_qsv", "h264_qsv"]:
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-preset", "medium"]
             else:
-                # libx265: 使用 YouTube 建議位元率進行平均位元率編碼 (ABR)
-                cmd += [f"-c:{v_tag}", self.encoder,
+                # libx265 / libx264: 使用 YouTube 建議位元率進行平均位元率編碼 (ABR)
+                cmd += [f"-c:{v_tag}", encoder,
                         "-preset", "medium", f"-b:{v_tag}", vbr,
                         f"-maxrate:{v_tag}", double_bitrate(vbr),
                         f"-bufsize:{v_tag}", double_bitrate(vbr)]
-            
-            cmd += ["-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
+
+            cmd += ["-pix_fmt", "yuv420p"]
+            if vcodec == "h265":
+                cmd += ["-tag:v", "hvc1"]
+
             if info["has_audio"]:
                 a_tag = "a:0"
                 cmd += [f"-c:{a_tag}", "aac", f"-b:{a_tag}", "192k"]
-                
+
             cmd += ["-f", "mp4", "-movflags", "+faststart", str(out_file)]
-            
+
         return cmd
 
     def process_single_video(self, task_info: Tuple[int, int, Path]) -> bool:
@@ -176,16 +210,17 @@ class VideoCompressor:
         finals = []
         
         for w, h, lbl, bitrate in tiers:
-            sub_dir = out_dir / lbl
-            sub_dir.mkdir(parents=True, exist_ok=True)
-            # 檔案名稱：原檔片名_COMPRESS_解析度.mp4，例如 test_COMPRESS_4K.mp4
-            target_f = sub_dir / f"{file_path.stem}_{lbl}.mp4"
-            if self.config.skip_existing and target_f.exists(): continue
-            tmp_f = target_f.with_name(target_f.name + ".tmp")
-            
-            active_maps.append((w, h, lbl, bitrate, tmp_f))
-            tmps.append(tmp_f)
-            finals.append(target_f)
+            for vcodec in ["h265", "h264"]:
+                sub_dir = out_dir / f"{lbl}_{vcodec}"
+                sub_dir.mkdir(parents=True, exist_ok=True)
+                # 檔案名稱：原檔片名_COMPRESS_解析度_vcodec.mp4
+                target_f = sub_dir / f"{file_path.stem}_{lbl}_{vcodec}.mp4"
+                if self.config.skip_existing and target_f.exists(): continue
+                tmp_f = target_f.with_name(target_f.name + ".tmp")
+                
+                active_maps.append((w, h, lbl, bitrate, tmp_f, vcodec))
+                tmps.append(tmp_f)
+                finals.append(target_f)
 
         if not active_maps:
             return True
@@ -320,7 +355,7 @@ class VideoCompressor:
 
 def main():
     print("=" * 60)
-    print("  Auto Compress Video - H.265 自動解析度壓縮工具")
+    print("  Auto Compress Video - H.264 / H.265 自動解析度壓縮工具")
     print("=" * 60)
     
     config = CompressConfig()

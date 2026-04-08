@@ -17,30 +17,49 @@ def parse_fps(fps_str: str) -> float:
     except (ValueError, ZeroDivisionError):
         return 30.0
 
-def detect_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:
-    """偵測可用的硬體加速編碼器"""
+# 各 codec 的硬體加速編碼器候選清單（優先順序：NVENC > AMF > QSV）
+_HW_ENCODER_CANDIDATES = {
+    "h265": [("hevc_nvenc", "cuda"), ("hevc_amf", "d3d11va"), ("hevc_qsv", "qsv")],
+    "h264": [("h264_nvenc", "cuda"), ("h264_amf", "d3d11va"), ("h264_qsv", "qsv")],
+}
+_SW_FALLBACK = {"h265": "libx265", "h264": "libx264"}
+
+
+def _detect_hw_encoder(ffmpeg_path: str, codec: str) -> Tuple[str, Optional[str]]:
+    """通用硬體加速編碼器偵測，支援 'h265' 或 'h264'。"""
     try:
-        res = subprocess.run([ffmpeg_path, "-hide_banner", "-encoders"], 
+        res = subprocess.run([ffmpeg_path, "-hide_banner", "-encoders"],
                              capture_output=True, text=True, timeout=10)
         encoders = res.stdout
     except Exception:
         print(f"[錯誤] 呼叫 {ffmpeg_path} 失敗，請確認其是否存在。")
         sys.exit(1)
 
-    # 優先順序: HEVC_NVENC > HEVC_AMF > HEVC_QSV
-    for enc, hw in [("hevc_nvenc", "cuda"), ("hevc_amf", "d3d11va"), ("hevc_qsv", "qsv")]:
+    label = codec.upper()  # 用於顯示訊息
+    for enc, hw in _HW_ENCODER_CANDIDATES[codec]:
         if enc in encoders:
             test = subprocess.run(
-                [ffmpeg_path, "-hide_banner", "-f", "lavfi", "-i", 
+                [ffmpeg_path, "-hide_banner", "-f", "lavfi", "-i",
                  "nullsrc=s=256x256:d=1", "-c:v", enc, "-f", "null", "-"],
                 capture_output=True, text=True, timeout=30
             )
             if test.returncode == 0:
-                print(f"  [核心系統] 已啟用硬體加速編碼器: {enc} ({hw})")
+                print(f"  [核心系統] 已啟用硬體加速編碼器 ({label}): {enc} ({hw})")
                 return enc, hw
 
-    print("  [核心系統] 未發現可用硬體加速，回退至軟體編碼 (libx265)")
-    return "libx265", None
+    sw = _SW_FALLBACK[codec]
+    print(f"  [核心系統] 未發現可用硬體加速 ({label})，回退至軟體編碼 ({sw})")
+    return sw, None
+
+
+def detect_h265_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:
+    """偵測可用的 H.265 硬體加速編碼器"""
+    return _detect_hw_encoder(ffmpeg_path, "h265")
+
+
+def detect_h264_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:
+    """偵測可用的 H.264 硬體加速編碼器"""
+    return _detect_hw_encoder(ffmpeg_path, "h264")
 
 
 def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, Any]]:
