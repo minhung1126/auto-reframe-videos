@@ -54,7 +54,7 @@ class CompressConfig:
     # 是否跳過已存在的輸出檔案
     skip_existing: bool = True
     # 平行處理的任務數量，設為 0 將自動判斷 (上限為 4)
-    max_workers: int = 0
+    max_workers: int = 1
     # 是否開啟除錯模式
     debug: bool = False
 

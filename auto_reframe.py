@@ -16,8 +16,9 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from queue import Queue
+from collections import OrderedDict
 from video_utils import (
-    detect_h265_hw_encoder, get_video_info, double_bitrate,
+    detect_h265_hw_encoder, detect_h264_hw_encoder, get_video_info, double_bitrate,
     parse_ffmpeg_time, cleanup_tmp_files, get_youtube_bitrate
 )
 
@@ -81,7 +82,7 @@ class ReframeConfig:
     # 是否跳過已存在的輸出檔案
     skip_existing: bool = True
     # 平行處理的任務數量，設為 0 將自動判斷 (上限為 4)
-    max_workers: int = 0
+    max_workers: int = 1
     # 是否開啟除錯模式，開啟時會記錄 FFmpeg 詳細輸出
     debug: bool = False
 
@@ -101,7 +102,8 @@ class VideoReframer:
         self.load_texts()
 
         # 2. 偵測可用的硬體加速
-        self.encoder, self.hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
+        self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
+        self.h264_encoder, self.h264_hwaccel = detect_h264_hw_encoder(self.config.ffmpeg_path)
 
     def load_texts(self):
         """讀取上下方的文字檔內容"""
@@ -166,8 +168,18 @@ class VideoReframer:
     def build_ffmpeg_split_command(self, input_file, dims, resolutions_map, info):
         """利用 FFmpeg -filter_complex 實作單次解碼多路輸出"""
         cmd = [self.config.ffmpeg_path, "-hide_banner", "-y"]
-        if self.hwaccel:
-            cmd += ["-hwaccel", self.hwaccel]
+        
+        # 偵測是否所有輸出的 hwaccel 是一致的
+        hwaccels = set()
+        for entry in resolutions_map:
+            vcodec = entry[5] if len(entry) > 5 else "h265"
+            hw = self.h265_hwaccel if vcodec == "h265" else self.h264_hwaccel
+            if hw:
+                hwaccels.add(hw)
+        
+        if len(hwaccels) == 1:
+            cmd += ["-hwaccel", next(iter(hwaccels))]
+        
         cmd += ["-i", str(input_file)]
 
         filters = []
@@ -182,7 +194,13 @@ class VideoReframer:
         else:
             root_lbl = "[crp]"
         
-        splits_cnt = len(resolutions_map)
+        # 依解析度分組 (out_w, out_h)
+        res_groups = OrderedDict()
+        for i, entry in enumerate(resolutions_map):
+            key = (entry[0], entry[1]) # (w, h)
+            res_groups.setdefault(key, []).append(i)
+
+        splits_cnt = len(res_groups)
         if splits_cnt > 1:
             split_lbls = "".join([f"[base_{i}]" for i in range(splits_cnt)])
             base += f";{root_lbl}split={splits_cnt}{split_lbls}"
@@ -196,12 +214,14 @@ class VideoReframer:
         top_txt = self.config.top_text_content
         btm_txt = self.config.bottom_text_content
 
-        # 建構各輸出流向 (Scale -> Drawtext)
-        final_video_maps = []
-        for i, (out_w, out_h, label, vbr, out_file) in enumerate(resolutions_map):
-            scale_lbl = f"[scl_{i}]"
-            seq = f"{base_inputs[i]}scale={out_w}:{out_h}:flags=lanczos{scale_lbl}"
-            curr_lbl = scale_lbl
+        final_video_maps = [None] * len(resolutions_map)
+        
+        # 處理每個解析度群組
+        for j, ((out_w, out_h), indices) in enumerate(res_groups.items()):
+            # 第一步：先做 Scale 和 Drawtext 至一個解析度共通標籤
+            res_lbl = f"[res_{j}]"
+            seq = f"{base_inputs[j]}scale={out_w}:{out_h}:flags=lanczos{res_lbl}"
+            curr_lbl = res_lbl
 
             scale_rate = out_h / 1920.0
             border_c = self.config.font_color
@@ -215,10 +235,9 @@ class VideoReframer:
                 
                 for ln_i, ln in enumerate(lines):
                     esc = ln.replace("'", "'\\''" ).replace(":", "\\:").replace("%", "%%")
-                    # 累進式排版：向影片上方靠齊 (底部對齊)
                     rev_i = len(lines) - 1 - ln_i
                     y_pos = f"{ptop}-{mar}-text_h-{rev_i}*line_h*{self.config.text_line_spacing}"
-                    next_lbl = f"[t_{i}_{ln_i}]"
+                    next_lbl = f"[t_{j}_{ln_i}]"
                     seq += f";{curr_lbl}drawtext=fontfile='{font_path}':text='{esc}':fontsize={fz}:" \
                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:" \
                            f"x=(w-text_w)/2:y={y_pos}{next_lbl}"
@@ -233,45 +252,58 @@ class VideoReframer:
                 
                 for ln_i, ln in enumerate(lines):
                     esc = ln.replace("'", "'\\''" ).replace(":", "\\:").replace("%", "%%")
-                    # 累進式排版：從底部黑邊頂端 + margin 開始向下排列
                     y_pos = f"{out_h}-{pbtm}+{mar}+{ln_i}*line_h*{self.config.text_line_spacing}"
-                    next_lbl = f"[b_{i}_{ln_i}]"
+                    next_lbl = f"[b_{j}_{ln_i}]"
                     seq += f";{curr_lbl}drawtext=fontfile='{font_path}':text='{esc}':fontsize={fz}:" \
                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:" \
                            f"x=(w-text_w)/2:y={y_pos}{next_lbl}"
                     curr_lbl = next_lbl
 
-            final_video_maps.append(curr_lbl)
+            # 第二步：將處理完的解析度共通標籤 split 給各個 codec
+            num_codecs = len(indices)
+            if num_codecs > 1:
+                codec_split_lbls = "".join([f"[out_{idx}]" for idx in indices])
+                seq += f";{curr_lbl}split={num_codecs}{codec_split_lbls}"
+                for idx in indices:
+                    final_video_maps[idx] = f"[out_{idx}]"
+            else:
+                final_video_maps[indices[0]] = curr_lbl
+            
             filters.append(seq)
             
         cmd += ["-filter_complex", ";".join(filters)]
 
-        # 指定 Mapping 與編碼參數
-        # 註：FFmpeg 多輸出模式下，每組 -map ~ 輸出檔 之間的選項屬於該輸出，
-        #     v:0 / a:0 指的是「該輸出內的第 0 條 video/audio stream」，各輸出獨立計數。
-        for i, (out_w, out_h, label, vbr, out_file) in enumerate(resolutions_map):
+        for i, entry in enumerate(resolutions_map):
+            out_w, out_h, label, vbr, out_file = entry[:5]
+            vcodec = entry[5] if len(entry) > 5 else "h265"
+            
             cmd += ["-map", final_video_maps[i]]
             if info["has_audio"]: cmd += ["-map", "0:a:0"]
             
             v_tag = "v:0"
+            encoder = self.h265_encoder if vcodec == "h265" else self.h264_encoder
             
-            if self.encoder == "hevc_nvenc":
-                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+            # 根據不同編碼器套用參數 (參考 auto_compress.py)
+            if encoder in ["hevc_nvenc", "h264_nvenc"]:
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-preset", "p4", "-rc", "vbr"]
-            elif self.encoder == "hevc_amf":
-                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+            elif encoder in ["hevc_amf", "h264_amf"]:
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-quality", "balanced", "-rc", "vbr_latency"]
-            elif self.encoder == "hevc_qsv":
-                cmd += [f"-c:{v_tag}", self.encoder, f"-b:{v_tag}", vbr,
+            elif encoder in ["hevc_qsv", "h264_qsv"]:
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-preset", "medium"]
             else:
-                # libx265: 使用 YouTube 建議位元率進行平均位元率編碼 (ABR)
-                cmd += [f"-c:{v_tag}", self.encoder,
+                # libx265 / libx264
+                cmd += [f"-c:{v_tag}", encoder,
                         "-preset", "medium", f"-b:{v_tag}", vbr,
                         f"-maxrate:{v_tag}", double_bitrate(vbr),
                         f"-bufsize:{v_tag}", double_bitrate(vbr)]
             
-            cmd += ["-pix_fmt", "yuv420p", "-tag:v", "hvc1"]
+            cmd += ["-pix_fmt", "yuv420p"]
+            if vcodec == "h265":
+                cmd += ["-tag:v", "hvc1"]
+                
             if info["has_audio"]:
                 a_tag = "a:0"
                 cmd += [f"-c:{a_tag}", "aac", f"-b:{a_tag}", "192k"]
@@ -299,16 +331,17 @@ class VideoReframer:
             finals = []
             
             for (w, h, lbl) in res_tiers:
-                suffix_name = f"{rt_w}x{rt_h}_{lbl}"
-                sub_dir = out_dir / suffix_name
-                sub_dir.mkdir(parents=True, exist_ok=True)
-                target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
-                if self.config.skip_existing and target_f.exists(): continue
-                tmp_f = target_f.with_name(target_f.name + ".tmp")
-                bitrate = get_youtube_bitrate(min(w, h), info["fps"])
-                active_maps.append((w, h, lbl, bitrate, tmp_f))
-                tmps.append(tmp_f)
-                finals.append(target_f)
+                for vcodec in ["h265", "h264"]:
+                    suffix_name = f"{rt_w}x{rt_h}_{lbl}_{vcodec}"
+                    sub_dir = out_dir / suffix_name
+                    sub_dir.mkdir(parents=True, exist_ok=True)
+                    target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
+                    if self.config.skip_existing and target_f.exists(): continue
+                    tmp_f = target_f.with_name(target_f.name + ".tmp")
+                    bitrate = get_youtube_bitrate(min(w, h), info["fps"])
+                    active_maps.append((w, h, lbl, bitrate, tmp_f, vcodec))
+                    tmps.append(tmp_f)
+                    finals.append(target_f)
 
             if not active_maps:
                 successes += 1
