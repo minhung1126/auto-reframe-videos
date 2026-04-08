@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Auto Compress Video (H.265)
-將輸入資料夾的影片，依照 YouTube 建議的位元率壓縮出所有可能解析度 (4K, 2K, FHD)。
+將輸入資料夾的影片，依據原始畫質選擇適當的 YouTube 建議位元率壓縮單一解析度。
 採用 H.265 (HEVC) 編碼以提供更高效率。
 """
 
@@ -92,16 +92,15 @@ class VideoCompressor:
             bitrate = get_youtube_bitrate(min(cw, ch), info["fps"])
             tiers.append((cw, ch, label, bitrate))
 
-        # 根據短邊判定最高層級
+        # 根據短邊判定最高層級，只取最適合的單一畫質，不額外產生較低畫質
         if short_side >= 2160 * 0.9:
             add_tier(2160, 3840, "COMPRESS_4K")
-        if short_side >= 1440 * 0.9:
+        elif short_side >= 1440 * 0.9:
             add_tier(1440, 2560, "COMPRESS_2K")
-        if short_side >= 1080 * 0.9:
+        elif short_side >= 1080 * 0.9:
             add_tier(1080, 1920, "COMPRESS_FHD")
-            
-        # 小於 FHD 則以原始尺寸壓縮
-        if not tiers:
+        else:
+            # 小於 FHD 則以原始尺寸壓縮
             new_w, new_h = w - w % 2, h - h % 2
             bitrate = get_youtube_bitrate(short_side, info["fps"])
             tiers.append((new_w, new_h, "COMPRESS_Original", bitrate))
@@ -295,7 +294,7 @@ class VideoCompressor:
         for i in range(workers):
             self.position_q.put(i)
 
-        print(f"\n找到 {len(videos)} 個目標將開始進行多重解析度壓縮 (平行任務數: {workers})...\n")
+        print(f"\n找到 {len(videos)} 個目標將開始進行自動壓縮 (平行任務數: {workers})...\n")
 
         success_count, failed_files = 0, []
         tasks = [(i, len(videos), v) for i, v in enumerate(sorted(videos), 1)]
@@ -321,7 +320,7 @@ class VideoCompressor:
 
 def main():
     print("=" * 60)
-    print("  Auto Compress Video - H.265 多重解析度壓縮工具")
+    print("  Auto Compress Video - H.265 自動解析度壓縮工具")
     print("=" * 60)
     
     config = CompressConfig()
