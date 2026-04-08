@@ -36,6 +36,25 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+# --- 全域常數 ---
+# 方便在設定中使用，不用加引號
+h264 = "h264"
+h265 = "h265"
+
+# 解析度關鍵字對應表 (指定短邊長度)
+# 例如 1080p 代表短邊為 1080，在 9:16 下高度即為 1920
+RESOLUTION_MAP = {
+    "4k": 2160,
+    "2k": 1440,
+    "1080p": 1080,
+    "fhd": 1080,
+    "720p": 720,
+    "hd": 720,
+    "480p": 480,
+    "360p": 360,
+    "source": 99999  # 代表不縮放，直接取原始裁切後短邊
+}
+
 
 @dataclass
 class ReframeConfig:
@@ -45,10 +64,24 @@ class ReframeConfig:
     # 輸出影片的資料夾路徑
     output_dir: str = "output"
 
-    # --- 裁切與比例 ---
-    # 裁切的目標比例列表 (例如 4:5, 1:1)
-    target_ratios: List[Tuple[int, int]] = field(default_factory=lambda: [(4, 5), (1, 1)])
-    # 最終輸出的影片比例 (預設為 9:16 直式)
+    # --- 裁切與輸出目標 (重要設定) ---
+    # 指定要輸出的比例、解析度、編碼器列表
+    # resolution: '4k', '2k', '1080p', 'fhd', '720p', 'hd', '480p', '360p', 'source'
+    #           (系統會自動選擇「不大於此解析度」的最大解析度，避免強行放大)
+    # vcodec: h264, h265
+    #
+    # 範例：
+    # targets = [
+    #     {'ratio': (4, 5), 'resolution': '2k', 'vcodec': h265},
+    #     {'ratio': (4, 5), 'resolution': '1080p', 'vcodec': h264},
+    #     {'ratio': (1, 1), 'resolution': '1080p', 'vcodec': h265},
+    # ]
+    targets: List[dict] = field(default_factory=lambda: [
+        {'ratio': (4, 5), 'resolution': 'source', 'vcodec': h265},
+        {'ratio': (4, 5), 'resolution': '1080p', 'vcodec': h264},
+    ])
+
+    # 最終輸出的影片畫布比例 (預設為 9:16 直式)
     final_ratio: Tuple[int, int] = (9, 16)
 
     # --- 字幕與文字疊加 ---
@@ -133,13 +166,21 @@ class VideoReframer:
 
     def calculate_dimensions(self, src_w, src_h, target_ratio):
         t_w, t_h = target_ratio
-        short = min(src_w, src_h)
-
-        if t_w <= t_h:
-            crop_h, crop_w = short, int(short * t_w / t_h)
+        
+        # 使用比例判定裁切基準，確保橫式與直式影片都能正確處理
+        source_ratio = src_w / src_h
+        target_ratio_val = t_w / t_h
+        
+        if source_ratio > target_ratio_val:
+            # 來源比目標寬 (常見的橫轉直案例) -> 以高度為基準，裁切寬度
+            crop_h = src_h
+            crop_w = int(src_h * target_ratio_val)
         else:
-            crop_w, crop_h = short, int(short * t_h / t_w)
+            # 來源比目標窄或一樣 (直轉直、或是更窄的影片) -> 以寬度為基準，裁切高度
+            crop_w = src_w
+            crop_h = int(src_w / target_ratio_val)
 
+        # 確保為偶數且不超過原始解析度
         crop_w = min(crop_w - crop_w % 2, src_w)
         crop_h = min(crop_h - crop_h % 2, src_h)
         crop_x, crop_y = (src_w - crop_w) // 2, (src_h - crop_h) // 2
@@ -157,11 +198,7 @@ class VideoReframer:
             "pad_top": pad_top, "pad_bottom": pad_bottom, "final_w": final_w, "final_h": final_h
         }
 
-    def get_resolutions_to_process(self, dims):
-        short = min(dims["final_w"], dims["final_h"])
-        if short >= 2160: return [(2160, 3840, "4K"), (1080, 1920, "FHD")]
-        if short >= 1440: return [(1440, 2560, "2K"), (1080, 1920, "FHD")]
-        return [(1080, 1920, "FHD")]
+    # 已移除 get_resolutions_to_process，邏輯移至 process_single_video 中
 
 
 
@@ -319,32 +356,81 @@ class VideoReframer:
 
         out_dir = Path(self.config.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
-        successes = 0
+        
+        # 將 targets 依照 ratio 分群，以減少重複的 crop 濾鏡運算
+        ratio_groups = OrderedDict()
+        for t in self.config.targets:
+            ratio_groups.setdefault(t['ratio'], []).append(t)
 
-        for rt_w, rt_h in self.config.target_ratios:
+        all_success = True
+        for (rt_w, rt_h), targets in ratio_groups.items():
             dims = self.calculate_dimensions(info["width"], info["height"], (rt_w, rt_h))
-            res_tiers = self.get_resolutions_to_process(dims)
             
-            # 過濾並封裝本次需要的解析度任務
+            # 過濾並封裝本次比例下所有的輸出任務 (可能包含不同解析度與編碼器)
             active_maps = []
             tmps = []
             finals = []
             
-            for (w, h, lbl) in res_tiers:
-                for vcodec in ["h265", "h264"]:
-                    suffix_name = f"{rt_w}x{rt_h}_{lbl}_{vcodec}"
-                    sub_dir = out_dir / suffix_name
-                    sub_dir.mkdir(parents=True, exist_ok=True)
-                    target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
-                    if self.config.skip_existing and target_f.exists(): continue
-                    tmp_f = target_f.with_name(target_f.name + ".tmp")
-                    bitrate = get_youtube_bitrate(min(w, h), info["fps"])
-                    active_maps.append((w, h, lbl, bitrate, tmp_f, vcodec))
-                    tmps.append(tmp_f)
-                    finals.append(target_f)
+            for t in targets:
+                res_key = t['resolution'].lower()
+                vcodec = t['vcodec']
+                
+                # 1. 取得目標短邊上限
+                target_short_limit = RESOLUTION_MAP.get(res_key, 1080)
+                
+                # 2. 計算目前比例下的「來源短邊」
+                f_w, f_h = self.config.final_ratio
+                source_short = min(dims['final_w'], dims['final_h'])
+                
+                # 決定「不大於上限」且「不大於來源」的最高標準短邊
+                upper_bound_short = min(target_short_limit, source_short)
+                
+                # 標準短邊清單 (由高到低)
+                standard_shorts = [2160, 1440, 1080, 720, 480, 360]
+                
+                final_short = upper_bound_short # 預設
+                for s in standard_shorts:
+                    if s <= upper_bound_short:
+                        final_short = s
+                        break
+                
+                # 3. 根據 final_short 換算出最終高度 (out_h) 與寬度 (out_w)
+                # 以 9:16 為例，短邊為寬，長邊為高
+                if f_w <= f_h:
+                    out_w = final_short
+                    out_h = int(final_short * f_h / f_w)
+                else:
+                    out_h = final_short
+                    out_w = int(final_short * f_w / f_h)
+
+                # 確保皆為偶數
+                out_w += out_w % 2
+                out_h += out_h % 2
+                
+                # 決定標籤顯示 (依據最終短邊來決定標籤，最準確)
+                if final_short >= 2160: lbl = "4K"
+                elif final_short >= 1440: lbl = "2K"
+                elif final_short >= 1080: lbl = "FHD"
+                elif final_short >= 720: lbl = "HD"
+                else: lbl = f"{final_short}P"
+                
+                suffix_name = f"{rt_w}x{rt_h}_{lbl}_{vcodec}"
+                sub_dir = out_dir / suffix_name
+                sub_dir.mkdir(parents=True, exist_ok=True)
+                target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
+                
+                if self.config.skip_existing and target_f.exists():
+                    continue
+
+                tmp_f = target_f.with_name(target_f.name + ".tmp")
+                bitrate = get_youtube_bitrate(min(out_w, out_h), info["fps"])
+                
+                # 封裝進 active_maps: (寬, 高, 標籤, 位元率, 暫存檔, 編碼器)
+                active_maps.append((out_w, out_h, lbl, bitrate, tmp_f, vcodec))
+                tmps.append(tmp_f)
+                finals.append(target_f)
 
             if not active_maps:
-                successes += 1
                 continue
 
             cmd = self.build_ffmpeg_split_command(file_path, dims, active_maps, info)
@@ -364,19 +450,14 @@ class VideoReframer:
                 sys.stdout.flush()
 
             stderr_log = []
-            
-            # 使用 context manager 確保 debug log 不會洩漏
-            # 每個影片使用獨立 log 檔避免多執行緒寫入衝突
             debug_log_path = None
             if self.config.debug:
                 debug_log_path = self.script_dir / f"ffmpeg_debug_{file_path.stem}_{rt_w}x{rt_h}.log"
 
-            # debug_fd 在 try 外宣告，確保 finally 中一定可以安全存取
             debug_fd = None
             try:
                 if debug_log_path:
                     debug_fd = open(debug_log_path, "w", encoding="utf-8")
-                    # shlex.quote 保護含空格的路徑，log 可直接貼到終端重現指令
                     debug_fd.write(f"[{file_path.name} - {rt_w}:{rt_h}]\n"
                                    f"{' '.join(shlex.quote(s) for s in cmd)}\n\n")
 
@@ -397,7 +478,6 @@ class VideoReframer:
                 
                 proc.wait()
             except Exception:
-                # 確保 FFmpeg 子進程不會變成孤兒進程
                 proc.terminate()
                 proc.wait()
                 raise
@@ -415,7 +495,8 @@ class VideoReframer:
                 print(f"指令輸出結尾：\n{''.join(stderr_log)}")
                 for t in tmps:
                     if t.exists(): t.unlink()
-                return False
+                all_success = False
+                continue
 
             if HAS_TQDM:
                 tqdm.write(f"({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}] 完成!")
@@ -426,9 +507,8 @@ class VideoReframer:
                 if t.exists():
                     if f.exists(): f.unlink()
                     t.rename(f)
-            successes += 1
 
-        return successes == len(self.config.target_ratios)
+        return all_success
 
     def run(self):
         in_dir = Path(self.config.input_dir)
