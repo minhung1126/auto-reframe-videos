@@ -36,6 +36,23 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 
+# --- 全域常數 ---
+h264 = "h264"
+h265 = "h265"
+
+# 解析度關鍵字對應表 (指定短邊長度)
+RESOLUTION_MAP = {
+    "4k": 2160,
+    "2k": 1440,
+    "1080p": 1080,
+    "fhd": 1080,
+    "720p": 720,
+    "hd": 720,
+    "480p": 480,
+    "360p": 360,
+    "source": 99999  # 代表不縮放，直接取原始短邊
+}
+
 @dataclass
 class CompressConfig:
     # --- 輸入 / 輸出 ---
@@ -44,6 +61,14 @@ class CompressConfig:
     # 輸出影片的資料夾路徑
     output_dir: str = "output"
     
+    # --- 輸出目標 (重要設定) ---
+    # resolution: '4k', '2k', '1080p', 'fhd', '720p', 'hd', '480p', '360p', 'source'
+    # vcodec: h264, h265
+    targets: List[dict] = field(default_factory=lambda: [
+        {'resolution': 'source', 'vcodec': h265},
+        # {'resolution': '1080p', 'vcodec': h264},
+    ])
+
     # --- 系統與平行化設定 ---
     # FFmpeg 執行檔路徑
     ffmpeg_path: str = "ffmpeg"
@@ -66,47 +91,6 @@ class VideoCompressor:
         self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
         self.h264_encoder, self.h264_hwaccel = detect_h264_hw_encoder(self.config.ffmpeg_path)
 
-    def get_compress_tiers(self, info: dict) -> List[Tuple[int, int, str, str]]:
-        tiers = []
-        w, h = info["width"], info["height"]
-        short_side = min(w, h)
-        is_vert = h > w
-        
-        def calc_dims(max_short, max_long):
-            tgt_w = max_short if is_vert else max_long
-            tgt_h = max_long if is_vert else max_short
-            
-            if w > 0 and h > 0:
-                scale_w = tgt_w / w
-                scale_h = tgt_h / h
-                scale = min(scale_w, scale_h)
-                if scale > 1: scale = 1.0  # 不升頻
-                new_w = int(w * scale)
-                new_h = int(h * scale)
-                new_w += new_w % 2
-                new_h += new_h % 2
-                return new_w, new_h
-            return w, h
-            
-        def add_tier(tgt_short, tgt_long, label):
-            cw, ch = calc_dims(tgt_short, tgt_long)
-            bitrate = get_youtube_bitrate(min(cw, ch), info["fps"])
-            tiers.append((cw, ch, label, bitrate))
-
-        # 根據短邊判定最高層級，只取最適合的單一畫質，不額外產生較低畫質
-        if short_side >= 2160 * 0.9:
-            add_tier(2160, 3840, "COMPRESS_4K")
-        elif short_side >= 1440 * 0.9:
-            add_tier(1440, 2560, "COMPRESS_2K")
-        elif short_side >= 1080 * 0.9:
-            add_tier(1080, 1920, "COMPRESS_FHD")
-        else:
-            # 小於 FHD 則以原始尺寸壓縮
-            new_w, new_h = w - w % 2, h - h % 2
-            bitrate = get_youtube_bitrate(short_side, info["fps"])
-            tiers.append((new_w, new_h, "COMPRESS_Original", bitrate))
-            
-        return tiers
 
     def build_ffmpeg_split_command(self, input_file: Path, tiers_map: list, info: dict) -> list:
         cmd = [self.config.ffmpeg_path, "-hide_banner", "-y"]
@@ -204,23 +188,56 @@ class VideoCompressor:
         out_dir = Path(self.config.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         
-        tiers = self.get_compress_tiers(info)
         active_maps = []
         tmps = []
         finals = []
         
-        for w, h, lbl, bitrate in tiers:
-            for vcodec in ["h265", "h264"]:
-                sub_dir = out_dir / f"{lbl}_{vcodec}"
-                sub_dir.mkdir(parents=True, exist_ok=True)
-                # 檔案名稱：原檔片名_COMPRESS_解析度_vcodec.mp4
-                target_f = sub_dir / f"{file_path.stem}_{lbl}_{vcodec}.mp4"
-                if self.config.skip_existing and target_f.exists(): continue
-                tmp_f = target_f.with_name(target_f.name + ".tmp")
-                
-                active_maps.append((w, h, lbl, bitrate, tmp_f, vcodec))
-                tmps.append(tmp_f)
-                finals.append(target_f)
+        src_w, src_h = info["width"], info["height"]
+        source_short = min(src_w, src_h)
+
+        for t in self.config.targets:
+            res_key = t['resolution'].lower()
+            vcodec = t['vcodec']
+            
+            target_short_limit = RESOLUTION_MAP.get(res_key, 1080)
+            upper_bound_short = min(target_short_limit, source_short)
+            standard_shorts = [2160, 1440, 1080, 720, 480, 360]
+            
+            final_short = upper_bound_short
+            for s in standard_shorts:
+                if s <= upper_bound_short:
+                    final_short = s
+                    break
+
+            # 根據 final_short 換算出最終解析度
+            scale_factor = final_short / source_short if source_short > 0 else 1.0
+            if scale_factor > 1.0: scale_factor = 1.0
+            
+            out_w = int(src_w * scale_factor)
+            out_h = int(src_h * scale_factor)
+            
+            out_w += out_w % 2
+            out_h += out_h % 2
+
+            if final_short >= 2160: lbl = "4K"
+            elif final_short >= 1440: lbl = "2K"
+            elif final_short >= 1080: lbl = "FHD"
+            elif final_short >= 720: lbl = "HD"
+            else: lbl = f"{final_short}P"
+
+            lbl = f"COMPRESS_{lbl}"
+            suffix_name = f"{lbl}_{vcodec}"
+            sub_dir = out_dir / suffix_name
+            sub_dir.mkdir(parents=True, exist_ok=True)
+            target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
+            
+            if self.config.skip_existing and target_f.exists(): continue
+            tmp_f = target_f.with_name(target_f.name + ".tmp")
+            
+            bitrate = get_youtube_bitrate(min(out_w, out_h), info["fps"])
+            active_maps.append((out_w, out_h, lbl, bitrate, tmp_f, vcodec))
+            tmps.append(tmp_f)
+            finals.append(target_f)
 
         if not active_maps:
             return True
