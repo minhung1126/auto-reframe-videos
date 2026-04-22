@@ -5,3 +5,5 @@ output/
 tmp/
 
 *_text.txt
+
+.DS_Store
