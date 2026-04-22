@@ -216,10 +216,12 @@ class VideoReframer:
         
         if len(hwaccels) == 1:
             hw = next(iter(hwaccels))
-            # VideoToolbox 僅做硬體編碼，不加解碼加速：
-            # 因為 filter_complex (drawtext 等) 為 CPU filter，
-            # 若問时啟用 videotoolbox 解碼，影格會留在 GPU 記懶體而導致適型錯誤。
-            if hw != "videotoolbox":
+            if hw == "videotoolbox":
+                # VideoToolbox 硬體解碼 + 指定輸出格式為 yuv420p（留在系統記憶體）
+                # 如此 GPU 負責解碼（省 CPU），影格自動轉為系統記憶體中的 yuv420p，
+                # 讓 crop / pad / scale / drawtext 等 CPU filter 無需 hwdownload 即可直接處理。
+                cmd += ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "yuv420p"]
+            else:
                 cmd += ["-hwaccel", hw]
         
         cmd += ["-i", str(input_file)]

@@ -103,9 +103,11 @@ class VideoCompressor:
                 hwaccels.add(hw)
         if len(hwaccels) == 1:
             hw = next(iter(hwaccels))
-            # VideoToolbox 僅做硬體編碼，不加解碼加速：
-            # 即使沒有 drawtext 漿鏡，丿統一與 auto_reframe.py 行為一致。
-            if hw != "videotoolbox":
+            if hw == "videotoolbox":
+                # VideoToolbox 硬體解碼 + 指定輸出格式為 yuv420p（留在系統記憶體）
+                # GPU 負責解碼，影格自動落在系統記憶體中，讓 scale 等 CPU filter 直接處理。
+                cmd += ["-hwaccel", "videotoolbox", "-hwaccel_output_format", "yuv420p"]
+            else:
                 cmd += ["-hwaccel", hw]
 
         cmd += ["-i", str(input_file)]
