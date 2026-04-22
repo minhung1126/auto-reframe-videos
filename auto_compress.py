@@ -102,7 +102,11 @@ class VideoCompressor:
             if hw:
                 hwaccels.add(hw)
         if len(hwaccels) == 1:
-            cmd += ["-hwaccel", next(iter(hwaccels))]
+            hw = next(iter(hwaccels))
+            # VideoToolbox 僅做硬體編碼，不加解碼加速：
+            # 即使沒有 drawtext 漿鏡，丿統一與 auto_reframe.py 行為一致。
+            if hw != "videotoolbox":
+                cmd += ["-hwaccel", hw]
 
         cmd += ["-i", str(input_file)]
 
@@ -161,6 +165,12 @@ class VideoCompressor:
             elif encoder in ["hevc_qsv", "h264_qsv"]:
                 cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-preset", "medium"]
+            elif encoder in ["hevc_videotoolbox", "h264_videotoolbox"]:
+                # Apple VideoToolbox (macOS): 支援 Apple Silicon 及 Intel Mac GPU 硬體加速
+                # -allow_sw 1: 當硬體不可用時自動回退至軟體編碼（保险）
+                # -realtime 0: 關閉即時模式，提升編碼品質
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
+                        "-allow_sw", "1", "-realtime", "0"]
             else:
                 # libx265 / libx264: 使用 YouTube 建議位元率進行平均位元率編碼 (ABR)
                 cmd += [f"-c:{v_tag}", encoder,

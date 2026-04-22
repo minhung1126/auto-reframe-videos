@@ -215,7 +215,12 @@ class VideoReframer:
                 hwaccels.add(hw)
         
         if len(hwaccels) == 1:
-            cmd += ["-hwaccel", next(iter(hwaccels))]
+            hw = next(iter(hwaccels))
+            # VideoToolbox 僅做硬體編碼，不加解碼加速：
+            # 因為 filter_complex (drawtext 等) 為 CPU filter，
+            # 若問时啟用 videotoolbox 解碼，影格會留在 GPU 記懶體而導致適型錯誤。
+            if hw != "videotoolbox":
+                cmd += ["-hwaccel", hw]
         
         cmd += ["-i", str(input_file)]
 
@@ -330,6 +335,12 @@ class VideoReframer:
             elif encoder in ["hevc_qsv", "h264_qsv"]:
                 cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
                         "-preset", "medium"]
+            elif encoder in ["hevc_videotoolbox", "h264_videotoolbox"]:
+                # Apple VideoToolbox (macOS): 支援 Apple Silicon 及 Intel Mac GPU 硬體加速
+                # -allow_sw 1: 當硬體不可用時自動回退至軟體編碼（保险）
+                # -realtime 0: 關閉即時模式，提升編碼品質
+                cmd += [f"-c:{v_tag}", encoder, f"-b:{v_tag}", vbr,
+                        "-allow_sw", "1", "-realtime", "0"]
             else:
                 # libx265 / libx264
                 cmd += [f"-c:{v_tag}", encoder,

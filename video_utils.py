@@ -17,10 +17,21 @@ def parse_fps(fps_str: str) -> float:
     except (ValueError, ZeroDivisionError):
         return 30.0
 
-# 各 codec 的硬體加速編碼器候選清單（優先順序：NVENC > AMF > QSV）
+# 各 codec 的硬體加速編碼器候選清單（優先順序：NVENC > AMF > QSV > VideoToolbox）
+# VideoToolbox 為 macOS 原生 GPU 加速（支援 Apple Silicon / Intel Mac）
 _HW_ENCODER_CANDIDATES = {
-    "h265": [("hevc_nvenc", "cuda"), ("hevc_amf", "d3d11va"), ("hevc_qsv", "qsv")],
-    "h264": [("h264_nvenc", "cuda"), ("h264_amf", "d3d11va"), ("h264_qsv", "qsv")],
+    "h265": [
+        ("hevc_nvenc",        "cuda"),          # NVIDIA (Windows/Linux)
+        ("hevc_amf",         "d3d11va"),        # AMD (Windows)
+        ("hevc_qsv",         "qsv"),            # Intel Quick Sync (Windows/Linux)
+        ("hevc_videotoolbox", "videotoolbox"),  # Apple VideoToolbox (macOS)
+    ],
+    "h264": [
+        ("h264_nvenc",        "cuda"),          # NVIDIA (Windows/Linux)
+        ("h264_amf",         "d3d11va"),        # AMD (Windows)
+        ("h264_qsv",         "qsv"),            # Intel Quick Sync (Windows/Linux)
+        ("h264_videotoolbox", "videotoolbox"),  # Apple VideoToolbox (macOS)
+    ],
 }
 _SW_FALLBACK = {"h265": "libx265", "h264": "libx264"}
 
