@@ -20,7 +20,7 @@ python auto_reframe.py
 
 ## 設定值說明（`ReframeConfig`）
 
-所有設定值均在 `auto_reframe.py` 第 35–68 行的 `ReframeConfig` 類別中定義。
+所有設定值均在 `auto_reframe.py` 的 `ReframeConfig` 類別中定義。
 
 ### 輸入 / 輸出
 
@@ -29,14 +29,14 @@ python auto_reframe.py
 | `input_dir` | `"input"` | 來源影片資料夾路徑 |
 | `output_dir` | `"output"` | 輸出影片資料夾路徑 |
 
-### 裁切比例
+### 輸出目標（`targets`）
 
 | 設定值 | 預設值 | 說明 |
 |---|---|---|
-| `target_ratios` | `[(4, 5), (1, 1)]` | 要輸出的裁切比例清單（寬:高）。每個比例會產生獨立的子資料夾 |
+| `targets` | `[{'ratio': (4, 5), 'resolution': 'source', 'vcodec': h265}, {'ratio': (4, 5), 'resolution': '1080p', 'vcodec': h264}]` | 多目標輸出設定。每個目標需指定裁切比例 `ratio`、解析度上限 `resolution`、編碼器 `vcodec` |
 | `final_ratio` | `(9, 16)` | 最終輸出影片的比例（寬:高）。不足的部分以黑邊補齊 |
 
-> 例：`target_ratios = [(4, 5), (1, 1)]` 會各自裁切出 4:5 與 1:1 的內容，再補黑邊至 9:16。
+> 例：`targets` 中可同時包含 `(4,5)` 與 `(1,1)`，每種比例都會輸出對應解析度與 codec 的版本。
 
 ### 上方文字設定
 
@@ -69,7 +69,7 @@ python auto_reframe.py
 | `ffprobe_path` | `"ffprobe"` | FFprobe 執行檔路徑，同上 |
 | `video_extensions` | `{".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"}` | 腳本會掃描的影片副檔名集合 |
 | `skip_existing` | `True` | `True` 時若輸出檔案已存在則跳過，設為 `False` 可強制重新轉換 |
-| `max_workers` | `1` | 同時平行處理的影片數量。可依 CPU/GPU 效能調高，建議搭配 SSD 儲存 |
+| `max_workers` | `0` | 同時平行處理的影片數量。`0` 代表自動判斷；目前上限為 macOS=4、其他平台=8 |
 | `debug` | `False` | `True` 時會將 FFmpeg 的完整輸出記錄至腳本目錄下的 `ffmpeg_debug_<檔名>_<比例>.log` |
 
 ---
@@ -106,12 +106,12 @@ python auto_reframe.py
 
 ```
 output/
-├── 4x5_FHD/
-│   └── video_name_4x5_FHD.mp4
-├── 4x5_2K/          ← 原始影片解析度夠高時才會出現
-│   └── video_name_4x5_2K.mp4
-└── 1x1_FHD/
-    └── video_name_1x1_FHD.mp4
+├── 4x5_FHD_h265/
+│   └── video_name_4x5_FHD_h265.mp4
+├── 4x5_FHD_h264/
+│   └── video_name_4x5_FHD_h264.mp4
+└── 1x1_HD_h265/
+    └── video_name_1x1_HD_h265.mp4
 ```
 
 ---

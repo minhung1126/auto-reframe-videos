@@ -19,7 +19,7 @@ from video_utils import (
     # 影片資訊
     get_video_info,
     # 位元率工具
-    get_youtube_bitrate, double_bitrate,
+    get_youtube_bitrate,
     # 暫存清理
     cleanup_tmp_files,
     # 共用常數
@@ -31,6 +31,8 @@ from video_utils import (
     build_output_args,
     tqdm_write, run_ffmpeg_with_progress, run_parallel,
 )
+
+VALID_CODECS = {h264, h265}
 
 # 強制 stdout/stderr 使用 UTF-8
 if hasattr(sys.stdout, "reconfigure"):
@@ -66,7 +68,7 @@ class CompressConfig:
     })
     # 是否跳過已存在的輸出檔案
     skip_existing: bool = True
-    # 平行處理的任務數量，設為 0 將自動判斷 (macOS 上限為 8)
+    # 平行處理的任務數量，設為 0 將自動判斷 (macOS 上限為 4，其他平台上限為 8)
     max_workers: int = 0
     # 是否開啟除錯模式
     debug: bool = False
@@ -76,8 +78,34 @@ class VideoCompressor:
     def __init__(self, config: CompressConfig):
         self.config = config
         self.script_dir = Path(__file__).resolve().parent
+        self._validate_config()
         self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
         self.h264_encoder, self.h264_hwaccel = detect_h264_hw_encoder(self.config.ffmpeg_path)
+
+    def _validate_config(self):
+        if not self.config.targets:
+            raise ValueError("CompressConfig.targets 不可為空。")
+
+        for idx, target in enumerate(self.config.targets, 1):
+            if not isinstance(target, dict):
+                raise ValueError(f"CompressConfig.targets[{idx}] 必須是 dict。")
+
+            resolution = str(target.get("resolution", "")).lower()
+            vcodec = str(target.get("vcodec", "")).lower()
+
+            if resolution not in RESOLUTION_MAP:
+                allowed = ", ".join(sorted(RESOLUTION_MAP.keys()))
+                raise ValueError(
+                    f"CompressConfig.targets[{idx}].resolution 無效: {resolution!r}。可用值: {allowed}"
+                )
+            if vcodec not in VALID_CODECS:
+                allowed = ", ".join(sorted(VALID_CODECS))
+                raise ValueError(
+                    f"CompressConfig.targets[{idx}].vcodec 無效: {vcodec!r}。可用值: {allowed}"
+                )
+
+            target["resolution"] = resolution
+            target["vcodec"] = vcodec
 
     def build_ffmpeg_split_command(self, input_file: Path, tiers_map: list, info: dict) -> list:
         cmd = [self.config.ffmpeg_path, "-hide_banner", "-y"]
@@ -139,7 +167,12 @@ class VideoCompressor:
             cmd += ["-map", v_map]
             if info["has_audio"]:
                 cmd += ["-map", "0:a:0"]
-            encoder = self.h265_encoder if vcodec == h265 else self.h264_encoder
+            if vcodec == h265:
+                encoder = self.h265_encoder
+            elif vcodec == h264:
+                encoder = self.h264_encoder
+            else:
+                raise ValueError(f"不支援的 vcodec: {vcodec!r}")
             cmd += build_output_args(encoder, vbr, vcodec, info["has_audio"], out_file)
 
         return cmd
@@ -204,7 +237,6 @@ class VideoCompressor:
         if returncode != 0:
             tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name}")
             print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
-            print(f"完整執行指令：\n{' '.join(shlex.quote(s) for s in cmd)}")
             print(f"\n指令輸出結尾：\n{''.join(stderr_log)}")
             for t in tmps:
                 if t.exists():

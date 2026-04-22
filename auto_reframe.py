@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from queue import Queue
 
 from video_utils import (
@@ -19,7 +19,7 @@ from video_utils import (
     # 影片資訊
     get_video_info,
     # 位元率工具
-    get_youtube_bitrate, double_bitrate,
+    get_youtube_bitrate,
     # 暫存清理
     cleanup_tmp_files,
     # 共用常數
@@ -31,6 +31,8 @@ from video_utils import (
     build_output_args,
     tqdm_write, run_ffmpeg_with_progress, run_parallel,
 )
+
+VALID_CODECS = {h264, h265}
 
 # 強制 stdout/stderr 使用 UTF-8
 if hasattr(sys.stdout, "reconfigure"):
@@ -89,9 +91,57 @@ class VideoReframer:
     def __init__(self, config: ReframeConfig):
         self.config = config
         self.script_dir = Path(__file__).resolve().parent
+        self._validate_config()
         self.load_texts()
         self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
         self.h264_encoder, self.h264_hwaccel = detect_h264_hw_encoder(self.config.ffmpeg_path)
+
+    def _validate_config(self):
+        if not self.config.targets:
+            raise ValueError("ReframeConfig.targets 不可為空。")
+
+        if (
+            not isinstance(self.config.final_ratio, (tuple, list))
+            or len(self.config.final_ratio) != 2
+            or int(self.config.final_ratio[0]) <= 0
+            or int(self.config.final_ratio[1]) <= 0
+        ):
+            raise ValueError("ReframeConfig.final_ratio 必須是 2 個大於 0 的整數。")
+        self.config.final_ratio = (int(self.config.final_ratio[0]), int(self.config.final_ratio[1]))
+
+        for idx, target in enumerate(self.config.targets, 1):
+            if not isinstance(target, dict):
+                raise ValueError(f"ReframeConfig.targets[{idx}] 必須是 dict。")
+
+            ratio = target.get("ratio")
+            if (
+                not isinstance(ratio, (tuple, list))
+                or len(ratio) != 2
+                or int(ratio[0]) <= 0
+                or int(ratio[1]) <= 0
+            ):
+                raise ValueError(
+                    f"ReframeConfig.targets[{idx}].ratio 必須是 2 個大於 0 的整數，例如 (4, 5)。"
+                )
+            rt_w, rt_h = int(ratio[0]), int(ratio[1])
+
+            resolution = str(target.get("resolution", "")).lower()
+            vcodec = str(target.get("vcodec", "")).lower()
+
+            if resolution not in RESOLUTION_MAP:
+                allowed = ", ".join(sorted(RESOLUTION_MAP.keys()))
+                raise ValueError(
+                    f"ReframeConfig.targets[{idx}].resolution 無效: {resolution!r}。可用值: {allowed}"
+                )
+            if vcodec not in VALID_CODECS:
+                allowed = ", ".join(sorted(VALID_CODECS))
+                raise ValueError(
+                    f"ReframeConfig.targets[{idx}].vcodec 無效: {vcodec!r}。可用值: {allowed}"
+                )
+
+            target["ratio"] = (rt_w, rt_h)
+            target["resolution"] = resolution
+            target["vcodec"] = vcodec
 
     def load_texts(self):
         """讀取上下方的文字檔內容"""
@@ -254,7 +304,12 @@ class VideoReframer:
             cmd += ["-map", final_video_maps[i]]
             if info["has_audio"]:
                 cmd += ["-map", "0:a:0"]
-            encoder = self.h265_encoder if vcodec == h265 else self.h264_encoder
+            if vcodec == h265:
+                encoder = self.h265_encoder
+            elif vcodec == h264:
+                encoder = self.h264_encoder
+            else:
+                raise ValueError(f"不支援的 vcodec: {vcodec!r}")
             cmd += build_output_args(encoder, vbr, vcodec, info["has_audio"], out_file)
 
         return cmd

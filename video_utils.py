@@ -20,6 +20,21 @@ def parse_fps(fps_str: str) -> float:
     except (ValueError, ZeroDivisionError):
         return 30.0
 
+
+def _safe_int(value, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 # 各 codec 的硬體加速編碼器候選清單（優先順序：NVENC > AMF > QSV > VideoToolbox）
 # VideoToolbox 為 macOS 原生 GPU 加速（支援 Apple Silicon / Intel Mac）
 _HW_ENCODER_CANDIDATES = {
@@ -84,6 +99,9 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
              "-show_streams", "-show_format", str(input_file)],
             capture_output=True, text=True, timeout=30
         )
+        if res.returncode != 0 or not res.stdout.strip():
+            print(f"  [警告] FFprobe 無法解析影片: {input_file.name}")
+            return None
         data = json.loads(res.stdout)
     except Exception as e:
         print(f"  [警告] 無法取得影片資訊: {input_file.name} ({e})")
@@ -96,14 +114,22 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
         print(f"  [警告] 影片 {input_file.name} 中未找到視訊串流，已跳過。")
         return None
 
+    width = _safe_int(v_stream.get("width"), 0)
+    height = _safe_int(v_stream.get("height"), 0)
+    if width <= 0 or height <= 0:
+        print(f"  [警告] 影片 {input_file.name} 解析度異常（{width}x{height}），已跳過。")
+        return None
+
     fps_str = v_stream.get("r_frame_rate", "30/1")
     fps = parse_fps(fps_str)
-    
+
+    duration = _safe_float(data.get("format", {}).get("duration", 0), 0.0)
+
     return {
-        "width": int(v_stream.get("width", 0)),
-        "height": int(v_stream.get("height", 0)),
+        "width": width,
+        "height": height,
         "fps": round(fps, 3),
-        "duration": float(data.get("format", {}).get("duration", 0)),
+        "duration": max(duration, 0.0),
         "has_audio": a_stream is not None,
     }
 
@@ -221,14 +247,15 @@ def resolution_label(final_short: int) -> str:
 
 
 def resolve_workers(max_workers: int) -> int:
-    """將 max_workers 設定解析為實際使用的執行緒數（自動偵測，macOS 上限為 4，其餘為 4）。"""
+    """將 max_workers 設定解析為實際使用的執行緒數（macOS 上限 4，其餘平台上限 8）。"""
     w = max_workers
     if w <= 0:
         w = (os.cpu_count() or 2) // 2
-    
-    # M-series Mac 媒體引擎強大，但過多平行任務會造成硬體爭搶與記憶體頻寬壓力
-    # 經測試，在基礎 M 晶片上，平行數 4 通常比 8 更穩定且總效能更高。
-    limit = 4 if sys.platform == "darwin" else 4
+
+    # M-series Mac 媒體引擎強大，但過多平行任務會造成硬體爭搶與記憶體頻寬壓力。
+    # 其他平台仍給較高上限，兼顧吞吐量與穩定性。
+    cpu_n = os.cpu_count() or 2
+    limit = 4 if sys.platform == "darwin" else min(8, cpu_n)
     return max(1, min(w, limit))
 
 
