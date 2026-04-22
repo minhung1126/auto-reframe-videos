@@ -111,22 +111,32 @@ class VideoCompressor:
 
         for j, ((out_w, out_h), indices) in enumerate(res_groups.items()):
             num_codecs = len(indices)
-            if num_codecs > 1:
+            # 只有當解析度不同時才進行 scale，避免不必要的 GPU-CPU 搬運
+            if out_w == info["width"] and out_h == info["height"]:
+                curr_input = raw_inputs[j]
+            else:
                 scaled_lbl = f"[scaled_{j}]"
                 filters.append(f"{raw_inputs[j]}scale={out_w}:{out_h}:flags=bicubic{scaled_lbl}")
+                curr_input = scaled_lbl
+
+            if num_codecs > 1:
                 codec_split_lbls = "".join([f"[out_{idx}]" for idx in indices])
-                filters.append(f"{scaled_lbl}split={num_codecs}{codec_split_lbls}")
+                filters.append(f"{curr_input}split={num_codecs}{codec_split_lbls}")
+                for idx in indices:
+                    final_video_maps[idx] = f"[out_{idx}]"
             else:
-                idx = indices[0]
-                filters.append(f"{raw_inputs[j]}scale={out_w}:{out_h}:flags=bicubic[out_{idx}]")
+                final_video_maps[indices[0]] = curr_input
 
-            for idx in indices:
-                final_video_maps[idx] = f"[out_{idx}]"
-
-        cmd += ["-filter_complex", ";".join(filters)]
+        if filters:
+            cmd += ["-filter_complex", ";".join(filters)]
 
         for i, (out_w, out_h, label, vbr, out_file, vcodec) in enumerate(tiers_map):
-            cmd += ["-map", final_video_maps[i]]
+            v_map = final_video_maps[i]
+            # 如果沒有使用 filter_complex，將標籤 [0:v] 轉為直接映射 0:v
+            if not filters and v_map.startswith("[") and v_map.endswith("]"):
+                v_map = v_map[1:-1]
+            
+            cmd += ["-map", v_map]
             if info["has_audio"]:
                 cmd += ["-map", "0:a:0"]
             encoder = self.h265_encoder if vcodec == h265 else self.h264_encoder
@@ -194,7 +204,8 @@ class VideoCompressor:
         if returncode != 0:
             tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name}")
             print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
-            print(f"指令輸出結尾：\n{''.join(stderr_log)}")
+            print(f"完整執行指令：\n{' '.join(shlex.quote(s) for s in cmd)}")
+            print(f"\n指令輸出結尾：\n{''.join(stderr_log)}")
             for t in tmps:
                 if t.exists():
                     t.unlink()

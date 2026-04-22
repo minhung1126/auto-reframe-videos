@@ -221,13 +221,14 @@ def resolution_label(final_short: int) -> str:
 
 
 def resolve_workers(max_workers: int) -> int:
-    """將 max_workers 設定解析為實際使用的執行緒數（自動偵測，macOS 上限為 8，其餘為 4）。"""
+    """將 max_workers 設定解析為實際使用的執行緒數（自動偵測，macOS 上限為 4，其餘為 4）。"""
     w = max_workers
     if w <= 0:
         w = (os.cpu_count() or 2) // 2
     
-    # M-series Mac 媒體引擎強大，可允許更多平行任務
-    limit = 8 if sys.platform == "darwin" else 4
+    # M-series Mac 媒體引擎強大，但過多平行任務會造成硬體爭搶與記憶體頻寬壓力
+    # 經測試，在基礎 M 晶片上，平行數 4 通常比 8 更穩定且總效能更高。
+    limit = 4 if sys.platform == "darwin" else 4
     return max(1, min(w, limit))
 
 
@@ -252,8 +253,11 @@ def build_encoder_args(encoder: str, vbr: str) -> List[str]:
     if encoder in ("hevc_qsv", "h264_qsv"):
         return [f"-c:{v}", encoder, f"-b:{v}", vbr, "-preset", "medium"]
     if encoder in ("hevc_videotoolbox", "h264_videotoolbox"):
-        # VideoToolbox 參數優化
-        return [f"-c:{v}", encoder, f"-b:{v}", vbr, "-allow_sw", "1"]
+        # VideoToolbox 參數優化：加入即時模式與速度優先旗標
+        args = [f"-c:{v}", encoder, f"-b:{v}", vbr, "-realtime", "1", "-prio_speed", "1", "-allow_sw", "1"]
+        if encoder == "hevc_videotoolbox":
+            args += ["-profile:v", "main"]
+        return args
     # libx265 / libx264 軟體編碼
     return [f"-c:{v}", encoder, "-preset", "medium", f"-b:{v}", vbr,
             f"-maxrate:{v}", double_bitrate(vbr), f"-bufsize:{v}", double_bitrate(vbr)]
