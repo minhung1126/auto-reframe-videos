@@ -6,6 +6,8 @@
 
 ## 快速開始
 
+### 一般執行 (Windows / macOS / Linux)
+
 1. 將影片放入 `input/` 資料夾
 2. （選填）編輯 `top_text.txt` 與 `bottom_text.txt`
 3. 執行腳本：
@@ -13,6 +15,22 @@
 ```bash
 python auto_reframe.py
 ```
+
+### macOS 一鍵執行
+
+專案內提供了 macOS 專用的啟動腳本：
+- `auto_reframe.command`
+- `auto_compress.command`
+
+**如何使用：**
+只需在 Finder 中雙擊這些 `.command` 檔案，系統就會自動開啟終端機並執行對應的程式。
+
+**⚠️ 首次執行注意事項（權限問題）：**
+如果雙擊檔案時出現「沒有權限」或「無法執行」的錯誤（常見於從 Windows 傳送檔案到 macOS 時遺失執行權限），請進行以下設定：
+1. 打開 macOS 的「終端機」（Terminal）。
+2. 輸入 `chmod +x `（注意 `+x` 後面有一個空白）。
+3. 將無法執行的 `.command` 檔案從 Finder 拖曳到終端機視窗內（會自動輸入路徑）。
+4. 按下 Enter 鍵。設定完成後即可正常雙擊執行。
 
 輸出會依裁切比例與解析度分類存放至 `output/` 資料夾。
 
