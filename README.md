@@ -77,7 +77,8 @@ python auto_reframe.py
 | `font_path` | `"fonts/NotoSerifTC.ttf"` | 字型檔案路徑（相對於腳本位置） |
 | `font_color` | `"white"` | 文字顏色，同時作為描邊顏色。接受 FFmpeg 顏色名稱或 `#RRGGBB` 格式 |
 | `text_margin` | `20` | 文字與影片邊緣的間距（px，以 FHD 為準，其他解析度等比縮放） |
-| `text_line_spacing` | `1.2` | 多行文字的行距倍數（`1.0` = 無額外間距） |
+| `top_text_line_spacing_ratio` | `1.2` | 上方文字區的多行文字行距倍數（`1.0` = 無額外間距） |
+| `bottom_text_line_spacing_ratio` | `1.2` | 下方文字區的多行文字行距倍數（`1.0` = 無額外間距） |
 
 ### 系統與平行化
 

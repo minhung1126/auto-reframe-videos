@@ -70,7 +70,8 @@ class ReframeConfig:
     font_path: str = "fonts/NotoSerifTC.ttf"
     font_color: str = "white"
     text_margin: int = 20
-    text_line_spacing: float = 1.2
+    top_text_line_spacing_ratio: float = 1.2
+    bottom_text_line_spacing_ratio: float = 1.2
 
     # --- 系統與平行化設定 ---
     ffmpeg_path: str = "ffmpeg"
@@ -85,7 +86,6 @@ class ReframeConfig:
     # --- 執行階段產生的內部變數 ---
     top_text_content: str = ""
     bottom_text_content: str = ""
-
 
 class VideoReframer:
     def __init__(self, config: ReframeConfig):
@@ -195,6 +195,24 @@ class VideoReframer:
             "pad_top": pad_top, "pad_bottom": pad_bottom, "final_w": final_w, "final_h": final_h,
         }
 
+    @staticmethod
+    def _escape_filter_path(path: Path) -> str:
+        return str(path).replace("\\", "/").replace(":", "\\:")
+
+    @staticmethod
+    def _escape_drawtext_text(text: str) -> str:
+        return (
+            text.replace("\\", "\\\\")
+            .replace("'", "'\\''")
+            .replace(":", "\\:")
+            .replace("%", "%%")
+            .replace("\n", "\\n")
+        )
+
+    def _line_spacing_px(self, font_size: int, line_spacing_ratio: float) -> int:
+        extra_spacing = line_spacing_ratio - 1.0
+        return int(round(font_size * extra_spacing))
+
     def build_ffmpeg_split_command(self, input_file, dims, resolutions_map, info):
         """利用 FFmpeg -filter_complex 實作單次解碼多路輸出"""
         cmd = [self.config.ffmpeg_path, "-hide_banner", "-y"]
@@ -240,7 +258,7 @@ class VideoReframer:
 
         filters.append(base)
 
-        font_path = str(self.script_dir / self.config.font_path).replace("\\", "/").replace(":", "\\:")
+        font_path = self._escape_filter_path(self.script_dir / self.config.font_path)
         top_txt = self.config.top_text_content
         btm_txt = self.config.bottom_text_content
 
@@ -259,31 +277,28 @@ class VideoReframer:
                 bw = max(1, int(fz * 0.03))
                 mar = int(self.config.text_margin * scale_rate)
                 ptop = int(dims["pad_top"] * (out_h / dims["final_h"]))
-                lines = top_txt.splitlines()
-                for ln_i, ln in enumerate(lines):
-                    esc = ln.replace("'", "'\\''").replace(":", "\\:").replace("%", "%%")
-                    rev_i = len(lines) - 1 - ln_i
-                    y_pos = f"{ptop}-{mar}-text_h-{rev_i}*line_h*{self.config.text_line_spacing}"
-                    next_lbl = f"[t_{j}_{ln_i}]"
-                    seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{esc}':fontsize={fz}:"
-                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:"
-                            f"x=(w-text_w)/2:y={y_pos}{next_lbl}")
-                    curr_lbl = next_lbl
+                line_spacing = self._line_spacing_px(fz, self.config.top_text_line_spacing_ratio)
+                text = self._escape_drawtext_text(top_txt)
+                y_pos = f"{ptop}-{mar}-text_h"
+                next_lbl = f"[t_{j}]"
+                seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text}':fontsize={fz}:"
+                        f"line_spacing={line_spacing}:fontcolor={self.config.font_color}:"
+                        f"borderw={bw}:bordercolor={border_c}:x=(w-text_w)/2:y={y_pos}{next_lbl}")
+                curr_lbl = next_lbl
 
             if btm_txt:
                 fz = int(self.config.bottom_font_size * scale_rate)
                 bw = max(1, int(fz * 0.03))
                 mar = int(self.config.text_margin * scale_rate)
                 pbtm = int(dims["pad_bottom"] * (out_h / dims["final_h"]))
-                lines = btm_txt.splitlines()
-                for ln_i, ln in enumerate(lines):
-                    esc = ln.replace("'", "'\\''").replace(":", "\\:").replace("%", "%%")
-                    y_pos = f"{out_h}-{pbtm}+{mar}+{ln_i}*line_h*{self.config.text_line_spacing}"
-                    next_lbl = f"[b_{j}_{ln_i}]"
-                    seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{esc}':fontsize={fz}:"
-                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:"
-                            f"x=(w-text_w)/2:y={y_pos}{next_lbl}")
-                    curr_lbl = next_lbl
+                line_spacing = self._line_spacing_px(fz, self.config.bottom_text_line_spacing_ratio)
+                text = self._escape_drawtext_text(btm_txt)
+                y_pos = f"{out_h}-{pbtm}+{mar}"
+                next_lbl = f"[b_{j}]"
+                seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text}':fontsize={fz}:"
+                        f"line_spacing={line_spacing}:fontcolor={self.config.font_color}:"
+                        f"borderw={bw}:bordercolor={border_c}:x=(w-text_w)/2:y={y_pos}{next_lbl}")
+                curr_lbl = next_lbl
 
             num_codecs = len(indices)
             if num_codecs > 1:
