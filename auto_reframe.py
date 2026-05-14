@@ -70,7 +70,7 @@ class ReframeConfig:
     font_path: str = "fonts/NotoSerifTC.ttf"
     font_color: str = "white"
     text_margin: int = 20
-    top_text_line_spacing_ratio: float = 1.2
+    top_text_line_spacing_ratio: float = 1.08
     bottom_text_line_spacing_ratio: float = 1.2
 
     # --- 系統與平行化設定 ---
