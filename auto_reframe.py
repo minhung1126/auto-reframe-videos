@@ -206,7 +206,6 @@ class VideoReframer:
             .replace("'", "'\\''")
             .replace(":", "\\:")
             .replace("%", "%%")
-            .replace("\n", "\\n")
         )
 
     def _line_spacing_px(self, font_size: int, line_spacing_ratio: float) -> int:
