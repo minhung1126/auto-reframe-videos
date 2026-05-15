@@ -151,6 +151,19 @@ class VideoReframer:
             print(f"\n[提示] 系統已新建 '{self.config.top_text_file}' 或 '{self.config.bottom_text_file}'。")
             print("       這個檔案是用來顯示疊加在輸出的上下黑邊文字，留空則不顯示。")
 
+        # 寫入暫存文字檔給 FFmpeg textfile 使用，避免 command line 傳遞 \n 造成的渲染方塊問題
+        if self.config.top_text_content:
+            self.top_textfile_path = self.script_dir / ".tmp_top_text.txt"
+            self.top_textfile_path.write_text(self.config.top_text_content, encoding="utf-8")
+        else:
+            self.top_textfile_path = None
+
+        if self.config.bottom_text_content:
+            self.bottom_textfile_path = self.script_dir / ".tmp_bottom_text.txt"
+            self.bottom_textfile_path.write_text(self.config.bottom_text_content, encoding="utf-8")
+        else:
+            self.bottom_textfile_path = None
+
     def _load_text_from_file(self, filepath: str) -> Tuple[str, bool]:
         text_path = self.script_dir / filepath
         if not text_path.exists():
@@ -164,7 +177,9 @@ class VideoReframer:
             except Exception:
                 print(f"  [警告] 無法讀取文字檔: {text_path}")
                 return "", False
-        return text.rstrip("\r\n"), False
+        # 移除 \r 避免 FFmpeg 渲染出無法解析的方塊符號，並移除結尾的換行
+        text = text.replace("\r", "").rstrip("\n")
+        return text, False
 
     def calculate_dimensions(self, src_w, src_h, target_ratio):
         t_w, t_h = target_ratio
@@ -198,15 +213,6 @@ class VideoReframer:
     @staticmethod
     def _escape_filter_path(path: Path) -> str:
         return str(path).replace("\\", "/").replace(":", "\\:")
-
-    @staticmethod
-    def _escape_drawtext_text(text: str) -> str:
-        return (
-            text.replace("\\", "\\\\")
-            .replace("'", "'\\''")
-            .replace(":", "\\:")
-            .replace("%", "%%")
-        )
 
     def _line_spacing_px(self, font_size: int, line_spacing_ratio: float) -> int:
         extra_spacing = line_spacing_ratio - 1.0
@@ -271,31 +277,31 @@ class VideoReframer:
             scale_rate = out_h / 1920.0
             border_c = self.config.font_color
 
-            if top_txt:
+            if top_txt and getattr(self, "top_textfile_path", None):
                 fz = int(self.config.top_font_size * scale_rate)
                 bw = max(1, int(fz * 0.03))
                 mar = int(self.config.text_margin * scale_rate)
                 ptop = int(dims["pad_top"] * (out_h / dims["final_h"]))
                 line_spacing = self._line_spacing_px(fz, self.config.top_text_line_spacing_ratio)
-                text = self._escape_drawtext_text(top_txt)
+                tf_path = self._escape_filter_path(self.top_textfile_path)
                 y_pos = f"{ptop}-{mar}-text_h"
                 next_lbl = f"[t_{j}]"
-                seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text}':fontsize={fz}:"
-                        f"line_spacing={line_spacing}:fontcolor={self.config.font_color}:"
+                seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':textfile='{tf_path}':fontsize={fz}:"
+                        f"text_align=C:line_spacing={line_spacing}:fontcolor={self.config.font_color}:"
                         f"borderw={bw}:bordercolor={border_c}:x=(w-text_w)/2:y={y_pos}{next_lbl}")
                 curr_lbl = next_lbl
 
-            if btm_txt:
+            if btm_txt and getattr(self, "bottom_textfile_path", None):
                 fz = int(self.config.bottom_font_size * scale_rate)
                 bw = max(1, int(fz * 0.03))
                 mar = int(self.config.text_margin * scale_rate)
                 pbtm = int(dims["pad_bottom"] * (out_h / dims["final_h"]))
                 line_spacing = self._line_spacing_px(fz, self.config.bottom_text_line_spacing_ratio)
-                text = self._escape_drawtext_text(btm_txt)
+                tf_path = self._escape_filter_path(self.bottom_textfile_path)
                 y_pos = f"{out_h}-{pbtm}+{mar}"
                 next_lbl = f"[b_{j}]"
-                seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text}':fontsize={fz}:"
-                        f"line_spacing={line_spacing}:fontcolor={self.config.font_color}:"
+                seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':textfile='{tf_path}':fontsize={fz}:"
+                        f"text_align=C:line_spacing={line_spacing}:fontcolor={self.config.font_color}:"
                         f"borderw={bw}:bordercolor={border_c}:x=(w-text_w)/2:y={y_pos}{next_lbl}")
                 curr_lbl = next_lbl
 
@@ -458,8 +464,6 @@ def main():
 
     if os.name == 'nt':
         os.system("pause")
-    else:
-        input("\n請按 Enter 鍵結束...")
 
 
 if __name__ == "__main__":
