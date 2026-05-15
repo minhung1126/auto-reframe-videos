@@ -280,11 +280,11 @@ class VideoReframer:
                 for ln_i, ln in enumerate(lines):
                     text_esc = self._escape_drawtext_text(ln)
                     rev_i = len(lines) - 1 - ln_i
-                    y_pos = f"{ptop}-{mar}-text_h-{rev_i}*line_h*{self.config.top_text_line_spacing_ratio}"
+                    y_pos = f"{ptop}-{mar}-ascent-{rev_i}*line_h*{self.config.top_text_line_spacing_ratio}"
                     next_lbl = f"[t_{j}_{ln_i}]"
                     seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text_esc}':fontsize={fz}:"
                             f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:"
-                            f"x=(w-text_w)/2:y={y_pos}{next_lbl}")
+                            f"fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}")
                     curr_lbl = next_lbl
 
             if btm_txt:
@@ -299,7 +299,7 @@ class VideoReframer:
                     next_lbl = f"[b_{j}_{ln_i}]"
                     seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text_esc}':fontsize={fz}:"
                             f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:"
-                            f"x=(w-text_w)/2:y={y_pos}{next_lbl}")
+                            f"fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}")
                     curr_lbl = next_lbl
 
             num_codecs = len(indices)
