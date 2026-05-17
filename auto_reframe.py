@@ -457,6 +457,37 @@ def main():
 
     config = ReframeConfig()
     app = VideoReframer(config)
+
+    # --- 確認目標參數與文字內容 ---
+    print("\n【目標參數】")
+    print(f"  最終畫布比例 (final_ratio): {config.final_ratio[0]}:{config.final_ratio[1]}")
+    print(f"  輸出目標 (targets):")
+    for i, t in enumerate(config.targets, 1):
+        print(f"    [{i}] ratio={t['ratio'][0]}:{t['ratio'][1]}  resolution={t['resolution']}  vcodec={t['vcodec']}")
+
+    print("\n【文字內容】")
+    top_lines = config.top_text_content.splitlines() if config.top_text_content else []
+    btm_lines = config.bottom_text_content.splitlines() if config.bottom_text_content else []
+    print(f"  ▲ top_text.txt ({len(top_lines)} 行):")
+    if top_lines:
+        for ln in top_lines:
+            print(f"    | {ln}")
+    else:
+        print("    (空)")
+    print(f"  ▼ bottom_text.txt ({len(btm_lines)} 行):")
+    if btm_lines:
+        for ln in btm_lines:
+            print(f"    | {ln}")
+    else:
+        print("    (空)")
+
+    print()
+    try:
+        input("確認以上設定無誤後，請按 Enter 開始執行...")
+    except EOFError:
+        pass
+    print()
+
     app.run()
 
     if os.name == 'nt':
