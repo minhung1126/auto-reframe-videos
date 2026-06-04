@@ -124,6 +124,13 @@ class VideoReframer:
                     f"ReframeConfig.targets[{idx}].ratio 必須是 2 個大於 0 的整數，例如 (4, 5)。"
                 )
             rt_w, rt_h = int(ratio[0]), int(ratio[1])
+            final_w, final_h = self.config.final_ratio
+            if rt_w / rt_h < final_w / final_h:
+                print(
+                    f"  [Warning] ReframeConfig.targets[{idx}].ratio "
+                    f"{rt_w}:{rt_h} is taller than final_ratio {final_w}:{final_h}; "
+                    "the fixed top/video/bottom layout may not have vertical padding."
+                )
 
             resolution = str(target.get("resolution", "")).lower()
             vcodec = str(target.get("vcodec", "")).lower()

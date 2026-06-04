@@ -54,6 +54,34 @@ _HW_ENCODER_CANDIDATES = {
 _SW_FALLBACK = {"h265": "libx265", "h264": "libx264"}
 
 
+def _encoder_candidates(codec: str) -> List[Tuple[str, str]]:
+    candidates = list(_HW_ENCODER_CANDIDATES[codec])
+    if sys.platform == "darwin":
+        vt = [c for c in candidates if c[1] == "videotoolbox"]
+        other = [c for c in candidates if c[1] != "videotoolbox"]
+        return vt + other
+    return candidates
+
+
+def _is_videotoolbox_encoder(encoder: str) -> bool:
+    return encoder in ("hevc_videotoolbox", "h264_videotoolbox")
+
+
+def _encoder_probe_cmd(ffmpeg_path: str, encoder: str) -> List[str]:
+    cmd = [
+        ffmpeg_path, "-hide_banner",
+        "-f", "lavfi", "-i", "nullsrc=s=256x256:d=1,format=yuv420p",
+        "-frames:v", "1",
+        "-c:v", encoder,
+    ]
+    if _is_videotoolbox_encoder(encoder):
+        cmd += ["-allow_sw", "0", "-realtime", "1"]
+        if encoder == "hevc_videotoolbox":
+            cmd += ["-profile:v", "main"]
+    cmd += ["-f", "null", "-"]
+    return cmd
+
+
 def _detect_hw_encoder(ffmpeg_path: str, codec: str) -> Tuple[str, Optional[str]]:
     """通用硬體加速編碼器偵測，支援 'h265' 或 'h264'。"""
     try:
@@ -65,11 +93,10 @@ def _detect_hw_encoder(ffmpeg_path: str, codec: str) -> Tuple[str, Optional[str]
         sys.exit(1)
 
     label = codec.upper()  # 用於顯示訊息
-    for enc, hw in _HW_ENCODER_CANDIDATES[codec]:
+    for enc, hw in _encoder_candidates(codec):
         if enc in encoders:
             test = subprocess.run(
-                [ffmpeg_path, "-hide_banner", "-f", "lavfi", "-i",
-                 "nullsrc=s=256x256:d=1", "-c:v", enc, "-f", "null", "-"],
+                _encoder_probe_cmd(ffmpeg_path, enc),
                 capture_output=True, text=True, timeout=30
             )
             if test.returncode == 0:
@@ -266,7 +293,11 @@ def detect_hwaccel_for_cmd(hwaccels: set) -> List[str]:
     if len(hwaccels) != 1:
         return []
     hw = next(iter(hwaccels))
-    # 支援 VideoToolbox, CUDA, QSV 等硬體解碼
+    if hw == "videotoolbox":
+        # Keep VideoToolbox for encoding, but avoid decode-side hardware frames
+        # in filter_complex pipelines where crop/pad/scale/drawtext need CPU frames.
+        return []
+    # 支援 CUDA, D3D11VA, QSV 等硬體解碼；VideoToolbox 僅保留給編碼端。
     return ["-hwaccel", hw]
 
 
@@ -279,9 +310,9 @@ def build_encoder_args(encoder: str, vbr: str) -> List[str]:
         return [f"-c:{v}", encoder, f"-b:{v}", vbr, "-quality", "balanced", "-rc", "vbr_latency"]
     if encoder in ("hevc_qsv", "h264_qsv"):
         return [f"-c:{v}", encoder, f"-b:{v}", vbr, "-preset", "medium"]
-    if encoder in ("hevc_videotoolbox", "h264_videotoolbox"):
-        # VideoToolbox 參數優化：加入即時模式與速度優先旗標
-        args = [f"-c:{v}", encoder, f"-b:{v}", vbr, "-realtime", "1", "-prio_speed", "1", "-allow_sw", "1"]
+    if _is_videotoolbox_encoder(encoder):
+        # Keep VideoToolbox hardware-only; if unavailable, detection falls back to libx264/libx265.
+        args = [f"-c:{v}", encoder, f"-b:{v}", vbr, "-allow_sw", "0", "-realtime", "1"]
         if encoder == "hevc_videotoolbox":
             args += ["-profile:v", "main"]
         return args
