@@ -255,8 +255,12 @@ except ImportError:
 
 
 def resolve_short_side(res_key: str, source_short: int) -> int:
-    """給定解析度關鍵字與來源短邊，回傳最終輸出短邊（不放大、向下取最接近的標準值）。"""
-    target_limit = RESOLUTION_MAP.get(res_key.lower(), 1080)
+    """給定解析度關鍵字與來源短邊，回傳最終輸出短邊；source 保留原始短邊，其餘不放大並向下取標準值。"""
+    key = res_key.lower()
+    if key == "source":
+        return source_short
+
+    target_limit = RESOLUTION_MAP.get(key, 1080)
     upper = min(target_limit, source_short)
     for s in (2160, 1440, 1080, 720, 480, 360):
         if s <= upper:
