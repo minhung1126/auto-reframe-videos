@@ -5,34 +5,37 @@ Auto Reframe Video — 橫轉直影片工具 (v2.0 - H.265)
 優化項目：H.265 (HEVC) 高效壓縮、平行處理、單次解碼多路輸出、避免重複讀檔、即時運算進度條、物件導向重構
 """
 
-import os
 import sys
 from pathlib import Path
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import List, Tuple
 from queue import Queue
 
+from auto_reframe_core.batch_runner import run_video_batch
+from auto_reframe_core.ffmpeg_graphs import build_reframe_split_command
+from auto_reframe_core.output_plans import (
+    build_reframe_output_plan,
+    cleanup_temp_outputs,
+    promote_temp_outputs,
+)
+from auto_reframe_core.platform_profile import pause_for_windows_shell
+from auto_reframe_core.reframe_geometry import calculate_reframe_dimensions
 from video_utils import (
     # 硬體加速偵測
     detect_h265_hw_encoder, detect_h264_hw_encoder,
     # 影片資訊
     get_video_info,
-    # 位元率工具
-    get_youtube_bitrate,
-    # 暫存清理
-    cleanup_tmp_files,
     # 共用常數
-    h264, h265, RESOLUTION_MAP,
-    # 解析度工具
-    resolve_short_side, resolution_label,
+    h264, h265,
     # 執行工具
-    resolve_workers, detect_hwaccel_for_cmd,
-    build_output_args,
-    tqdm_write, run_ffmpeg_with_progress, run_parallel,
+    tqdm_write, run_ffmpeg_with_progress,
 )
-
-VALID_CODECS = {h264, h265}
+from auto_reframe_core.target_specs import normalize_reframe_target
+from auto_reframe_core.text_layout import (
+    TextLayoutConfig,
+    escape_drawtext_text,
+    escape_filter_path,
+)
 
 # 強制 stdout/stderr 使用 UTF-8
 if hasattr(sys.stdout, "reconfigure"):
@@ -110,45 +113,7 @@ class VideoReframer:
         self.config.final_ratio = (int(self.config.final_ratio[0]), int(self.config.final_ratio[1]))
 
         for idx, target in enumerate(self.config.targets, 1):
-            if not isinstance(target, dict):
-                raise ValueError(f"ReframeConfig.targets[{idx}] 必須是 dict。")
-
-            ratio = target.get("ratio")
-            if (
-                not isinstance(ratio, (tuple, list))
-                or len(ratio) != 2
-                or int(ratio[0]) <= 0
-                or int(ratio[1]) <= 0
-            ):
-                raise ValueError(
-                    f"ReframeConfig.targets[{idx}].ratio 必須是 2 個大於 0 的整數，例如 (4, 5)。"
-                )
-            rt_w, rt_h = int(ratio[0]), int(ratio[1])
-            final_w, final_h = self.config.final_ratio
-            if rt_w / rt_h < final_w / final_h:
-                print(
-                    f"  [Warning] ReframeConfig.targets[{idx}].ratio "
-                    f"{rt_w}:{rt_h} is taller than final_ratio {final_w}:{final_h}; "
-                    "the fixed top/video/bottom layout may not have vertical padding."
-                )
-
-            resolution = str(target.get("resolution", "")).lower()
-            vcodec = str(target.get("vcodec", "")).lower()
-
-            if resolution not in RESOLUTION_MAP:
-                allowed = ", ".join(sorted(RESOLUTION_MAP.keys()))
-                raise ValueError(
-                    f"ReframeConfig.targets[{idx}].resolution 無效: {resolution!r}。可用值: {allowed}"
-                )
-            if vcodec not in VALID_CODECS:
-                allowed = ", ".join(sorted(VALID_CODECS))
-                raise ValueError(
-                    f"ReframeConfig.targets[{idx}].vcodec 無效: {vcodec!r}。可用值: {allowed}"
-                )
-
-            target["ratio"] = (rt_w, rt_h)
-            target["resolution"] = resolution
-            target["vcodec"] = vcodec
+            normalize_reframe_target(target, idx, self.config.final_ratio)
 
     def load_texts(self):
         """讀取上下方的文字檔內容"""
@@ -174,169 +139,48 @@ class VideoReframer:
         return text, False
 
     def calculate_dimensions(self, src_w, src_h, target_ratio):
-        t_w, t_h = target_ratio
-        source_ratio = src_w / src_h
-        target_ratio_val = t_w / t_h
-
-        if source_ratio > target_ratio_val:
-            crop_h = src_h
-            crop_w = int(src_h * target_ratio_val)
-        else:
-            crop_w = src_w
-            crop_h = int(src_w / target_ratio_val)
-
-        crop_w = min(crop_w - crop_w % 2, src_w)
-        crop_h = min(crop_h - crop_h % 2, src_h)
-        crop_x, crop_y = (src_w - crop_w) // 2, (src_h - crop_h) // 2
-
-        f_w, f_h = self.config.final_ratio
-        final_w, final_h = crop_w, int(crop_w * f_h / f_w)
-        final_w += final_w % 2
-        final_h += final_h % 2
-
-        pad_top = max(0, (final_h - crop_h) // 2)
-        pad_bottom = max(0, (final_h - crop_h) - pad_top)
-
-        return {
-            "crop_w": crop_w, "crop_h": crop_h, "crop_x": crop_x, "crop_y": crop_y,
-            "pad_top": pad_top, "pad_bottom": pad_bottom, "final_w": final_w, "final_h": final_h,
-        }
+        return calculate_reframe_dimensions(src_w, src_h, target_ratio, self.config.final_ratio)
 
     @staticmethod
     def _escape_filter_path(path: Path) -> str:
-        return str(path).replace("\\", "/").replace(":", "\\:")
+        return escape_filter_path(path)
 
     @staticmethod
     def _escape_drawtext_text(text: str) -> str:
-        return (
-            text.replace("\\", "\\\\")
-            .replace("'", "'\\''")
-            .replace(":", "\\:")
-            .replace("%", "%%")
-        )
+        return escape_drawtext_text(text)
 
     def _line_spacing_px(self, font_size: int, line_spacing_ratio: float) -> int:
         extra_spacing = line_spacing_ratio - 1.0
         return int(round(font_size * extra_spacing))
 
+    def _text_layout_config(self) -> TextLayoutConfig:
+        layout = TextLayoutConfig(
+            font_path=self._escape_filter_path(self.script_dir / self.config.font_path),
+            font_color=self.config.font_color,
+            text_margin=self.config.text_margin,
+            top_font_size=self.config.top_font_size,
+            bottom_font_size=self.config.bottom_font_size,
+            top_line_spacing_ratio=self.config.top_text_line_spacing_ratio,
+            bottom_line_spacing_ratio=self.config.bottom_text_line_spacing_ratio,
+            top_text=self.config.top_text_content,
+            bottom_text=self.config.bottom_text_content,
+        )
+        return layout
+
     def build_ffmpeg_split_command(self, input_file, dims, resolutions_map, info):
         """利用 FFmpeg -filter_complex 實作單次解碼多路輸出"""
-        cmd = [self.config.ffmpeg_path, "-hide_banner", "-y"]
-
-        # 收集所有輸出的 hwaccel 後端，用共用工具決定是否啟用解碼端加速
-        # (VideoToolbox 解碼端已透過 detect_hwaccel_for_cmd 排除，避免像素格式衝突)
-        hwaccels = set()
-        for entry in resolutions_map:
-            vcodec = entry[5] if len(entry) > 5 else h265
-            hw = self.h265_hwaccel if vcodec == h265 else self.h264_hwaccel
-            if hw:
-                hwaccels.add(hw)
-        cmd += detect_hwaccel_for_cmd(hwaccels)
-
-        cmd += ["-i", str(input_file)]
-
-        filters = []
-        crop = f"crop={dims['crop_w']}:{dims['crop_h']}:{dims['crop_x']}:{dims['crop_y']}"
-        pad = (
-            f"pad={dims['final_w']}:{dims['final_h']}:0:{dims['pad_top']}:black"
-            if dims['pad_top'] > 0 or dims['pad_bottom'] > 0 else ""
+        return build_reframe_split_command(
+            self.config.ffmpeg_path,
+            input_file,
+            dims,
+            resolutions_map,
+            info,
+            self.h264_encoder,
+            self.h264_hwaccel,
+            self.h265_encoder,
+            self.h265_hwaccel,
+            self._text_layout_config(),
         )
-
-        base = f"[0:v]{crop}[crp]"
-        if pad:
-            base += f";[crp]{pad}[pad]"
-            root_lbl = "[pad]"
-        else:
-            root_lbl = "[crp]"
-
-        res_groups = OrderedDict()
-        for i, entry in enumerate(resolutions_map):
-            key = (entry[0], entry[1])
-            res_groups.setdefault(key, []).append(i)
-
-        splits_cnt = len(res_groups)
-        if splits_cnt > 1:
-            split_lbls = "".join([f"[base_{i}]" for i in range(splits_cnt)])
-            base += f";{root_lbl}split={splits_cnt}{split_lbls}"
-            base_inputs = [f"[base_{i}]" for i in range(splits_cnt)]
-        else:
-            base_inputs = [root_lbl]
-
-        filters.append(base)
-
-        font_path = self._escape_filter_path(self.script_dir / self.config.font_path)
-        top_txt = self.config.top_text_content
-        btm_txt = self.config.bottom_text_content
-
-        final_video_maps = [None] * len(resolutions_map)
-
-        for j, ((out_w, out_h), indices) in enumerate(res_groups.items()):
-            res_lbl = f"[res_{j}]"
-            seq = f"{base_inputs[j]}scale={out_w}:{out_h}:flags=bicubic{res_lbl}"
-            curr_lbl = res_lbl
-
-            scale_rate = out_h / 1920.0
-            border_c = self.config.font_color
-
-            if top_txt:
-                fz = int(self.config.top_font_size * scale_rate)
-                bw = max(1, int(fz * 0.03))
-                mar = int(self.config.text_margin * scale_rate)
-                ptop = int(dims["pad_top"] * (out_h / dims["final_h"]))
-                lines = top_txt.splitlines()
-                for ln_i, ln in enumerate(lines):
-                    text_esc = self._escape_drawtext_text(ln)
-                    rev_i = len(lines) - 1 - ln_i
-                    y_pos = f"{ptop}-{mar}-ascent-{rev_i}*line_h*{self.config.top_text_line_spacing_ratio}"
-                    next_lbl = f"[t_{j}_{ln_i}]"
-                    seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text_esc}':fontsize={fz}:"
-                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:"
-                            f"fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}")
-                    curr_lbl = next_lbl
-
-            if btm_txt:
-                fz = int(self.config.bottom_font_size * scale_rate)
-                bw = max(1, int(fz * 0.03))
-                mar = int(self.config.text_margin * scale_rate)
-                pbtm = int(dims["pad_bottom"] * (out_h / dims["final_h"]))
-                lines = btm_txt.splitlines()
-                for ln_i, ln in enumerate(lines):
-                    text_esc = self._escape_drawtext_text(ln)
-                    y_pos = f"{out_h}-{pbtm}+{mar}+{ln_i}*line_h*{self.config.bottom_text_line_spacing_ratio}"
-                    next_lbl = f"[b_{j}_{ln_i}]"
-                    seq += (f";{curr_lbl}drawtext=fontfile='{font_path}':text='{text_esc}':fontsize={fz}:"
-                            f"fontcolor={self.config.font_color}:borderw={bw}:bordercolor={border_c}:"
-                            f"fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}")
-                    curr_lbl = next_lbl
-
-            num_codecs = len(indices)
-            if num_codecs > 1:
-                codec_split_lbls = "".join([f"[out_{idx}]" for idx in indices])
-                seq += f";{curr_lbl}split={num_codecs}{codec_split_lbls}"
-                for idx in indices:
-                    final_video_maps[idx] = f"[out_{idx}]"
-            else:
-                final_video_maps[indices[0]] = curr_lbl
-
-            filters.append(seq)
-
-        cmd += ["-filter_complex", ";".join(filters)]
-
-        for i, entry in enumerate(resolutions_map):
-            out_w, out_h, label, vbr, out_file = entry[:5]
-            vcodec = entry[5] if len(entry) > 5 else h265
-            cmd += ["-map", final_video_maps[i]]
-            if info["has_audio"]:
-                cmd += ["-map", "0:a:0"]
-            if vcodec == h265:
-                encoder = self.h265_encoder
-            elif vcodec == h264:
-                encoder = self.h264_encoder
-            else:
-                raise ValueError(f"不支援的 vcodec: {vcodec!r}")
-            cmd += build_output_args(encoder, vbr, vcodec, info["has_audio"], out_file)
-
-        return cmd
 
     def process_single_video(self, task_info: Tuple[int, int, Path], position_q: Queue) -> bool:
         idx, total, file_path = task_info
@@ -347,54 +191,21 @@ class VideoReframer:
         out_dir = Path(self.config.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        ratio_groups = OrderedDict()
+        ratio_groups = {}
         for t in self.config.targets:
             ratio_groups.setdefault(t['ratio'], []).append(t)
 
         all_success = True
         for (rt_w, rt_h), targets in ratio_groups.items():
             dims = self.calculate_dimensions(info["width"], info["height"], (rt_w, rt_h))
+            plan = build_reframe_output_plan(
+                self.config, out_dir, file_path, info, dims, rt_w, rt_h, targets
+            )
 
-            active_maps = []
-            tmps = []
-            finals = []
-
-            for t in targets:
-                res_key = t['resolution'].lower()
-                vcodec = t['vcodec']
-
-                f_w, f_h = self.config.final_ratio
-                source_short = min(dims['final_w'], dims['final_h'])
-                final_short = resolve_short_side(res_key, source_short)
-
-                if f_w <= f_h:
-                    out_w = final_short
-                    out_h = int(final_short * f_h / f_w)
-                else:
-                    out_h = final_short
-                    out_w = int(final_short * f_w / f_h)
-
-                out_w += out_w % 2
-                out_h += out_h % 2
-
-                suffix_name = f"{rt_w}x{rt_h}_{resolution_label(final_short)}_{vcodec}"
-                sub_dir = out_dir / suffix_name
-                sub_dir.mkdir(parents=True, exist_ok=True)
-                target_f = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
-
-                if self.config.skip_existing and target_f.exists():
-                    continue
-
-                tmp_f = target_f.with_name(target_f.name + ".tmp")
-                bitrate = get_youtube_bitrate(min(out_w, out_h), info["fps"])
-                active_maps.append((out_w, out_h, resolution_label(final_short), bitrate, tmp_f, vcodec))
-                tmps.append(tmp_f)
-                finals.append(target_f)
-
-            if not active_maps:
+            if not plan.has_work:
                 continue
 
-            cmd = self.build_ffmpeg_split_command(file_path, dims, active_maps, info)
+            cmd = self.build_ffmpeg_split_command(file_path, dims, plan.active_maps, info)
 
             debug_log_path = None
             if self.config.debug:
@@ -409,52 +220,17 @@ class VideoReframer:
                 tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}]")
                 print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
                 print(f"指令輸出結尾：\n{''.join(stderr_log)}")
-                for t in tmps:
-                    if t.exists():
-                        t.unlink()
+                cleanup_temp_outputs(plan.tmps)
                 all_success = False
                 continue
 
             tqdm_write(f"({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}] 完成!")
-
-            for t, f in zip(tmps, finals):
-                if t.exists():
-                    if f.exists():
-                        f.unlink()
-                    t.rename(f)
+            promote_temp_outputs(plan.tmps, plan.finals)
 
         return all_success
 
     def run(self):
-        in_dir = Path(self.config.input_dir)
-        if not in_dir.exists():
-            in_dir.mkdir(parents=True)
-            print(f"\n[提示] 未找到 '{in_dir.resolve()}'，已自動創建，請放置影片後重新執行。")
-            return
-
-        out_dir = Path(self.config.output_dir)
-        cleanup_tmp_files(out_dir)
-
-        videos = [
-            f for f in in_dir.iterdir()
-            if f.is_file() and f.suffix.lower() in self.config.video_extensions
-        ]
-        if not videos:
-            print("\n[提示] 資料夾內無可支援的影片檔。")
-            return
-
-        workers = resolve_workers(self.config.max_workers)
-        print(f"\n找到 {len(videos)} 個目標將開始轉換 (平行任務數: {workers})...\n")
-
-        tasks = [(i, len(videos), v) for i, v in enumerate(sorted(videos), 1)]
-        success_count, failed_files = run_parallel(tasks, self.process_single_video, workers)
-
-        print("\n" + "=" * 60)
-        print("  任務總結")
-        print(f"  成功: {success_count} / {len(videos)}")
-        if failed_files:
-            print(f"  失敗: {', '.join(failed_files)}")
-        print("=" * 60)
+        run_video_batch(self.config, self.process_single_video, "轉換")
 
 
 def main():
@@ -497,8 +273,7 @@ def main():
 
     app.run()
 
-    if os.name == 'nt':
-        os.system("pause")
+    pause_for_windows_shell()
 
 
 if __name__ == "__main__":

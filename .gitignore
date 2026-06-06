@@ -1,8 +1,11 @@
 __pycache__/
+*.py[cod]
 input/
 output/
 .venv/
 tmp/
+*.tmp
+ffmpeg_debug_*.log
 
 *_text.txt
 

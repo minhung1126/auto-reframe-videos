@@ -10,10 +10,11 @@
 
 1. 將影片放入 `input/` 資料夾
 2. （選填）編輯 `top_text.txt` 與 `bottom_text.txt`
-3. 執行腳本：
+3. 執行需要的腳本：
 
 ```bash
 python auto_reframe.py
+python auto_compress.py
 ```
 
 ### macOS 一鍵執行
@@ -33,6 +34,34 @@ python auto_reframe.py
 4. 按下 Enter 鍵。設定完成後即可正常雙擊執行。
 
 輸出會依裁切比例與解析度分類存放至 `output/` 資料夾。
+
+---
+
+## 專案結構
+
+```
+auto_reframe.py          # 直式重製入口與 ReframeConfig
+auto_compress.py         # 壓縮入口與 CompressConfig
+video_utils.py           # 相容層與共用低階工具
+auto_reframe_core/       # 內部核心模組
+tests/                   # 行為守衛測試
+fonts/                   # 內建字型
+```
+
+`auto_reframe_core/` 內部職責：
+
+| 模組 | 職責 |
+|---|---|
+| `platform_profile.py` | Windows/macOS 平台判斷與 worker 上限 |
+| `encoder_profiles.py` | H.264/H.265 硬體編碼器偵測與 encoder 參數 |
+| `target_specs.py` | targets 驗證與正規化 |
+| `reframe_geometry.py` | 裁切、補邊與 final canvas 尺寸計算 |
+| `output_plans.py` | 輸出尺寸、命名、tmp/final 檔案規劃 |
+| `ffmpeg_graphs.py` | FFmpeg command / filter graph 組裝 |
+| `text_layout.py` | 固定 top/video/bottom 文字版面邏輯 |
+| `batch_runner.py` | 掃描輸入、清 tmp、平行執行與任務總結 |
+
+固定版面與 drawtext 行為由 `tests/test_behavior_guards.py` 鎖住。重構或修改濾鏡時請先閱讀 `AGENTS.md`。
 
 ---
 
@@ -77,7 +106,7 @@ python auto_reframe.py
 | `font_path` | `"fonts/NotoSerifTC.ttf"` | 字型檔案路徑（相對於腳本位置） |
 | `font_color` | `"white"` | 文字顏色，同時作為描邊顏色。接受 FFmpeg 顏色名稱或 `#RRGGBB` 格式 |
 | `text_margin` | `20` | 文字與影片邊緣的間距（px，以 FHD 為準，其他解析度等比縮放） |
-| `top_text_line_spacing_ratio` | `1.2` | 上方文字區的多行文字行距倍數（`1.0` = 無額外間距） |
+| `top_text_line_spacing_ratio` | `1.08` | 上方文字區的多行文字行距倍數（`1.0` = 無額外間距） |
 | `bottom_text_line_spacing_ratio` | `1.2` | 下方文字區的多行文字行距倍數（`1.0` = 無額外間距） |
 
 ### 系統與平行化
@@ -141,10 +170,11 @@ output/
 
 | 優先順序 | 編碼器 | 加速方式 | 適用硬體 |
 |---|---|---|---|
-| 1 | `h264_nvenc` | CUDA | NVIDIA GPU |
-| 2 | `h264_amf` | D3D11VA | AMD GPU |
-| 3 | `h264_qsv` | QSV | Intel GPU |
-| 4 | `libx264` | 軟體編碼 | 全平台（備援） |
+| 1 | `h264_nvenc` / `hevc_nvenc` | CUDA | NVIDIA GPU |
+| 2 | `h264_amf` / `hevc_amf` | D3D11VA | AMD GPU |
+| 3 | `h264_qsv` / `hevc_qsv` | QSV | Intel GPU |
+| 4 | `h264_videotoolbox` / `hevc_videotoolbox` | VideoToolbox | macOS |
+| 5 | `libx264` / `libx265` | 軟體編碼 | 全平台（備援） |
 
 ---
 

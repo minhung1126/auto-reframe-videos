@@ -1,85 +1,122 @@
-# 專案設計理念
+# Agent Notes / AI 開發注意事項
 
-`auto-reframe-videos` 旨在提供高效能、全自動的影片重製與壓縮解決方案，主要針對社群平台的直式/短影音內容需求進行最佳化。專案重點運用硬體加速 (如 H.264 / H.265 HW Encoders) 和多線程平行處理技術，將橫向影片進行高效率的智慧裁切、補邊，並轉換為適合手機等裝置閱讀的直式比例。
+`auto-reframe-videos` 是跨平台影片重製與壓縮工具，主要支援 Windows 與 macOS。專案使用 FFmpeg/FFprobe，會優先偵測硬體編碼器，無可用硬體加速時回退至軟體編碼。
 
-本專案會在Windows和macOS上運行。
+## 不可更改的版面核心
 
-## 視覺版面配置與對齊方式 (嚴重警告：嚴格不可更改)
+`auto_reframe.py` 產出的最終影片必須永遠維持以下由上而下的三層結構：
 
-本專案在生成最終的直式影片時，嚴格遵循一個固定的「由上而下」的文字與影片夾心式版面排列。這個排列結構已經與程式碼內部處理 (`FFmpeg` Drawtext filters 等) 高度整合，**請任何 AI Agent 或開發者注意，此排版順序與對齊邏輯為本專案不可或缺的視覺核心，絕不可更改！**
+1. `top_text.txt`：渲染在上方黑色補邊。
+2. 輸入影片：裁切/縮放後置中放在中間。
+3. `bottom_text.txt`：渲染在下方黑色補邊。
 
-其畫面配置由上往下永遠為以下三層結構：
+嚴禁顛倒、合併、移除或重新解讀這三個區域。
 
-### 1. 頂層文字區域 (`@file:top_text.txt`)
-*   **內容來源**：讀取 `top_text.txt`。
-*   **排列與對齊**：渲染配置於畫布**最上方**的黑色補邊區域（Pad Top）。水平方向保持**絕對置中**；垂直方向的文字排版則採用**「向影片上方靠齊（底部對齊）」**的累進式排版邏輯。若有多行文字，最下方一行的文字會固定保持與影片頂端邊界一定的 Margin (間距)，其餘內容則往上增長排列。
+上方文字規則：
+- 水平必須置中。
+- 垂直方向必須從影片上緣往上增長。
+- 最下面一行上方文字要維持在影片上緣附近，距離由 `text_margin` 控制。
 
-### 2. 中間影片區域 (`{input_video}`)
-*   **內容來源**：輸入之原始影片。
-*   **排列與對齊**：經過裁切或縮放的影片本體，將永遠置中對齊放置於畫布的**正中央**。
+下方文字規則：
+- 水平必須置中。
+- 垂直方向必須從影片下緣往下增長。
+- 第一行下方文字要維持在影片下緣附近，距離由 `text_margin` 控制。
 
-### 3. 底層文字區域 (`@file:bottom_text.txt`)
-*   **內容來源**：讀取 `bottom_text.txt`。
-*   **排列與對齊**：渲染配置於畫布**最下方**的黑色補邊區域（Pad Bottom）。水平方向保持**絕對置中**；垂直方向的文字排版則採用**「從底部黑邊頂端開始向下排列」**的累進式排版邏輯。無論行數多寡，第一行文字必將固定貼齊於影片下達的邊緣下方一定的 Margin (間距) 處，其餘內容則向下增長。
+受保護的實作位置：
 
----
-
----
-
-**⛔ 開發與修正限制：**
-不論日後需要對工具進行任何功能擴充、濾鏡調整或程式重構，皆不允許顛倒上下文字順序（即 `@file:top_text.txt` 必定在上，`@file:bottom_text.txt` 必定在下）、也不得將上述向中間靠攏的對齊行距計算方式抹除或更改。這些規範代表了專案最終產出影片的固定 Layout 視覺風格。
-
-## 配置說明 (New Config System)
-
-自 v2.1 起，專案改由 `targets` 列表進行多目標輸出配置。
-
-### 1. `targets` 設定範例
-```python
-targets = [
-    {'ratio': (4, 5), 'resolution': '2k', 'vcodec': h265},
-    {'ratio': (4, 5), 'resolution': '1080p', 'vcodec': h264},
-    {'ratio': (1, 1), 'resolution': '1080p', 'vcodec': h265},
-]
+```text
+auto_reframe_core/text_layout.py
 ```
 
-### 2. 解析度邏輯 (Resolution Logic)
-`resolution` 欄位代表 **「不大於此解析度的最大解析度」**。
-*   如果輸入影片解析度足夠，則輸出該指定解析度。
-*   如果輸入影片解析度低於指定值，則以原始裁切後的最高解析度輸出，絕不透過插值放大以保持畫質。
+任何修改都必須讓以下測試通過：
 
-**可選關鍵字：**
-*   `4k` (2160p)
-*   `2k` (1440p)
-*   `1080p` / `fhd` (1080p)
-*   `720p` / `hd` (720p)
-*   `480p`
-*   `360p`
-*   `source` (原始比例裁切後的最大解析度)
+```text
+tests/test_behavior_guards.py
+```
 
-### 3. 編碼器支援 (Video Codec)
-*   `h264`: 廣泛相容，適合大多數平台。
-*   `h265`: (或稱 HEVC) 更高效的壓縮，適合 TikTok/Reels 等支援高效能編碼的平台。
-*   專案會自動偵測硬體加速 (NVENC, AMF, QSV)，若無則回退至軟體編碼 (`libx264` / `libx265`)。
+## FFmpeg Drawtext 規則
 
----
+處理多行文字時，絕對不要把包含換行的完整字串傳給單一 `drawtext` filter。
 
-## ⚠️ 開發與修正踩坑紀錄 (Known Issues & Gotchas)
+正確做法：
+- 文字檔以 UTF-8 / UTF-8-SIG 讀取。
+- 移除 `\r`，只移除結尾多餘換行。
+- 在 Python 內使用 `.splitlines()` 切成單行。
+- 每一行各自產生一個獨立的 `drawtext` filter。
+- 傳給 FFmpeg 的 `text=` 內容不可包含任何 newline。
 
-### FFmpeg `drawtext` 多行文字與方塊亂碼問題
-在處理多行文字疊加時，**絕對禁止**透過命令列將包含換行符號 (`\n` 或 `\r\n`) 的完整多行字串，直接傳給單一的 `drawtext` 濾鏡。
-*   **錯誤現象**：如果直接傳入包含 `\n` 的多行文字，或是即使使用了 `textfile`，在某些字體（如 NotoSerifTC）與 FFmpeg 版本下，底層字體渲染引擎 (FreeType) 仍會試圖把 `0x0A` (`\n`) 當成字元畫出來，導致在每一行末尾畫出一個「無法解析的方塊符號 (Missing Glyph Box)」。
-*   **錯誤的修正嘗試**：
-    1.  不可使用 `.replace("\n", "\\n")` 進行跳脫！FFmpeg 濾鏡解析器會將 `\\n` 視為英文字母 `n`，導致文字不換行且出現字母 `n`。
-    2.  單純使用 `textfile` 也不一定能 100% 避開特定環境下的換行符號渲染問題。
-*   **唯一正確解法 (本專案現行機制)**：在 Python 內部先使用 `.splitlines()` 將文字切分為單行陣列，並使用 `for` 迴圈為「每一行」動態生成一個獨立的 `drawtext` 濾鏡。透過程式碼計算各行的 `y_pos` 來達成多行排版，同時因為傳給 FFmpeg 的字串中**完全不包含任何換行符號**，從根本上徹底杜絕了方塊亂碼的問題。
+排版與 baseline 規則：
+- 每個文字 `drawtext` filter 都必須包含 `fix_bounds=true`。
+- 上方文字的 Y 座標必須使用 FFmpeg 完整變數名稱 `ascent`。
+- 嚴禁把 `ascent` 簡寫成 `a`，FFmpeg 會解析失敗。
 
-### FFmpeg `drawtext` 多行排版行距與基準線 (Baseline) 對齊問題
-當使用多重濾鏡渲染多行文字時，若混用「純數字/英文」與「中文字」，會遇到兩者字高不同導致視覺上行距忽大忽小的問題。
-*   **錯誤排版 (頂端對齊)**：若使用 `line_h` 等常數作為 Y 座標 (例如 `y = grid_y`)，這會將文字的「頂部」對齊網格。因為中文與數字的 `text_h` (實際渲染高度) 不同，這會導致它們的「底部 (基準線)」參差不齊。
-*   **錯誤排版 (底部對齊)**：若使用 `text_h` 將底部對齊網格 (`y = grid_y - text_h`)，雖然中文和數字對齊了，但帶有下沉部 (Descender，如 p, g, y) 的英文字母會因為底部向下延伸，導致其基準線被向上推擠，使得中英文字基準線脫節。
-*   **唯一正確解法 (固定邊界與字體 Ascent 對齊)**：
-    1.  在 `drawtext` 中加入 **`fix_bounds=true`** 參數。這會強制 FFmpeg 使用字體的「絕對最大邊界」來計算排版，而非字串本身的實際高度。
-    2.  計算上方文字 Y 座標 (`y_pos`) 時，使用字體的「最大 Ascent 高度」常數 **`ascent`** 作為基準線反推點：
-        `y_pos = ... - ascent - {rev_i}*line_h*ratio`。
-        *(⚠️ 嚴格警告：在 `drawtext` 濾鏡的參數中，該常數變數名稱全名為 `ascent`，**絕不可簡寫為 `a`**，否則會觸發 FFmpeg 解析錯誤中斷！)*
-    這樣不僅能精準將基準線釘死在虛擬網格上，確保中/英/數字混排完美對齊，還能避免英文長尾巴字母導致行距變寬的問題！
+## Config Contract
+
+輸出目標統一使用 `targets` 設定。
+
+Reframe target 範例：
+
+```python
+{"ratio": (4, 5), "resolution": "source", "vcodec": h265}
+```
+
+Compress target 範例：
+
+```python
+{"resolution": "1080p", "vcodec": h264}
+```
+
+`resolution` 的意思是「不大於此解析度的最大標準解析度」。不可為了達到指定解析度而插值放大。
+
+支援解析度：
+- `4k`
+- `2k`
+- `1080p` / `fhd`
+- `720p` / `hd`
+- `480p`
+- `360p`
+- `source`
+
+支援 codec：
+- `h264`
+- `h265`
+
+## 專案結構
+
+```text
+auto_reframe.py          # 使用者入口：直式重製與 ReframeConfig
+auto_compress.py         # 使用者入口：壓縮與 CompressConfig
+video_utils.py           # 相容層與共用低階工具
+auto_reframe_core/       # 內部核心模組
+tests/                   # 行為守衛測試
+```
+
+`auto_reframe_core/` 職責分工：
+
+- `platform_profile.py`：Windows/macOS 平台判斷與 worker 上限。
+- `encoder_profiles.py`：H.264/H.265 硬體編碼器偵測與 encoder args。
+- `target_specs.py`：`targets` 驗證與正規化。
+- `reframe_geometry.py`：裁切、補邊與 final canvas 尺寸計算。
+- `output_plans.py`：輸出尺寸、命名、tmp/final 檔案規劃。
+- `ffmpeg_graphs.py`：FFmpeg command / filter graph 組裝。
+- `text_layout.py`：固定 top/video/bottom 文字版面。
+- `batch_runner.py`：掃描輸入、清理 tmp、平行執行與任務總結。
+
+## 開發規則
+
+- 平台判斷集中在 `auto_reframe_core/platform_profile.py`。
+- 編碼器偵測與 encoder-specific FFmpeg args 集中在 `auto_reframe_core/encoder_profiles.py`。
+- 輸出命名與規劃集中在 `auto_reframe_core/output_plans.py`。
+- FFmpeg graph 組裝集中在 `auto_reframe_core/ffmpeg_graphs.py`。
+- 固定文字版面集中在 `auto_reframe_core/text_layout.py`，修改前請特別小心。
+- 根目錄入口腳本必須保留，避免破壞既有使用方式：
+  - `python auto_reframe.py`
+  - `python auto_compress.py`
+
+完成修改前請執行：
+
+```bash
+python3 -m py_compile auto_reframe.py auto_compress.py video_utils.py auto_reframe_core/*.py tests/test_behavior_guards.py
+python3 -m unittest discover -s tests
+git diff --check
+```

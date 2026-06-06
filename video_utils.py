@@ -1,5 +1,4 @@
 import json
-import os
 import re
 import shlex
 import subprocess
@@ -8,6 +7,16 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from queue import Queue
 from typing import Tuple, Optional, Dict, Any, List
+
+from auto_reframe_core.encoder_profiles import (
+    build_encoder_args,
+    build_output_args,
+    detect_h264_hw_encoder,
+    detect_h265_hw_encoder,
+    detect_hwaccel_for_cmd,
+    double_bitrate,
+)
+from auto_reframe_core.platform_profile import resolve_workers
 
 def parse_fps(fps_str: str) -> float:
     """安全解析 FFmpeg 的 fps 字串（如 '30000/1001' 或 '29.97'）"""
@@ -33,89 +42,6 @@ def _safe_float(value, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
-
-
-# 各 codec 的硬體加速編碼器候選清單（優先順序：NVENC > AMF > QSV > VideoToolbox）
-# VideoToolbox 為 macOS 原生 GPU 加速（支援 Apple Silicon / Intel Mac）
-_HW_ENCODER_CANDIDATES = {
-    "h265": [
-        ("hevc_nvenc",        "cuda"),          # NVIDIA (Windows/Linux)
-        ("hevc_amf",         "d3d11va"),        # AMD (Windows)
-        ("hevc_qsv",         "qsv"),            # Intel Quick Sync (Windows/Linux)
-        ("hevc_videotoolbox", "videotoolbox"),  # Apple VideoToolbox (macOS)
-    ],
-    "h264": [
-        ("h264_nvenc",        "cuda"),          # NVIDIA (Windows/Linux)
-        ("h264_amf",         "d3d11va"),        # AMD (Windows)
-        ("h264_qsv",         "qsv"),            # Intel Quick Sync (Windows/Linux)
-        ("h264_videotoolbox", "videotoolbox"),  # Apple VideoToolbox (macOS)
-    ],
-}
-_SW_FALLBACK = {"h265": "libx265", "h264": "libx264"}
-
-
-def _encoder_candidates(codec: str) -> List[Tuple[str, str]]:
-    candidates = list(_HW_ENCODER_CANDIDATES[codec])
-    if sys.platform == "darwin":
-        vt = [c for c in candidates if c[1] == "videotoolbox"]
-        other = [c for c in candidates if c[1] != "videotoolbox"]
-        return vt + other
-    return candidates
-
-
-def _is_videotoolbox_encoder(encoder: str) -> bool:
-    return encoder in ("hevc_videotoolbox", "h264_videotoolbox")
-
-
-def _encoder_probe_cmd(ffmpeg_path: str, encoder: str) -> List[str]:
-    cmd = [
-        ffmpeg_path, "-hide_banner",
-        "-f", "lavfi", "-i", "nullsrc=s=256x256:d=1,format=yuv420p",
-        "-frames:v", "1",
-        "-c:v", encoder,
-    ]
-    if _is_videotoolbox_encoder(encoder):
-        cmd += ["-allow_sw", "0", "-realtime", "1"]
-        if encoder == "hevc_videotoolbox":
-            cmd += ["-profile:v", "main"]
-    cmd += ["-f", "null", "-"]
-    return cmd
-
-
-def _detect_hw_encoder(ffmpeg_path: str, codec: str) -> Tuple[str, Optional[str]]:
-    """通用硬體加速編碼器偵測，支援 'h265' 或 'h264'。"""
-    try:
-        res = subprocess.run([ffmpeg_path, "-hide_banner", "-encoders"],
-                             capture_output=True, text=True, timeout=10)
-        encoders = res.stdout
-    except Exception:
-        print(f"[錯誤] 呼叫 {ffmpeg_path} 失敗，請確認其是否存在。")
-        sys.exit(1)
-
-    label = codec.upper()  # 用於顯示訊息
-    for enc, hw in _encoder_candidates(codec):
-        if enc in encoders:
-            test = subprocess.run(
-                _encoder_probe_cmd(ffmpeg_path, enc),
-                capture_output=True, text=True, timeout=30
-            )
-            if test.returncode == 0:
-                print(f"  [核心系統] 已啟用硬體加速編碼器 ({label}): {enc} ({hw})")
-                return enc, hw
-
-    sw = _SW_FALLBACK[codec]
-    print(f"  [核心系統] 未發現可用硬體加速 ({label})，回退至軟體編碼 ({sw})")
-    return sw, None
-
-
-def detect_h265_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:
-    """偵測可用的 H.265 硬體加速編碼器"""
-    return _detect_hw_encoder(ffmpeg_path, "h265")
-
-
-def detect_h264_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:
-    """偵測可用的 H.264 硬體加速編碼器"""
-    return _detect_hw_encoder(ffmpeg_path, "h264")
 
 
 def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, Any]]:
@@ -191,17 +117,6 @@ def get_youtube_bitrate(short_side: int, fps: float, multiplier: float = 1.5) ->
         return f"{int(final_mbps * 1000)}K"
 
 
-def double_bitrate(vbr: str) -> str:
-    """安全地將 bitrate 數值倍增（如 '12M' → '24M'，相容 M/K 或小數）"""
-    m = re.fullmatch(r"([\d\.]+)([A-Za-z]+)", str(vbr))
-    if not m:
-        raise ValueError(f"無法解析 bitrate 字串: {vbr!r}")
-    val = float(m.group(1)) * 2
-    # 移除小數點後為 0 的 .0
-    val_str = f"{int(val)}" if val.is_integer() else f"{val}"
-    return f"{val_str}{m.group(2)}"
-
-
 def parse_ffmpeg_time(time_str: str) -> float:
     """將 FFmpeg 的 HH:MM:SS.ms 時間字串解析為秒數"""
     try:
@@ -275,71 +190,6 @@ def resolution_label(final_short: int) -> str:
     if final_short >= 1080: return "FHD"
     if final_short >= 720:  return "HD"
     return f"{final_short}P"
-
-
-def resolve_workers(max_workers: int) -> int:
-    """將 max_workers 設定解析為實際使用的執行緒數（macOS 上限 4，其餘平台上限 8）。"""
-    w = max_workers
-    if w <= 0:
-        w = (os.cpu_count() or 2) // 2
-
-    # M-series Mac 媒體引擎強大，但過多平行任務會造成硬體爭搶與記憶體頻寬壓力。
-    # 其他平台仍給較高上限，兼顧吞吐量與穩定性。
-    cpu_n = os.cpu_count() or 2
-    limit = 4 if sys.platform == "darwin" else min(8, cpu_n)
-    return max(1, min(w, limit))
-
-
-def detect_hwaccel_for_cmd(hwaccels: set) -> List[str]:
-    """
-    給定一組 hwaccel 後端字串，回傳應插入 FFmpeg 命令的解碼端 hwaccel 旗標。
-    """
-    if len(hwaccels) != 1:
-        return []
-    hw = next(iter(hwaccels))
-    if hw == "videotoolbox":
-        # Keep VideoToolbox for encoding, but avoid decode-side hardware frames
-        # in filter_complex pipelines where crop/pad/scale/drawtext need CPU frames.
-        return []
-    # 支援 CUDA, D3D11VA, QSV 等硬體解碼；VideoToolbox 僅保留給編碼端。
-    return ["-hwaccel", hw]
-
-
-def build_encoder_args(encoder: str, vbr: str) -> List[str]:
-    """根據編碼器類型回傳對應的 FFmpeg 視訊編碼參數清單（不含輸出檔路徑）。"""
-    v = "v:0"
-    if encoder in ("hevc_nvenc", "h264_nvenc"):
-        return [f"-c:{v}", encoder, f"-b:{v}", vbr, "-preset", "p4", "-rc", "vbr"]
-    if encoder in ("hevc_amf", "h264_amf"):
-        return [f"-c:{v}", encoder, f"-b:{v}", vbr, "-quality", "balanced", "-rc", "vbr_latency"]
-    if encoder in ("hevc_qsv", "h264_qsv"):
-        return [f"-c:{v}", encoder, f"-b:{v}", vbr, "-preset", "medium"]
-    if _is_videotoolbox_encoder(encoder):
-        # Keep VideoToolbox hardware-only; if unavailable, detection falls back to libx264/libx265.
-        args = [f"-c:{v}", encoder, f"-b:{v}", vbr, "-allow_sw", "0", "-realtime", "1"]
-        if encoder == "hevc_videotoolbox":
-            args += ["-profile:v", "main"]
-        return args
-    # libx265 / libx264 軟體編碼
-    return [f"-c:{v}", encoder, "-preset", "medium", f"-b:{v}", vbr,
-            f"-maxrate:{v}", double_bitrate(vbr), f"-bufsize:{v}", double_bitrate(vbr)]
-
-
-def build_output_args(encoder: str, vbr: str, vcodec: str,
-                      has_audio: bool, out_file) -> List[str]:
-    """
-    組合完整的單路輸出參數：
-    視訊編碼 + pix_fmt + hvc1 tag（h265）+ 音訊（aac 192k）+ mp4 容器。
-    不含 -map 旗標，呼叫端需自行在前面加入。
-    """
-    args = build_encoder_args(encoder, vbr)
-    args += ["-pix_fmt", "yuv420p"]
-    if vcodec == h265:
-        args += ["-tag:v", "hvc1"]
-    if has_audio:
-        args += ["-c:a:0", "aac", "-b:a:0", "192k"]
-    args += ["-f", "mp4", "-movflags", "+faststart", str(out_file)]
-    return args
 
 
 def tqdm_write(msg: str) -> None:
@@ -433,15 +283,22 @@ def run_parallel(
 
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {executor.submit(process_fn, t, position_q): t for t in tasks}
-        for fut in as_completed(futures):
-            t = futures[fut]
-            try:
-                if fut.result():
-                    success_count += 1
-                else:
+        try:
+            for fut in as_completed(futures):
+                t = futures[fut]
+                try:
+                    if fut.result():
+                        success_count += 1
+                    else:
+                        failed_files.append(t[2].name)
+                except Exception as e:
                     failed_files.append(t[2].name)
-            except Exception as e:
-                failed_files.append(t[2].name)
-                print(f"\n[錯誤] 處理 {t[2].name} 時發生異常: {e}")
+                    print(f"\n[錯誤] 處理 {t[2].name} 時發生異常: {e}")
+        except KeyboardInterrupt:
+            for fut in futures:
+                fut.cancel()
+            executor.shutdown(wait=False, cancel_futures=True)
+            print("\n[中斷] 已收到停止指令，正在停止尚未開始的任務。")
+            raise
 
     return success_count, failed_files
