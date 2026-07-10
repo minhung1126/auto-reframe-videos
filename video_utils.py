@@ -129,14 +129,20 @@ def cleanup_tmp_files(out_dir: Path):
     """清理先前執行殘留的 .tmp 暫存檔"""
     if not out_dir.exists():
         return
+    import time
     tmp_files = list(out_dir.rglob("*.tmp"))
     if tmp_files:
-        print(f"  [清理] 發現 {len(tmp_files)} 個殘留暫存檔，正在刪除...")
+        deleted_count = 0
         for tmp in tmp_files:
             try:
-                tmp.unlink()
+                # 只有當暫存檔修改時間超過 10 分鐘以上，才判定為先前殘留並清理，避免誤刪平行執行的暫存檔
+                if time.time() - tmp.stat().st_mtime > 600:
+                    tmp.unlink()
+                    deleted_count += 1
             except OSError:
                 pass
+        if deleted_count > 0:
+            print(f"  [清理] 發現並清理了 {deleted_count} 個殘留暫存檔。")
 
 
 # =============================================================================
@@ -243,7 +249,8 @@ def run_ffmpeg_with_progress(
                 debug_fd.write(line)
                 debug_fd.flush()
             if "time=" in line:
-                m = re.search(r"time=(\d{2}:\d{2}:\d{2}\.\d{2})", line)
+                # 支援變長的小時數與 1~3 位的毫秒數 (例如 00:00:05.3 或 00:00:05.123)
+                m = re.search(r"time=(\d+:\d{2}:\d{2}(?:\.\d+)?)", line)
                 if m and pbar:
                     pbar.n = min(parse_ffmpeg_time(m.group(1)), info["duration"])
                     pbar.refresh()

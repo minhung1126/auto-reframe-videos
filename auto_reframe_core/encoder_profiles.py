@@ -124,7 +124,7 @@ def detect_hwaccel_for_cmd(hwaccels: set) -> List[str]:
 def double_bitrate(vbr: str) -> str:
     import re
 
-    m = re.fullmatch(r"([\d\.]+)([A-Za-z]+)", str(vbr))
+    m = re.fullmatch(r"([\d\.]+)([A-Za-z]*)", str(vbr))
     if not m:
         raise ValueError(f"無法解析 bitrate 字串: {vbr!r}")
     val = float(m.group(1)) * 2

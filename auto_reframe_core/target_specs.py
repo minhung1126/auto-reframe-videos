@@ -52,10 +52,9 @@ def normalize_reframe_target(target: dict, idx: int, final_ratio) -> None:
     rt_w, rt_h = int(ratio[0]), int(ratio[1])
     final_w, final_h = final_ratio
     if rt_w / rt_h < final_w / final_h:
-        print(
-            f"  [Warning] {config_name}.targets[{idx}].ratio "
-            f"{rt_w}:{rt_h} is taller than final_ratio {final_w}:{final_h}; "
-            "the fixed top/video/bottom layout may not have vertical padding."
+        raise ValueError(
+            f"{config_name}.targets[{idx}].ratio ({rt_w}:{rt_h}) 比 final_ratio ({final_w}:{final_h}) 更窄高，"
+            "這將導致輸出影片比例失真變形，且不具備垂直補邊。請重新調整裁切比例。"
         )
 
     target["ratio"] = (rt_w, rt_h)

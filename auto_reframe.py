@@ -132,8 +132,14 @@ class VideoReframer:
             try:
                 text = text_path.read_text(encoding="utf-8-sig")
             except Exception:
-                print(f"  [警告] 無法讀取文字檔: {text_path}")
-                return "", False
+                try:
+                    # 嘗試使用本機系統預設編碼，例如 Windows 的 CP950/CP936
+                    import locale
+                    text = text_path.read_text(encoding=locale.getpreferredencoding())
+                    print(f"  [提示] 使用系統預設編碼讀取文字檔: {text_path}")
+                except Exception:
+                    print(f"  [警告] 無法讀取文字檔 (不支援的編碼): {text_path}")
+                    return "", False
         # 移除 \r 避免 FFmpeg 渲染出無法解析的方塊符號，並移除結尾的換行
         text = text.replace("\r", "").rstrip("\n")
         return text, False
