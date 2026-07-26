@@ -1,0 +1,45 @@
+{
+  "version": 1,
+  "settings": {
+    "mode": "reframe",
+    "targets": {
+      "reframe": [
+        {
+          "ratio": [4, 5],
+          "resolution": "source",
+          "vcodec": "h265"
+        },
+        {
+          "ratio": [4, 5],
+          "resolution": "1080p",
+          "vcodec": "h264"
+        }
+      ],
+      "compress": [
+        {
+          "resolution": "source",
+          "vcodec": "h265"
+        }
+      ]
+    },
+    "final_ratio": [9, 16],
+    "watermark_enabled": false,
+    "watermark_file": "default-watermark.png",
+    "watermark_position": "bottom-center",
+    "watermark_width_ratio": 0.32,
+    "watermark_opacity": 0.85,
+    "watermark_margin": 56,
+    "font_path": "fonts/NotoSerifTC.ttf",
+    "font_color": "white",
+    "top_font_size": 48,
+    "bottom_font_size": 24,
+    "text_margin": 20,
+    "top_spacing": 1.08,
+    "bottom_spacing": 1.2,
+    "ffmpeg": "ffmpeg",
+    "ffprobe": "ffprobe",
+    "workers": 0,
+    "skip_existing": true,
+    "debug": false
+  }
+}

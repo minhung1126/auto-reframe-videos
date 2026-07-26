@@ -54,7 +54,8 @@ def build_compress_output_plan(config, out_dir: Path, file_path: Path, info: dic
         out_h += out_h % 2
 
         label = f"COMPRESS_{resolution_label(final_short)}"
-        suffix_name = f"{label}_{vcodec}"
+        watermark_suffix = "_wm" if getattr(config, "watermark_enabled", False) else ""
+        suffix_name = f"{label}_{vcodec}{watermark_suffix}"
         sub_dir = out_dir / suffix_name
         sub_dir.mkdir(parents=True, exist_ok=True)
         target_file = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
@@ -104,7 +105,8 @@ def build_reframe_output_plan(
         out_h += out_h % 2
 
         label = resolution_label(final_short)
-        suffix_name = f"{ratio_width}x{ratio_height}_{label}_{vcodec}"
+        watermark_suffix = "_wm" if getattr(config, "watermark_enabled", False) else ""
+        suffix_name = f"{ratio_width}x{ratio_height}_{label}_{vcodec}{watermark_suffix}"
         sub_dir = out_dir / suffix_name
         sub_dir.mkdir(parents=True, exist_ok=True)
         target_file = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"

@@ -2,7 +2,6 @@
 """Hardware encoder detection and FFmpeg encoder argument profiles."""
 
 import subprocess
-import sys
 from typing import List, Optional, Tuple
 
 from .platform_profile import PlatformProfile, current_platform
@@ -80,19 +79,27 @@ def _detect_hw_encoder(
             timeout=10,
         )
         encoders = res.stdout
-    except Exception:
-        print(f"[錯誤] 呼叫 {ffmpeg_path} 失敗，請確認其是否存在。")
-        sys.exit(1)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError(
+            f"呼叫 {ffmpeg_path} 失敗，請確認 FFmpeg 是否已安裝且路徑正確。"
+        ) from exc
+    if res.returncode != 0:
+        raise RuntimeError(
+            f"FFmpeg 無法列出編碼器（exit code {res.returncode}）: {ffmpeg_path}"
+        )
 
     label = codec.upper()
     for enc, hw in _encoder_candidates(codec, profile):
         if enc in encoders:
-            test = subprocess.run(
-                _encoder_probe_cmd(ffmpeg_path, enc),
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
+            try:
+                test = subprocess.run(
+                    _encoder_probe_cmd(ffmpeg_path, enc),
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
             if test.returncode == 0:
                 print(f"  [核心系統] 已啟用硬體加速編碼器 ({label}): {enc} ({hw})")
                 return enc, hw

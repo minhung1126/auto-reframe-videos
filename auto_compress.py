@@ -33,6 +33,7 @@ from video_utils import (
     tqdm_write, run_ffmpeg_with_progress,
 )
 from auto_reframe_core.target_specs import normalize_compress_target
+from auto_reframe_core.watermark import WatermarkConfig, build_watermark_config
 
 # 強制 stdout/stderr 使用 UTF-8
 if hasattr(sys.stdout, "reconfigure"):
@@ -73,6 +74,14 @@ class CompressConfig:
     # 是否開啟除錯模式
     debug: bool = False
 
+    # --- 圖片浮水印（相對路徑以專案目錄為基準） ---
+    watermark_enabled: bool = False
+    watermark_file: str = ""
+    watermark_position: str = "bottom-center"
+    watermark_width_ratio: float = 0.32
+    watermark_opacity: float = 0.85
+    watermark_margin: int = 56
+
 
 class VideoCompressor:
     def __init__(self, config: CompressConfig):
@@ -89,17 +98,75 @@ class VideoCompressor:
         for idx, target in enumerate(self.config.targets, 1):
             normalize_compress_target(target, idx)
 
-    def build_ffmpeg_split_command(self, input_file: Path, tiers_map: list, info: dict) -> list:
+        self.watermark = build_watermark_config(
+            enabled=self.config.watermark_enabled,
+            watermark_file=self.config.watermark_file,
+            position=self.config.watermark_position,
+            width_ratio=self.config.watermark_width_ratio,
+            opacity=self.config.watermark_opacity,
+            margin=self.config.watermark_margin,
+            base_dir=self.script_dir,
+        )
+
+    def build_ffmpeg_split_command(
+        self,
+        input_file: Path,
+        tiers_map: list,
+        info: dict,
+        disable_decode_hwaccel: bool = False,
+        force_software_encode: bool = False,
+    ) -> list:
+        h264_encoder = "libx264" if force_software_encode else self.h264_encoder
+        h265_encoder = "libx265" if force_software_encode else self.h265_encoder
+        h264_hwaccel = None if disable_decode_hwaccel else self.h264_hwaccel
+        h265_hwaccel = None if disable_decode_hwaccel else self.h265_hwaccel
         return build_compress_split_command(
             self.config.ffmpeg_path,
             input_file,
             tiers_map,
             info,
-            self.h264_encoder,
-            self.h264_hwaccel,
-            self.h265_encoder,
-            self.h265_hwaccel,
+            h264_encoder,
+            h264_hwaccel,
+            h265_encoder,
+            h265_hwaccel,
+            getattr(self, "watermark", WatermarkConfig()),
         )
+
+    def _ffmpeg_attempts(self, input_file: Path, active_maps: list, info: dict):
+        first_cmd = self.build_ffmpeg_split_command(input_file, active_maps, info)
+        attempts = [("硬體優先", first_cmd)]
+        if "-hwaccel" in first_cmd:
+            attempts.append(
+                (
+                    "停用硬體解碼、保留硬體編碼",
+                    self.build_ffmpeg_split_command(
+                        input_file,
+                        active_maps,
+                        info,
+                        disable_decode_hwaccel=True,
+                    ),
+                )
+            )
+
+        uses_hardware_encoder = any(
+            (entry[5] == h264 and self.h264_encoder != "libx264")
+            or (entry[5] == h265 and self.h265_encoder != "libx265")
+            for entry in active_maps
+        )
+        if uses_hardware_encoder:
+            attempts.append(
+                (
+                    "軟體解碼與軟體編碼",
+                    self.build_ffmpeg_split_command(
+                        input_file,
+                        active_maps,
+                        info,
+                        disable_decode_hwaccel=True,
+                        force_software_encode=True,
+                    ),
+                )
+            )
+        return attempts
 
     def process_single_video(self, task_info: Tuple[int, int, Path], position_q: Queue) -> bool:
         idx, total, file_path = task_info
@@ -115,22 +182,30 @@ class VideoCompressor:
         if not plan.has_work:
             return True
 
-        cmd = self.build_ffmpeg_split_command(file_path, plan.active_maps, info)
-
         debug_log_path = None
         if self.config.debug:
             debug_log_path = self.script_dir / f"ffmpeg_debug_{file_path.stem}_compress.log"
 
-        desc = f"({idx}/{total}) {file_path.stem[:12]} [Auto Compress]"
-        returncode, stderr_log = run_ffmpeg_with_progress(
-            cmd, info, desc, position_q, debug_log_path
-        )
+        attempts = self._ffmpeg_attempts(file_path, plan.active_maps, info)
+        returncode = 1
+        stderr_log = []
+        for attempt_index, (attempt_label, cmd) in enumerate(attempts, 1):
+            desc = f"({idx}/{total}) {file_path.stem[:12]} [Auto Compress]"
+            if attempt_index > 1:
+                tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
+                desc += f" [重試 {attempt_index}]"
+
+            returncode, stderr_log = run_ffmpeg_with_progress(
+                cmd, info, desc, position_q, debug_log_path
+            )
+            if returncode == 0:
+                break
+            cleanup_temp_outputs(plan.tmps)
 
         if returncode != 0:
             tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name}")
             print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
             print(f"\n指令輸出結尾：\n{''.join(stderr_log)}")
-            cleanup_temp_outputs(plan.tmps)
             return False
 
         tqdm_write(f"({idx}/{total}) {file_path.name} 處理完成!")
@@ -139,7 +214,7 @@ class VideoCompressor:
         return True
 
     def run(self):
-        run_video_batch(self.config, self.process_single_video, "進行自動壓縮")
+        return run_video_batch(self.config, self.process_single_video, "進行自動壓縮")
 
 
 def main():

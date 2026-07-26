@@ -9,12 +9,16 @@ from video_utils import cleanup_tmp_files, resolve_workers, run_parallel
 
 def run_video_batch(config, process_single_video: Callable, action_label: str) -> Tuple[int, list]:
     in_dir = Path(config.input_dir)
-    if not in_dir.exists():
-        in_dir.mkdir(parents=True)
+    input_was_missing = not in_dir.exists()
+    in_dir.mkdir(parents=True, exist_ok=True)
+
+    out_dir = Path(config.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if input_was_missing:
         print(f"\n[提示] 未找到 '{in_dir.resolve()}'，已自動創建，請放置影片後重新執行。")
         return 0, []
 
-    out_dir = Path(config.output_dir)
     cleanup_tmp_files(out_dir)
 
     videos = [

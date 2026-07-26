@@ -8,7 +8,7 @@ Auto Reframe Video — 橫轉直影片工具 (v2.0 - H.265)
 import sys
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from queue import Queue
 
 from auto_reframe_core.batch_runner import run_video_batch
@@ -35,6 +35,10 @@ from auto_reframe_core.text_layout import (
     TextLayoutConfig,
     escape_drawtext_text,
     escape_filter_path,
+)
+from auto_reframe_core.watermark import (
+    WatermarkConfig,
+    build_watermark_config,
 )
 
 # 強制 stdout/stderr 使用 UTF-8
@@ -90,6 +94,18 @@ class ReframeConfig:
     top_text_content: str = ""
     bottom_text_content: str = ""
 
+    # --- 圖片浮水印（相對路徑以專案目錄為基準） ---
+    watermark_enabled: bool = False
+    watermark_file: str = ""
+    watermark_position: str = "bottom-center"
+    watermark_width_ratio: float = 0.32
+    watermark_opacity: float = 0.85
+    watermark_margin: int = 56
+
+    # GUI 可直接提供文字；None 時維持既有文字檔讀取行為。
+    top_text_override: Optional[str] = None
+    bottom_text_override: Optional[str] = None
+
 class VideoReframer:
     def __init__(self, config: ReframeConfig):
         self.config = config
@@ -115,10 +131,35 @@ class VideoReframer:
         for idx, target in enumerate(self.config.targets, 1):
             normalize_reframe_target(target, idx, self.config.final_ratio)
 
+        self.watermark = build_watermark_config(
+            enabled=self.config.watermark_enabled,
+            watermark_file=self.config.watermark_file,
+            position=self.config.watermark_position,
+            width_ratio=self.config.watermark_width_ratio,
+            opacity=self.config.watermark_opacity,
+            margin=self.config.watermark_margin,
+            base_dir=self.script_dir,
+        )
+
     def load_texts(self):
         """讀取上下方的文字檔內容"""
-        self.config.top_text_content, top_new = self._load_text_from_file(self.config.top_text_file)
-        self.config.bottom_text_content, bottom_new = self._load_text_from_file(self.config.bottom_text_file)
+        if self.config.top_text_override is None:
+            self.config.top_text_content, _ = self._load_text_from_file(
+                self.config.top_text_file
+            )
+        else:
+            self.config.top_text_content = self._normalize_text(
+                self.config.top_text_override
+            )
+
+        if self.config.bottom_text_override is None:
+            self.config.bottom_text_content, _ = self._load_text_from_file(
+                self.config.bottom_text_file
+            )
+        else:
+            self.config.bottom_text_content = self._normalize_text(
+                self.config.bottom_text_override
+            )
 
 
     def _load_text_from_file(self, filepath: str) -> Tuple[str, bool]:
@@ -140,9 +181,12 @@ class VideoReframer:
                 except Exception:
                     print(f"  [警告] 無法讀取文字檔 (不支援的編碼): {text_path}")
                     return "", False
-        # 移除 \r 避免 FFmpeg 渲染出無法解析的方塊符號，並移除結尾的換行
-        text = text.replace("\r", "").rstrip("\n")
-        return text, False
+        return self._normalize_text(text), False
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        # 移除 \r 避免 FFmpeg 渲染出無法解析的方塊符號，並只移除結尾換行。
+        return str(text).replace("\r", "").rstrip("\n")
 
     def calculate_dimensions(self, src_w, src_h, target_ratio):
         return calculate_reframe_dimensions(src_w, src_h, target_ratio, self.config.final_ratio)
@@ -173,20 +217,73 @@ class VideoReframer:
         )
         return layout
 
-    def build_ffmpeg_split_command(self, input_file, dims, resolutions_map, info):
+    def build_ffmpeg_split_command(
+        self,
+        input_file,
+        dims,
+        resolutions_map,
+        info,
+        disable_decode_hwaccel: bool = False,
+        force_software_encode: bool = False,
+    ):
         """利用 FFmpeg -filter_complex 實作單次解碼多路輸出"""
+        h264_encoder = "libx264" if force_software_encode else self.h264_encoder
+        h265_encoder = "libx265" if force_software_encode else self.h265_encoder
+        h264_hwaccel = None if disable_decode_hwaccel else self.h264_hwaccel
+        h265_hwaccel = None if disable_decode_hwaccel else self.h265_hwaccel
         return build_reframe_split_command(
             self.config.ffmpeg_path,
             input_file,
             dims,
             resolutions_map,
             info,
-            self.h264_encoder,
-            self.h264_hwaccel,
-            self.h265_encoder,
-            self.h265_hwaccel,
+            h264_encoder,
+            h264_hwaccel,
+            h265_encoder,
+            h265_hwaccel,
             self._text_layout_config(),
+            getattr(self, "watermark", WatermarkConfig()),
         )
+
+    def _ffmpeg_attempts(self, input_file, dims, active_maps, info):
+        first_cmd = self.build_ffmpeg_split_command(
+            input_file, dims, active_maps, info
+        )
+        attempts = [("硬體優先", first_cmd)]
+        if "-hwaccel" in first_cmd:
+            attempts.append(
+                (
+                    "停用硬體解碼、保留硬體編碼",
+                    self.build_ffmpeg_split_command(
+                        input_file,
+                        dims,
+                        active_maps,
+                        info,
+                        disable_decode_hwaccel=True,
+                    ),
+                )
+            )
+
+        uses_hardware_encoder = any(
+            (entry[5] == h264 and self.h264_encoder != "libx264")
+            or (entry[5] == h265 and self.h265_encoder != "libx265")
+            for entry in active_maps
+        )
+        if uses_hardware_encoder:
+            attempts.append(
+                (
+                    "軟體解碼與軟體編碼",
+                    self.build_ffmpeg_split_command(
+                        input_file,
+                        dims,
+                        active_maps,
+                        info,
+                        disable_decode_hwaccel=True,
+                        force_software_encode=True,
+                    ),
+                )
+            )
+        return attempts
 
     def process_single_video(self, task_info: Tuple[int, int, Path], position_q: Queue) -> bool:
         idx, total, file_path = task_info
@@ -211,22 +308,30 @@ class VideoReframer:
             if not plan.has_work:
                 continue
 
-            cmd = self.build_ffmpeg_split_command(file_path, dims, plan.active_maps, info)
-
             debug_log_path = None
             if self.config.debug:
                 debug_log_path = self.script_dir / f"ffmpeg_debug_{file_path.stem}_{rt_w}x{rt_h}.log"
 
-            desc = f"({idx}/{total}) {file_path.stem[:12]} [{rt_w}:{rt_h}]"
-            returncode, stderr_log = run_ffmpeg_with_progress(
-                cmd, info, desc, position_q, debug_log_path
-            )
+            attempts = self._ffmpeg_attempts(file_path, dims, plan.active_maps, info)
+            returncode = 1
+            stderr_log = []
+            for attempt_index, (attempt_label, cmd) in enumerate(attempts, 1):
+                desc = f"({idx}/{total}) {file_path.stem[:12]} [{rt_w}:{rt_h}]"
+                if attempt_index > 1:
+                    tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
+                    desc += f" [重試 {attempt_index}]"
+
+                returncode, stderr_log = run_ffmpeg_with_progress(
+                    cmd, info, desc, position_q, debug_log_path
+                )
+                if returncode == 0:
+                    break
+                cleanup_temp_outputs(plan.tmps)
 
             if returncode != 0:
                 tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}]")
                 print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
                 print(f"指令輸出結尾：\n{''.join(stderr_log)}")
-                cleanup_temp_outputs(plan.tmps)
                 all_success = False
                 continue
 
@@ -236,7 +341,7 @@ class VideoReframer:
         return all_success
 
     def run(self):
-        run_video_batch(self.config, self.process_single_video, "轉換")
+        return run_video_batch(self.config, self.process_single_video, "轉換")
 
 
 def main():

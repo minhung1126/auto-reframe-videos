@@ -6,6 +6,11 @@ from pathlib import Path
 from typing import Callable
 
 from .text_layout import TextLayoutConfig, append_fixed_reframe_text_filters
+from .watermark import (
+    WatermarkConfig,
+    append_watermark_overlay_filter,
+    append_watermark_source_filter,
+)
 from video_utils import build_output_args, detect_hwaccel_for_cmd, h264, h265
 
 
@@ -38,12 +43,15 @@ def build_reframe_split_command(
     h265_encoder: str,
     h265_hwaccel: str,
     layout: TextLayoutConfig,
+    watermark: WatermarkConfig = WatermarkConfig(),
 ) -> list:
     cmd = [ffmpeg_path, "-hide_banner", "-y"]
     cmd += detect_hwaccel_for_cmd(
         _collect_hwaccels(outputs, lambda codec: h265_hwaccel if codec == h265 else h264_hwaccel)
     )
     cmd += ["-i", str(input_file)]
+    if watermark.enabled:
+        cmd += ["-i", str(watermark.path)]
 
     filters = []
     crop = f"crop={dims['crop_w']}:{dims['crop_h']}:{dims['crop_x']}:{dims['crop_y']}"
@@ -73,6 +81,9 @@ def build_reframe_split_command(
         base_inputs = [root_label]
 
     filters.append(base)
+    watermark_inputs = append_watermark_source_filter(
+        filters, split_count, watermark
+    )
 
     final_video_maps = [None] * len(outputs)
 
@@ -84,17 +95,27 @@ def build_reframe_split_command(
         seq, curr_label = append_fixed_reframe_text_filters(
             seq, curr_label, group_index, out_h, dims, layout
         )
+        filters.append(seq)
+
+        if watermark.enabled:
+            curr_label = append_watermark_overlay_filter(
+                filters,
+                curr_label,
+                watermark_inputs[group_index],
+                group_index,
+                out_w,
+                out_h,
+                watermark,
+            )
 
         num_codecs = len(indices)
         if num_codecs > 1:
             codec_split_labels = "".join([f"[out_{idx}]" for idx in indices])
-            seq += f";{curr_label}split={num_codecs}{codec_split_labels}"
+            filters.append(f"{curr_label}split={num_codecs}{codec_split_labels}")
             for idx in indices:
                 final_video_maps[idx] = f"[out_{idx}]"
         else:
             final_video_maps[indices[0]] = curr_label
-
-        filters.append(seq)
 
     cmd += ["-filter_complex", ";".join(filters)]
 
@@ -119,12 +140,15 @@ def build_compress_split_command(
     h264_hwaccel: str,
     h265_encoder: str,
     h265_hwaccel: str,
+    watermark: WatermarkConfig = WatermarkConfig(),
 ) -> list:
     cmd = [ffmpeg_path, "-hide_banner", "-y"]
     cmd += detect_hwaccel_for_cmd(
         _collect_hwaccels(outputs, lambda codec: h265_hwaccel if codec == h265 else h264_hwaccel)
     )
     cmd += ["-i", str(input_file)]
+    if watermark.enabled:
+        cmd += ["-i", str(watermark.path)]
 
     res_groups = OrderedDict()
     for index, entry in enumerate(outputs):
@@ -142,6 +166,10 @@ def build_compress_split_command(
     else:
         raw_inputs = ["[0:v]"]
 
+    watermark_inputs = append_watermark_source_filter(
+        filters, num_resolutions, watermark
+    )
+
     for group_index, ((out_w, out_h), indices) in enumerate(res_groups.items()):
         num_codecs = len(indices)
         if out_w == info["width"] and out_h == info["height"]:
@@ -150,6 +178,17 @@ def build_compress_split_command(
             scaled_label = f"[scaled_{group_index}]"
             filters.append(f"{raw_inputs[group_index]}scale={out_w}:{out_h}:flags=bicubic{scaled_label}")
             curr_input = scaled_label
+
+        if watermark.enabled:
+            curr_input = append_watermark_overlay_filter(
+                filters,
+                curr_input,
+                watermark_inputs[group_index],
+                group_index,
+                out_w,
+                out_h,
+                watermark,
+            )
 
         if num_codecs > 1:
             codec_split_labels = "".join([f"[out_{idx}]" for idx in indices])

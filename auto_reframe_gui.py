@@ -1,0 +1,844 @@
+# -*- coding: utf-8 -*-
+"""Cross-platform Tk desktop interface for reframe and compress jobs."""
+
+import io
+import queue
+import sys
+import threading
+from copy import deepcopy
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox, scrolledtext, ttk
+except ImportError as exc:  # pragma: no cover - depends on the Python distribution
+    raise SystemExit(
+        "此 Python 未包含 Tkinter。Windows 請重新安裝含 Tcl/Tk 的 Python；"
+        "macOS 請安裝 python.org 版本或對應的 tkinter 套件。"
+    ) from exc
+
+from auto_compress import CompressConfig, VideoCompressor
+from auto_reframe import ReframeConfig, VideoReframer
+from auto_reframe_core.gui_options import (
+    CODEC_KEYS_BY_LABEL,
+    CODEC_LABELS,
+    CODEC_OPTIONS,
+    RATIO_OPTIONS,
+    RESOLUTION_KEYS_BY_LABEL,
+    RESOLUTION_LABELS,
+    RESOLUTION_OPTIONS,
+    list_watermark_pngs,
+    parse_ratio,
+)
+from auto_reframe_core.config_store import (
+    ConfigStoreError,
+    clear_config,
+    load_config,
+    save_config,
+)
+from video_utils import h264, h265
+
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = SCRIPT_DIR / "config.json"
+CONFIG_EXAMPLE_PATH = SCRIPT_DIR / "config.json.example"
+INPUT_DIR = SCRIPT_DIR / "input"
+OUTPUT_DIR = SCRIPT_DIR / "output"
+WATERMARK_DIR = SCRIPT_DIR / "watermark"
+VIDEO_EXTENSIONS = {
+    ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"
+}
+
+MODE_LABELS = {
+    "reframe": "比例裁切／直式重製",
+    "compress": "影片壓縮／縮小解析度",
+}
+MODE_KEYS_BY_LABEL = {label: key for key, label in MODE_LABELS.items()}
+
+
+def ensure_runtime_directories(paths=None):
+    """Create the fixed runtime directories before any job starts."""
+    runtime_paths = tuple(paths) if paths is not None else (
+        INPUT_DIR,
+        OUTPUT_DIR,
+        WATERMARK_DIR,
+    )
+    for path in runtime_paths:
+        Path(path).mkdir(parents=True, exist_ok=True)
+
+
+def load_effective_settings():
+    """Load committed defaults, then overlay the optional local config."""
+    defaults = load_config(CONFIG_EXAMPLE_PATH)
+    if defaults is None:
+        raise ConfigStoreError(f"找不到預設設定: {CONFIG_EXAMPLE_PATH}")
+    effective = deepcopy(defaults)
+    saved = load_config(CONFIG_PATH)
+    if saved:
+        effective.update(saved)
+    return defaults, effective
+
+
+def normalize_target_sets(settings: dict) -> dict:
+    """Validate target data loaded from JSON before it reaches the GUI."""
+    raw_targets = settings.get("targets")
+    if not isinstance(raw_targets, dict):
+        raise ConfigStoreError("設定檔的 targets 必須是物件。")
+
+    final_ratio_value = settings.get("final_ratio")
+    if not isinstance(final_ratio_value, (list, tuple)) or len(final_ratio_value) != 2:
+        raise ConfigStoreError("設定檔的 final_ratio 必須是 [寬, 高]。")
+    final_ratio = (int(final_ratio_value[0]), int(final_ratio_value[1]))
+    if final_ratio[0] <= 0 or final_ratio[1] <= 0:
+        raise ConfigStoreError("設定檔的 final_ratio 必須大於 0。")
+
+    normalized = {"reframe": [], "compress": []}
+    for mode in normalized:
+        entries = raw_targets.get(mode)
+        if not isinstance(entries, list) or not entries:
+            raise ConfigStoreError(f"設定檔的 targets.{mode} 不可為空。")
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise ConfigStoreError(f"targets.{mode} 的每個項目都必須是物件。")
+            resolution = str(entry.get("resolution", "")).lower()
+            codec = str(entry.get("vcodec", "")).lower()
+            if resolution not in RESOLUTION_LABELS or codec not in CODEC_LABELS:
+                raise ConfigStoreError(f"targets.{mode} 包含不支援的解析度或 codec。")
+            target = {"resolution": resolution, "vcodec": codec}
+            if mode == "reframe":
+                ratio_value = entry.get("ratio")
+                if not isinstance(ratio_value, (list, tuple)) or len(ratio_value) != 2:
+                    raise ConfigStoreError("重製 target 的 ratio 必須是 [寬, 高]。")
+                ratio = (int(ratio_value[0]), int(ratio_value[1]))
+                if ratio[0] <= 0 or ratio[1] <= 0:
+                    raise ConfigStoreError("重製 target 的 ratio 必須大於 0。")
+                if ratio[0] / ratio[1] < final_ratio[0] / final_ratio[1]:
+                    raise ConfigStoreError("中央影片比例不可比 final_ratio 更窄高。")
+                target["ratio"] = ratio
+            if target not in normalized[mode]:
+                normalized[mode].append(target)
+    return normalized
+
+
+class QueueStream(io.TextIOBase):
+    """Send worker-thread text output to the Tk event queue."""
+
+    def __init__(self, event_queue: queue.Queue):
+        super().__init__()
+        self.event_queue = event_queue
+
+    def write(self, value):
+        if value:
+            self.event_queue.put(("log", str(value)))
+        return len(value)
+
+    def flush(self):
+        return None
+
+
+def _read_optional_text(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8-sig").replace("\r", "").rstrip("\n")
+    except (OSError, UnicodeError):
+        return ""
+
+
+class AutoReframeGUI:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        self.root.title("Auto Reframe Videos")
+        self.root.geometry("1040x850")
+        self.root.minsize(900, 720)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+        self.event_queue = queue.Queue()
+        self.worker = None
+        self.running = False
+        self.watermark_paths = {}
+        ensure_runtime_directories()
+        self.default_settings, self.settings = load_effective_settings()
+        self.targets = normalize_target_sets(self.settings)
+
+        self._create_variables(self.settings)
+        self._build_ui()
+        self._load_initial_text()
+        self.refresh_watermarks()
+        preferred_watermark = str(self.settings.get("watermark_file", ""))
+        if preferred_watermark in self.watermark_paths:
+            self.watermark_var.set(preferred_watermark)
+        self._switch_mode()
+        self.root.after(80, self._drain_events)
+
+    def _create_variables(self, settings):
+        mode = str(settings.get("mode", ""))
+        if mode not in MODE_LABELS:
+            raise ConfigStoreError(f"不支援的預設模式: {mode!r}")
+        self.mode_var = tk.StringVar(value=MODE_LABELS[mode])
+        first_target = self.targets[mode][0]
+        first_ratio = self.targets["reframe"][0]["ratio"]
+        self.ratio_var = tk.StringVar(value=f"{first_ratio[0]}:{first_ratio[1]}")
+        self.resolution_var = tk.StringVar(
+            value=RESOLUTION_LABELS[first_target["resolution"]]
+        )
+        self.codec_var = tk.StringVar(value=CODEC_LABELS[first_target["vcodec"]])
+
+        self.watermark_enabled_var = tk.BooleanVar(
+            value=bool(settings.get("watermark_enabled"))
+        )
+        self.watermark_var = tk.StringVar(value="")
+
+        font_path = Path(str(settings["font_path"]))
+        if not font_path.is_absolute():
+            font_path = SCRIPT_DIR / font_path
+        self.font_path_var = tk.StringVar(value=str(font_path))
+        self.font_color_var = tk.StringVar(value=str(settings["font_color"]))
+        self.top_font_size_var = tk.StringVar(value=str(settings["top_font_size"]))
+        self.bottom_font_size_var = tk.StringVar(value=str(settings["bottom_font_size"]))
+        self.text_margin_var = tk.StringVar(value=str(settings["text_margin"]))
+        self.top_spacing_var = tk.StringVar(value=str(settings["top_spacing"]))
+        self.bottom_spacing_var = tk.StringVar(value=str(settings["bottom_spacing"]))
+
+        self.ffmpeg_var = tk.StringVar(value=str(settings["ffmpeg"]))
+        self.ffprobe_var = tk.StringVar(value=str(settings["ffprobe"]))
+        self.workers_var = tk.StringVar(value=str(settings["workers"]))
+        self.skip_existing_var = tk.BooleanVar(value=bool(settings["skip_existing"]))
+        self.debug_var = tk.BooleanVar(value=bool(settings["debug"]))
+        self.status_var = tk.StringVar(value="準備就緒")
+
+    def _build_ui(self):
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 6))
+
+        self.main_tab = ttk.Frame(self.notebook, padding=12)
+        self.layout_tab = ttk.Frame(self.notebook, padding=12)
+        self.advanced_tab = ttk.Frame(self.notebook, padding=12)
+        self.notebook.add(self.main_tab, text="工作設定")
+        self.notebook.add(self.layout_tab, text="重製文字")
+        self.notebook.add(self.advanced_tab, text="進階設定")
+
+        self._build_main_tab()
+        self._build_layout_tab()
+        self._build_advanced_tab()
+
+        log_frame = ttk.LabelFrame(self.root, text="執行日誌", padding=8)
+        log_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=6)
+        self.root.rowconfigure(1, weight=1)
+        log_frame.columnconfigure(0, weight=1)
+        log_frame.rowconfigure(0, weight=1)
+        self.log_text = scrolledtext.ScrolledText(
+            log_frame, height=10, wrap="word", state="disabled", font=("TkFixedFont", 9)
+        )
+        self.log_text.grid(row=0, column=0, sticky="nsew")
+
+        footer = ttk.Frame(self.root, padding=(12, 4, 12, 12))
+        footer.grid(row=2, column=0, sticky="ew")
+        footer.columnconfigure(0, weight=1)
+        ttk.Label(footer, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
+        self.restore_button = ttk.Button(
+            footer, text="還原預設", command=self.restore_default_settings
+        )
+        self.restore_button.grid(row=0, column=1, padx=(8, 0))
+        self.save_button = ttk.Button(
+            footer, text="儲存設定", command=self.save_settings
+        )
+        self.save_button.grid(row=0, column=2, padx=(8, 0))
+        self.start_button = ttk.Button(footer, text="開始處理", command=self.start_job)
+        self.start_button.grid(row=0, column=3, padx=(8, 0))
+
+    def _build_main_tab(self):
+        self.main_tab.columnconfigure(0, weight=1)
+
+        job = ttk.LabelFrame(self.main_tab, text="工作", padding=10)
+        job.grid(row=0, column=0, sticky="ew")
+        job.columnconfigure(1, weight=1)
+
+        ttk.Label(job, text="功能").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        mode_combo = ttk.Combobox(
+            job,
+            textvariable=self.mode_var,
+            values=tuple(MODE_LABELS.values()),
+            state="readonly",
+        )
+        mode_combo.grid(row=0, column=1, sticky="ew", pady=4)
+        mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._switch_mode())
+
+        ttk.Label(job, text="輸入資料夾").grid(
+            row=1, column=0, sticky="w", padx=(0, 8), pady=4
+        )
+        ttk.Label(
+            job,
+            text=str(INPUT_DIR),
+            relief="sunken",
+            anchor="w",
+            padding=(5, 3),
+        ).grid(
+            row=1, column=1, columnspan=2, sticky="ew", pady=4
+        )
+
+        ttk.Label(job, text="輸出資料夾").grid(
+            row=2, column=0, sticky="w", padx=(0, 8), pady=4
+        )
+        ttk.Label(
+            job,
+            text=str(OUTPUT_DIR),
+            relief="sunken",
+            anchor="w",
+            padding=(5, 3),
+        ).grid(
+            row=2, column=1, columnspan=2, sticky="ew", pady=4
+        )
+
+        targets = ttk.LabelFrame(self.main_tab, text="輸出目標（可加入多個組合）", padding=10)
+        targets.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
+        targets.columnconfigure(0, weight=1)
+        self.main_tab.rowconfigure(1, weight=1)
+
+        self.target_tree = ttk.Treeview(
+            targets,
+            columns=("ratio", "resolution", "codec"),
+            show="headings",
+            height=6,
+            selectmode="extended",
+        )
+        self.target_tree.heading("ratio", text="中央影片裁切比例")
+        self.target_tree.heading("resolution", text="解析度上限（不放大）")
+        self.target_tree.heading("codec", text="視訊編碼")
+        self.target_tree.column("ratio", width=160, anchor="center")
+        self.target_tree.column("resolution", width=260, anchor="center")
+        self.target_tree.column("codec", width=200, anchor="center")
+        self.target_tree.grid(row=0, column=0, columnspan=6, sticky="nsew")
+
+        ttk.Label(targets, text="比例").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        self.ratio_combo = ttk.Combobox(
+            targets, textvariable=self.ratio_var, values=RATIO_OPTIONS, width=12
+        )
+        self.ratio_combo.grid(row=2, column=0, sticky="ew", padx=(0, 8))
+
+        ttk.Label(targets, text="解析度").grid(row=1, column=1, sticky="w", pady=(10, 0))
+        ttk.Combobox(
+            targets,
+            textvariable=self.resolution_var,
+            values=tuple(label for _, label in RESOLUTION_OPTIONS),
+            state="readonly",
+            width=28,
+        ).grid(row=2, column=1, sticky="ew", padx=(0, 8))
+
+        ttk.Label(targets, text="Codec").grid(row=1, column=2, sticky="w", pady=(10, 0))
+        ttk.Combobox(
+            targets,
+            textvariable=self.codec_var,
+            values=tuple(label for _, label in CODEC_OPTIONS),
+            state="readonly",
+            width=20,
+        ).grid(row=2, column=2, sticky="ew", padx=(0, 8))
+
+        ttk.Button(targets, text="加入目標", command=self._add_target).grid(
+            row=2, column=3, padx=(0, 8)
+        )
+        ttk.Button(targets, text="移除選取", command=self._remove_targets).grid(
+            row=2, column=4, padx=(0, 8)
+        )
+        ttk.Button(targets, text="恢復預設", command=self._reset_targets).grid(
+            row=2, column=5
+        )
+
+        watermark = ttk.LabelFrame(self.main_tab, text="PNG 浮水印", padding=10)
+        watermark.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        watermark.columnconfigure(1, weight=1)
+        ttk.Checkbutton(
+            watermark,
+            text="蓋浮水印",
+            variable=self.watermark_enabled_var,
+        ).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        self.watermark_combo = ttk.Combobox(
+            watermark,
+            textvariable=self.watermark_var,
+            state="readonly",
+        )
+        self.watermark_combo.grid(row=0, column=1, sticky="ew")
+        ttk.Button(watermark, text="重新整理", command=self.refresh_watermarks).grid(
+            row=0, column=2, padx=(8, 0)
+        )
+        ttk.Label(
+            watermark,
+            text="來源：watermark/*.png；預設下方中央，寬度為輸出畫面的 32%，底部距離以 FHD 56px 等比縮放。",
+            foreground="#555555",
+        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+
+    def _build_layout_tab(self):
+        self.layout_tab.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.layout_tab,
+            text="最終畫布固定為 9:16，並永遠維持「上方文字／中央影片／下方文字」三層。",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        ttk.Label(self.layout_tab, text="上方文字（可多行）").grid(
+            row=1, column=0, sticky="w"
+        )
+        self.top_text = scrolledtext.ScrolledText(self.layout_tab, height=5, wrap="word")
+        self.top_text.grid(row=2, column=0, sticky="nsew", pady=(4, 10))
+
+        ttk.Label(self.layout_tab, text="下方文字（可多行）").grid(
+            row=3, column=0, sticky="w"
+        )
+        self.bottom_text = scrolledtext.ScrolledText(self.layout_tab, height=4, wrap="word")
+        self.bottom_text.grid(row=4, column=0, sticky="nsew", pady=(4, 10))
+        self.layout_tab.rowconfigure(2, weight=1)
+        self.layout_tab.rowconfigure(4, weight=1)
+
+        style = ttk.LabelFrame(self.layout_tab, text="文字樣式", padding=10)
+        style.grid(row=5, column=0, sticky="ew")
+        style.columnconfigure(1, weight=1)
+
+        ttk.Label(style, text="字型").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
+        ttk.Entry(style, textvariable=self.font_path_var).grid(row=0, column=1, sticky="ew")
+        ttk.Button(style, text="瀏覽…", command=self._browse_font).grid(
+            row=0, column=2, padx=(8, 0)
+        )
+        self._labeled_entry(style, "顏色", self.font_color_var, 1, 0)
+        self._labeled_entry(style, "上方字級", self.top_font_size_var, 1, 2)
+        self._labeled_entry(style, "下方字級", self.bottom_font_size_var, 1, 4)
+        self._labeled_entry(style, "影片邊距", self.text_margin_var, 2, 0)
+        self._labeled_entry(style, "上方行距", self.top_spacing_var, 2, 2)
+        self._labeled_entry(style, "下方行距", self.bottom_spacing_var, 2, 4)
+
+    @staticmethod
+    def _labeled_entry(parent, label, variable, row, column):
+        ttk.Label(parent, text=label).grid(
+            row=row, column=column, sticky="w", padx=(0, 6), pady=3
+        )
+        ttk.Entry(parent, textvariable=variable, width=12).grid(
+            row=row, column=column + 1, sticky="ew", padx=(0, 12), pady=3
+        )
+
+    def _build_advanced_tab(self):
+        self.advanced_tab.columnconfigure(1, weight=1)
+        ttk.Label(
+            self.advanced_tab,
+            text="硬體編碼會自動探測：Windows 優先 NVENC／AMF／QSV，macOS 優先 VideoToolbox，否則回退軟體。",
+            wraplength=850,
+        ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
+
+        self._advanced_path_row("FFmpeg", self.ffmpeg_var, 1)
+        self._advanced_path_row("FFprobe", self.ffprobe_var, 2)
+        ttk.Label(self.advanced_tab, text="平行工作數").grid(
+            row=3, column=0, sticky="w", padx=(0, 8), pady=5
+        )
+        ttk.Entry(self.advanced_tab, textvariable=self.workers_var).grid(
+            row=3, column=1, sticky="w", pady=5
+        )
+        ttk.Label(self.advanced_tab, text="0 = 自動判斷").grid(
+            row=3, column=2, sticky="w", padx=(8, 0)
+        )
+        ttk.Checkbutton(
+            self.advanced_tab,
+            text="跳過已存在的輸出",
+            variable=self.skip_existing_var,
+        ).grid(row=4, column=0, columnspan=3, sticky="w", pady=5)
+        ttk.Checkbutton(
+            self.advanced_tab,
+            text="輸出 FFmpeg 除錯日誌",
+            variable=self.debug_var,
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=5)
+
+    def _advanced_path_row(self, label, variable, row):
+        ttk.Label(self.advanced_tab, text=label).grid(
+            row=row, column=0, sticky="w", padx=(0, 8), pady=5
+        )
+        ttk.Entry(self.advanced_tab, textvariable=variable).grid(
+            row=row, column=1, sticky="ew", pady=5
+        )
+        ttk.Button(
+            self.advanced_tab,
+            text="選擇…",
+            command=lambda target=variable: self._browse_executable(target),
+        ).grid(row=row, column=2, padx=(8, 0), pady=5)
+
+    def _load_initial_text(self):
+        top_text = self.settings.get(
+            "top_text", _read_optional_text(SCRIPT_DIR / "top_text.txt")
+        )
+        bottom_text = self.settings.get(
+            "bottom_text", _read_optional_text(SCRIPT_DIR / "bottom_text.txt")
+        )
+        self.top_text.insert("1.0", str(top_text))
+        self.bottom_text.insert("1.0", str(bottom_text))
+
+    def _browse_font(self):
+        selected = filedialog.askopenfilename(
+            title="選擇字型",
+            initialdir=str(Path(self.font_path_var.get()).parent),
+            filetypes=(("TrueType / OpenType", "*.ttf *.otf"), ("所有檔案", "*.*")),
+        )
+        if selected:
+            self.font_path_var.set(selected)
+
+    def _browse_executable(self, target_var):
+        selected = filedialog.askopenfilename(title="選擇執行檔")
+        if selected:
+            target_var.set(selected)
+
+    def _mode_key(self):
+        return MODE_KEYS_BY_LABEL[self.mode_var.get()]
+
+    def _switch_mode(self):
+        reframe = self._mode_key() == "reframe"
+        self.ratio_combo.configure(state="normal" if reframe else "disabled")
+        self.notebook.tab(self.layout_tab, state="normal" if reframe else "disabled")
+        self._refresh_targets()
+
+    def _refresh_targets(self):
+        for item in self.target_tree.get_children():
+            self.target_tree.delete(item)
+        mode = self._mode_key()
+        for target in self.targets[mode]:
+            ratio = (
+                f"{target['ratio'][0]}:{target['ratio'][1]}"
+                if mode == "reframe"
+                else "保留來源比例"
+            )
+            self.target_tree.insert(
+                "",
+                "end",
+                values=(
+                    ratio,
+                    RESOLUTION_LABELS[target["resolution"]],
+                    CODEC_LABELS[target["vcodec"]],
+                ),
+            )
+
+    def _add_target(self):
+        mode = self._mode_key()
+        resolution = RESOLUTION_KEYS_BY_LABEL[self.resolution_var.get()]
+        codec = CODEC_KEYS_BY_LABEL[self.codec_var.get()]
+        if mode == "reframe":
+            try:
+                ratio = parse_ratio(self.ratio_var.get())
+                if ratio[0] / ratio[1] < 9 / 16:
+                    raise ValueError("中央影片比例不可比最終 9:16 畫布更窄高。")
+            except ValueError as exc:
+                messagebox.showerror("比例無效", str(exc), parent=self.root)
+                return
+            target = {"ratio": ratio, "resolution": resolution, "vcodec": codec}
+        else:
+            target = {"resolution": resolution, "vcodec": codec}
+
+        if target in self.targets[mode]:
+            messagebox.showinfo("目標已存在", "相同的輸出目標已在清單中。", parent=self.root)
+            return
+        self.targets[mode].append(target)
+        self._refresh_targets()
+
+    def _remove_targets(self):
+        indices = sorted(
+            (self.target_tree.index(item) for item in self.target_tree.selection()),
+            reverse=True,
+        )
+        for index in indices:
+            self.targets[self._mode_key()].pop(index)
+        self._refresh_targets()
+
+    def _reset_targets(self):
+        mode = self._mode_key()
+        default_targets = normalize_target_sets(self.default_settings)
+        self.targets[mode] = default_targets[mode]
+        self._refresh_targets()
+
+    def refresh_watermarks(self):
+        try:
+            WATERMARK_DIR.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            messagebox.showerror("無法建立 watermark 資料夾", str(exc), parent=self.root)
+            return
+
+        files = list_watermark_pngs(WATERMARK_DIR)
+        self.watermark_paths = {item.name: item for item in files}
+        names = tuple(self.watermark_paths)
+        current = self.watermark_var.get()
+        self.watermark_combo.configure(values=names, state="readonly" if names else "disabled")
+        if current not in self.watermark_paths:
+            self.watermark_var.set(names[0] if names else "")
+        if not names:
+            self.status_var.set("watermark/ 尚無 PNG；需要浮水印時請先放入圖片")
+
+    def _build_config(self):
+        mode = self._mode_key()
+        ensure_runtime_directories()
+        input_dir = INPUT_DIR.resolve()
+        output_dir = OUTPUT_DIR.resolve()
+        videos = [
+            item for item in input_dir.iterdir()
+            if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS
+        ]
+        if not videos:
+            raise ValueError("輸入資料夾中沒有支援的影片檔。")
+        if not self.targets[mode]:
+            raise ValueError("請至少加入一個輸出目標。")
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+        workers = int(self.workers_var.get().strip())
+        if workers < 0:
+            raise ValueError("平行工作數不可小於 0。")
+
+        watermark_enabled = self.watermark_enabled_var.get()
+        watermark_path = self.watermark_paths.get(self.watermark_var.get())
+        if watermark_enabled and watermark_path is None:
+            raise ValueError("已啟用浮水印，但 watermark/ 中沒有可用的 PNG。")
+
+        common = dict(
+            input_dir=str(input_dir),
+            output_dir=str(output_dir),
+            targets=[dict(target) for target in self.targets[mode]],
+            ffmpeg_path=self.ffmpeg_var.get().strip() or "ffmpeg",
+            ffprobe_path=self.ffprobe_var.get().strip() or "ffprobe",
+            skip_existing=self.skip_existing_var.get(),
+            max_workers=workers,
+            debug=self.debug_var.get(),
+            watermark_enabled=watermark_enabled,
+            watermark_file=str(watermark_path) if watermark_path else "",
+            watermark_position=str(self.settings["watermark_position"]),
+            watermark_width_ratio=float(self.settings["watermark_width_ratio"]),
+            watermark_opacity=float(self.settings["watermark_opacity"]),
+            watermark_margin=int(self.settings["watermark_margin"]),
+        )
+        if mode == "compress":
+            return mode, CompressConfig(**common)
+
+        font_path = Path(self.font_path_var.get()).expanduser().resolve()
+        if not font_path.is_file():
+            raise ValueError(f"找不到字型檔: {font_path}")
+        config = ReframeConfig(
+            **common,
+            final_ratio=tuple(int(value) for value in self.settings["final_ratio"]),
+            top_text_override=self.top_text.get("1.0", "end-1c"),
+            bottom_text_override=self.bottom_text.get("1.0", "end-1c"),
+            font_path=str(font_path),
+            font_color=self.font_color_var.get().strip() or "white",
+            top_font_size=int(self.top_font_size_var.get()),
+            bottom_font_size=int(self.bottom_font_size_var.get()),
+            text_margin=int(self.text_margin_var.get()),
+            top_text_line_spacing_ratio=float(self.top_spacing_var.get()),
+            bottom_text_line_spacing_ratio=float(self.bottom_spacing_var.get()),
+        )
+        return mode, config
+
+    def _collect_settings(self) -> dict:
+        """Collect GUI state without mutable input/output directory settings."""
+        font_path = Path(self.font_path_var.get()).expanduser()
+        try:
+            font_value = font_path.resolve().relative_to(SCRIPT_DIR).as_posix()
+        except ValueError:
+            font_value = str(font_path.resolve())
+
+        return {
+            "mode": self._mode_key(),
+            "targets": deepcopy(self.targets),
+            "final_ratio": list(self.settings["final_ratio"]),
+            "watermark_enabled": bool(self.watermark_enabled_var.get()),
+            "watermark_file": self.watermark_var.get(),
+            "watermark_position": str(self.settings["watermark_position"]),
+            "watermark_width_ratio": float(self.settings["watermark_width_ratio"]),
+            "watermark_opacity": float(self.settings["watermark_opacity"]),
+            "watermark_margin": int(self.settings["watermark_margin"]),
+            "top_text": self.top_text.get("1.0", "end-1c"),
+            "bottom_text": self.bottom_text.get("1.0", "end-1c"),
+            "font_path": font_value,
+            "font_color": self.font_color_var.get().strip() or "white",
+            "top_font_size": int(self.top_font_size_var.get()),
+            "bottom_font_size": int(self.bottom_font_size_var.get()),
+            "text_margin": int(self.text_margin_var.get()),
+            "top_spacing": float(self.top_spacing_var.get()),
+            "bottom_spacing": float(self.bottom_spacing_var.get()),
+            "ffmpeg": self.ffmpeg_var.get().strip() or "ffmpeg",
+            "ffprobe": self.ffprobe_var.get().strip() or "ffprobe",
+            "workers": int(self.workers_var.get()),
+            "skip_existing": bool(self.skip_existing_var.get()),
+            "debug": bool(self.debug_var.get()),
+        }
+
+    def save_settings(self):
+        try:
+            settings = self._collect_settings()
+            normalize_target_sets(settings)
+            save_config(CONFIG_PATH, settings)
+        except (ConfigStoreError, OSError, ValueError) as exc:
+            messagebox.showerror("無法儲存設定", str(exc), parent=self.root)
+            return
+        self.settings = deepcopy(settings)
+        self.status_var.set(f"設定已儲存：{CONFIG_PATH.name}")
+        messagebox.showinfo(
+            "設定已儲存",
+            f"已寫入：\n{CONFIG_PATH}\n\n此檔案不會加入 Git。",
+            parent=self.root,
+        )
+
+    def restore_default_settings(self):
+        try:
+            clear_config(CONFIG_PATH)
+        except ConfigStoreError as exc:
+            messagebox.showerror("無法還原預設", str(exc), parent=self.root)
+            return
+
+        self.settings = deepcopy(self.default_settings)
+        self.targets = normalize_target_sets(self.settings)
+        self._apply_settings_to_widgets(self.settings)
+        self.status_var.set("已還原 config.json.example 的預設設定")
+
+    def _apply_settings_to_widgets(self, settings):
+        mode = str(settings["mode"])
+        self.mode_var.set(MODE_LABELS[mode])
+        self.watermark_enabled_var.set(bool(settings["watermark_enabled"]))
+        preferred = str(settings.get("watermark_file", ""))
+        self.watermark_var.set(
+            preferred if preferred in self.watermark_paths
+            else next(iter(self.watermark_paths), "")
+        )
+
+        font_path = Path(str(settings["font_path"]))
+        if not font_path.is_absolute():
+            font_path = SCRIPT_DIR / font_path
+        self.font_path_var.set(str(font_path))
+        self.font_color_var.set(str(settings["font_color"]))
+        self.top_font_size_var.set(str(settings["top_font_size"]))
+        self.bottom_font_size_var.set(str(settings["bottom_font_size"]))
+        self.text_margin_var.set(str(settings["text_margin"]))
+        self.top_spacing_var.set(str(settings["top_spacing"]))
+        self.bottom_spacing_var.set(str(settings["bottom_spacing"]))
+        self.ffmpeg_var.set(str(settings["ffmpeg"]))
+        self.ffprobe_var.set(str(settings["ffprobe"]))
+        self.workers_var.set(str(settings["workers"]))
+        self.skip_existing_var.set(bool(settings["skip_existing"]))
+        self.debug_var.set(bool(settings["debug"]))
+
+        self.top_text.delete("1.0", "end")
+        self.top_text.insert(
+            "1.0",
+            str(settings.get("top_text", _read_optional_text(SCRIPT_DIR / "top_text.txt"))),
+        )
+        self.bottom_text.delete("1.0", "end")
+        self.bottom_text.insert(
+            "1.0",
+            str(
+                settings.get(
+                    "bottom_text",
+                    _read_optional_text(SCRIPT_DIR / "bottom_text.txt"),
+                )
+            ),
+        )
+        self._switch_mode()
+
+    def start_job(self):
+        if self.running:
+            return
+        try:
+            mode, config = self._build_config()
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("設定無效", str(exc), parent=self.root)
+            return
+
+        self.running = True
+        self._set_footer_buttons("disabled")
+        self.status_var.set("正在偵測硬體並處理影片…")
+        self._append_log("\n" + "=" * 60 + "\n")
+        self._append_log(f"開始：{MODE_LABELS[mode]}\n")
+        self.worker = threading.Thread(
+            target=self._run_worker,
+            args=(mode, config),
+            name="video-job",
+            daemon=True,
+        )
+        self.worker.start()
+
+    def _run_worker(self, mode, config):
+        stream = QueueStream(self.event_queue)
+        try:
+            with redirect_stdout(stream), redirect_stderr(stream):
+                processor = VideoReframer(config) if mode == "reframe" else VideoCompressor(config)
+                result = processor.run()
+        except BaseException as exc:
+            self.event_queue.put(("error", f"{type(exc).__name__}: {exc}"))
+        else:
+            self.event_queue.put(("done", result))
+
+    def _drain_events(self):
+        try:
+            while True:
+                event, payload = self.event_queue.get_nowait()
+                if event == "log":
+                    self._append_log(payload)
+                elif event == "error":
+                    self._finish_with_error(payload)
+                elif event == "done":
+                    self._finish_success(payload)
+        except queue.Empty:
+            pass
+        self.root.after(80, self._drain_events)
+
+    def _append_log(self, text):
+        self.log_text.configure(state="normal")
+        self.log_text.insert("end", text)
+        line_count = int(self.log_text.index("end-1c").split(".")[0])
+        if line_count > 1500:
+            self.log_text.delete("1.0", f"{line_count - 1200}.0")
+        self.log_text.see("end")
+        self.log_text.configure(state="disabled")
+
+    def _set_footer_buttons(self, state):
+        self.start_button.configure(state=state)
+        self.save_button.configure(state=state)
+        self.restore_button.configure(state=state)
+
+    def _finish_success(self, result):
+        self.running = False
+        self._set_footer_buttons("normal")
+        success_count, failed_files = result
+        if failed_files:
+            self.status_var.set(f"完成：成功 {success_count}，失敗 {len(failed_files)}")
+            messagebox.showwarning(
+                "處理完成",
+                f"成功 {success_count} 個；失敗：{', '.join(failed_files)}",
+                parent=self.root,
+            )
+        else:
+            self.status_var.set(f"完成：成功 {success_count} 個")
+            messagebox.showinfo(
+                "處理完成", f"成功處理 {success_count} 個影片。", parent=self.root
+            )
+
+    def _finish_with_error(self, error):
+        self.running = False
+        self._set_footer_buttons("normal")
+        self.status_var.set("處理失敗")
+        self._append_log(f"\n[錯誤] {error}\n")
+        messagebox.showerror("處理失敗", error, parent=self.root)
+
+    def _on_close(self):
+        if self.running:
+            messagebox.showwarning(
+                "工作進行中",
+                "目前仍在處理影片。請等待工作完成後再關閉視窗，以免留下未完成的 FFmpeg 程序。",
+                parent=self.root,
+            )
+            return
+        self.root.destroy()
+
+
+def main():
+    root = tk.Tk()
+    try:
+        AutoReframeGUI(root)
+    except (ConfigStoreError, OSError, ValueError) as exc:
+        messagebox.showerror("無法啟動", str(exc), parent=root)
+        root.destroy()
+        return
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

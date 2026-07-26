@@ -6,6 +6,7 @@ output/
 tmp/
 *.tmp
 ffmpeg_debug_*.log
+config.json
 
 *_text.txt
 
