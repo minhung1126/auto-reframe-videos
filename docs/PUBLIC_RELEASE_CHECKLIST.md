@@ -18,18 +18,20 @@ identifiers and for common API keys, access tokens, passwords, private keys,
 and cloud credentials. No matches remained. This rewrite cannot recall old
 clones, forks, caches, or archives that third parties may already possess.
 
-### Blocking server-cache follow-up
+### Server-cache purge completed
 
 The rewritten GitHub branches and tags were fetched back into a fresh mirror
-and passed the same audit. However, immediately after the force-push, direct
-requests for pre-rewrite commit and file object IDs still returned HTTP 200
-from GitHub. The objects are no longer reachable through any published branch
-or tag, but GitHub Support must purge the server-side cached views before this
-cleanup can be considered complete.
+and passed the same audit. Immediately after the force-push, direct requests
+for pre-rewrite commit and file object IDs still returned HTTP 200, so a
+GitHub Support cached-view purge was requested.
 
-Do not publish the first Release until GitHub Support completes the purge and
-the old direct URLs return HTTP 404. The first changed commits reported by the
-history-rewrite tool were:
+On 2026-07-27, after GitHub Support reported that the purge was complete,
+unauthenticated no-cache requests were made for the old commit page, deleted
+Colab notebook, and personal watermark. All three direct URLs returned HTTP
+404. The server-cache cleanup is therefore verified complete for the known
+objects.
+
+The first changed commits reported by the history-rewrite tool were:
 
 - `fb3b20c4e77de6799881259a16f63b3ea3950298`
 - `5911f7d7a6a0f12ce5eb44e951feb1db88302a6a`
@@ -54,10 +56,20 @@ Adobe copyright notice are included in `fonts/LICENSE` and
 
 ## One-time repository settings
 
-Before publishing the first Release:
+Current status:
 
-- Ask GitHub Support to purge the pre-rewrite cached objects, then verify that
-  their direct URLs return HTTP 404.
+- Completed: GitHub Support purged the pre-rewrite cached objects and the
+  three known direct URLs were independently verified to return HTTP 404.
+- Completed: Release v2.4.0 was published from commit
+  `300e5f37514a9ba0510360156cc46446f95c7484` after Windows, macOS, and Linux
+  verification passed. Its ZIP and checksum assets were verified against the
+  published SHA-256 digest.
+- Pending: Release v2.4.0 currently reports `immutable: false` through the
+  GitHub Releases API. Enable release immutability only after confirming that
+  no asset or release-note correction is required.
+
+Repository hardening still to confirm:
+
 - Enable **Settings → Releases → Enable release immutability**.
 - Keep the default `GITHUB_TOKEN` permission read-only.
 - Require full-length commit SHA pinning for Actions if the repository setting
