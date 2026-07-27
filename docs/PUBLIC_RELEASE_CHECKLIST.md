@@ -18,6 +18,22 @@ identifiers and for common API keys, access tokens, passwords, private keys,
 and cloud credentials. No matches remained. This rewrite cannot recall old
 clones, forks, caches, or archives that third parties may already possess.
 
+### Blocking server-cache follow-up
+
+The rewritten GitHub branches and tags were fetched back into a fresh mirror
+and passed the same audit. However, immediately after the force-push, direct
+requests for pre-rewrite commit and file object IDs still returned HTTP 200
+from GitHub. The objects are no longer reachable through any published branch
+or tag, but GitHub Support must purge the server-side cached views before this
+cleanup can be considered complete.
+
+Do not publish the first Release until GitHub Support completes the purge and
+the old direct URLs return HTTP 404. The first changed commits reported by the
+history-rewrite tool were:
+
+- `fb3b20c4e77de6799881259a16f63b3ea3950298`
+- `5911f7d7a6a0f12ce5eb44e951feb1db88302a6a`
+
 Runtime settings, input/output videos, text files, logs, notebook files, local
 secret-file patterns, and signing material are ignored. Release ZIP files are
 built from an explicit allowlist and do not include runtime data, tests,
@@ -40,6 +56,8 @@ Adobe copyright notice are included in `fonts/LICENSE` and
 
 Before publishing the first Release:
 
+- Ask GitHub Support to purge the pre-rewrite cached objects, then verify that
+  their direct URLs return HTTP 404.
 - Enable **Settings → Releases → Enable release immutability**.
 - Keep the default `GITHUB_TOKEN` permission read-only.
 - Require full-length commit SHA pinning for Actions if the repository setting
