@@ -82,6 +82,27 @@ class PlatformProfileTests(unittest.TestCase):
             self.assertTrue(input_dir.is_dir())
             self.assertTrue(output_dir.is_dir())
 
+    def test_batch_runner_stops_when_output_directory_has_any_entry(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            input_dir = Path(tmp) / "input"
+            output_dir = Path(tmp) / "output"
+            input_dir.mkdir()
+            output_dir.mkdir()
+            (input_dir / "source.mp4").write_bytes(b"video")
+            (output_dir / "existing-output").mkdir()
+            processor = unittest.mock.Mock(return_value=True)
+            config = SimpleNamespace(
+                input_dir=str(input_dir),
+                output_dir=str(output_dir),
+                video_extensions={".mp4"},
+                max_workers=1,
+            )
+
+            result = run_video_batch(config, processor, "測試")
+
+            self.assertEqual(result, (0, []))
+            processor.assert_not_called()
+
 
 class EncoderProfileTests(unittest.TestCase):
     def test_output_args_preserve_h265_mp4_options(self):

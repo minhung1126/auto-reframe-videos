@@ -49,6 +49,7 @@ from auto_reframe_core.updater import (
     prepare_update,
 )
 from auto_reframe_core.version import __version__
+from auto_reframe_core.batch_runner import output_directory_has_entries
 from auto_reframe_core.video_utils import h264, h265
 
 
@@ -1180,6 +1181,16 @@ class AutoReframeGUI:
             mode, config = self._build_config()
         except (OSError, ValueError) as exc:
             messagebox.showerror("設定無效", str(exc), parent=self.root)
+            return
+
+        output_dir = Path(config.output_dir)
+        if output_directory_has_entries(output_dir):
+            messagebox.showwarning(
+                "輸出資料夾不是空的",
+                "output/ 已有檔案或子資料夾。\n\n"
+                "為避免覆寫既有輸出，請先移出或清空內容後再開始處理。",
+                parent=self.root,
+            )
             return
 
         self.running = True
