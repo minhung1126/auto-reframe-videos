@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
 from typing import Optional
 import unicodedata
 
@@ -174,9 +173,8 @@ def apply_update(
     staged_root: Path,
     manifest_path: Path,
     version: str,
-    backup_stamp: Optional[str] = None,
-) -> Path:
-    """Apply one manifest transaction and roll back every touched file on error."""
+) -> None:
+    """Apply one manifest transaction without leaving install-tree artifacts."""
     root = Path(install_root).resolve()
     staged = Path(staged_root).resolve()
     if (root / ".git").exists():
@@ -203,13 +201,6 @@ def apply_update(
             preview += ", ..."
         raise InstallError(f"Locally modified managed files: {preview}")
 
-    stamp = backup_stamp or f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
-    backup_parent = root / ".update-backups"
-    if backup_parent.is_symlink():
-        raise InstallError("Update backup directory cannot be a symlink.")
-    backup_root = root / ".update-backups" / f"before-v{version}-{stamp}"
-    backup_root.mkdir(parents=True, exist_ok=False)
-
     new_items = {item["path"]: item for item in new_manifest["files"]}
     old_items = (
         {item["path"]: item for item in old_manifest["files"]}
@@ -217,52 +208,45 @@ def apply_update(
         else {}
     )
     touched = sorted(set(new_items) | set(old_items))
+    rollback_root = Path(tempfile.mkdtemp(prefix=".update-rollback-", dir=root))
     existed = {}
     try:
-        for name in touched:
-            relative = _safe_relative_path(name)
-            target = _confined_path(root, relative)
-            existed[name] = target.is_file()
-            if existed[name]:
-                backup = backup_root.joinpath(*relative.parts)
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(target, backup)
-        if current_manifest_path.is_file():
-            shutil.copy2(current_manifest_path, backup_root / MANIFEST_NAME)
-
-        for name, item in new_items.items():
-            relative = _safe_relative_path(name)
-            _copy_into_place(
-                _confined_path(staged, relative),
-                _confined_path(root, relative),
-                item["mode"],
-            )
-        for name in sorted(set(old_items) - set(new_items)):
-            relative = _safe_relative_path(name)
-            _confined_path(root, relative).unlink(missing_ok=True)
-        _copy_into_place(Path(manifest_path), current_manifest_path, 0o644)
-        return backup_root
-    except BaseException:
-        for name in reversed(touched):
-            relative = _safe_relative_path(name)
-            target = _confined_path(root, relative)
-            backup = backup_root.joinpath(*relative.parts)
-            try:
-                if existed.get(name) and backup.is_file():
-                    _copy_into_place(backup, target, backup.stat().st_mode & 0o777)
-                elif not existed.get(name):
-                    target.unlink(missing_ok=True)
-            except OSError:
-                pass
-        old_manifest_backup = backup_root / MANIFEST_NAME
         try:
-            if old_manifest_backup.is_file():
-                _copy_into_place(old_manifest_backup, current_manifest_path, 0o644)
-            elif old_manifest is None:
-                current_manifest_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-        raise
+            for name in touched:
+                relative = _safe_relative_path(name)
+                target = _confined_path(root, relative)
+                existed[name] = target.is_file()
+                if existed[name]:
+                    backup = rollback_root.joinpath(*relative.parts)
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(target, backup)
+
+            for name, item in new_items.items():
+                relative = _safe_relative_path(name)
+                _copy_into_place(
+                    _confined_path(staged, relative),
+                    _confined_path(root, relative),
+                    item["mode"],
+                )
+            for name in sorted(set(old_items) - set(new_items)):
+                relative = _safe_relative_path(name)
+                _confined_path(root, relative).unlink(missing_ok=True)
+            current_manifest_path.unlink(missing_ok=True)
+        except BaseException:
+            for name in reversed(touched):
+                relative = _safe_relative_path(name)
+                target = _confined_path(root, relative)
+                backup = rollback_root.joinpath(*relative.parts)
+                try:
+                    if existed.get(name) and backup.is_file():
+                        _copy_into_place(backup, target, backup.stat().st_mode & 0o777)
+                    elif not existed.get(name):
+                        target.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
+    finally:
+        shutil.rmtree(rollback_root, ignore_errors=True)
 
 
 def _process_running(pid: int) -> bool:

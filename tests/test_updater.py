@@ -324,15 +324,14 @@ class InstallerTests(unittest.TestCase):
                 ("auto_reframe_core/__main__.py", b"new entry", 0o644),
                 ("new_module.py", b"new module", 0o644),
             ]
-            manifest = write_installed_manifest(staged, "2.4.0", new_files)
+            write_installed_manifest(staged, "2.4.0", new_files)
             manifest_path = staged / MANIFEST_NAME
 
-            backup = update_installer.apply_update(
+            update_installer.apply_update(
                 root,
                 staged,
                 manifest_path,
                 "2.4.0",
-                backup_stamp="test",
             )
             self.assertEqual(
                 (root / "auto_reframe_core" / "__main__.py").read_bytes(),
@@ -350,14 +349,9 @@ class InstallerTests(unittest.TestCase):
                 (root / "watermark" / "mine.png").read_bytes(),
                 b"personal watermark",
             )
-            self.assertEqual(
-                json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8")),
-                manifest,
-            )
-            self.assertEqual(
-                (backup / "auto_reframe_gui.py").read_bytes(),
-                b"old gui",
-            )
+            self.assertFalse((root / MANIFEST_NAME).exists())
+            self.assertFalse((root / ".update-backups").exists())
+            self.assertEqual(list(root.glob(".update-rollback-*")), [])
 
     def test_transaction_refuses_local_managed_changes_and_git_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -433,7 +427,6 @@ class InstallerTests(unittest.TestCase):
                         staged,
                         staged / MANIFEST_NAME,
                         "2.4.0",
-                        backup_stamp="rollback",
                     )
 
             self.assertEqual((root / "auto_reframe_gui.py").read_bytes(), b"old gui")
