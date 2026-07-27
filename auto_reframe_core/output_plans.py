@@ -3,9 +3,12 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
+import shutil
 from typing import List
 
 from auto_reframe_core.video_utils import (
+    RESOLUTION_MAP,
     get_youtube_bitrate,
     resolve_short_side,
     resolution_label,
@@ -21,6 +24,98 @@ class OutputPlan:
     @property
     def has_work(self) -> bool:
         return bool(self.active_maps)
+
+
+def _watermark_suffix(config) -> str:
+    return "_wm" if getattr(config, "watermark_enabled", False) else ""
+
+
+def compress_output_suffix(label: str, vcodec: str, watermark_suffix: str) -> str:
+    return f"COMPRESS_{label}_{vcodec}{watermark_suffix}"
+
+
+def reframe_output_suffix(
+    ratio_width: int,
+    ratio_height: int,
+    label: str,
+    vcodec: str,
+    watermark_suffix: str,
+) -> str:
+    return f"{ratio_width}x{ratio_height}_{label}_{vcodec}{watermark_suffix}"
+
+
+def _resolution_label_short_side(label: str) -> int | None:
+    known = {
+        "4K": 2160,
+        "2K": 1440,
+        "FHD": 1080,
+        "HD": 720,
+    }
+    if label in known:
+        return known[label]
+    match = re.fullmatch(r"([1-9]\d*)P", label)
+    return int(match.group(1)) if match else None
+
+
+def _folder_matches_target(name: str, mode: str, target: dict, watermark_suffix: str) -> bool:
+    vcodec = target["vcodec"]
+    ending = f"_{vcodec}{watermark_suffix}"
+    if not name.endswith(ending):
+        return False
+
+    if mode == "compress":
+        prefix = "COMPRESS_"
+    elif mode == "reframe":
+        ratio_width, ratio_height = target["ratio"]
+        prefix = f"{ratio_width}x{ratio_height}_"
+    else:
+        raise ValueError(f"不支援的輸出模式: {mode}")
+
+    if not name.startswith(prefix):
+        return False
+    label = name[len(prefix):-len(ending)]
+    short_side = _resolution_label_short_side(label)
+    if short_side is None:
+        return False
+
+    resolution = target["resolution"].lower()
+    if resolution == "source":
+        return True
+    return short_side <= RESOLUTION_MAP[resolution]
+
+
+def find_target_output_conflicts(config, mode: str) -> List[Path]:
+    """Find non-empty direct children that can be produced by the selected targets."""
+    output_dir = Path(config.output_dir)
+    if not output_dir.is_dir():
+        return []
+
+    watermark_suffix = _watermark_suffix(config)
+    conflicts = []
+    for child in sorted(output_dir.iterdir(), key=lambda item: item.name.casefold()):
+        if not any(
+            _folder_matches_target(child.name, mode, target, watermark_suffix)
+            for target in config.targets
+        ):
+            continue
+        if child.is_dir() and not child.is_symlink():
+            if next(child.iterdir(), None) is None:
+                continue
+        conflicts.append(child)
+    return conflicts
+
+
+def delete_target_output_conflicts(output_dir: Path, conflicts: List[Path]) -> None:
+    """Delete only preflight paths that are direct children of the output root."""
+    root = Path(output_dir).resolve()
+    for conflict in conflicts:
+        path = Path(conflict)
+        if path.parent.resolve() != root:
+            raise ValueError(f"拒絕刪除 output/ 以外的路徑: {path}")
+        if path.is_symlink() or path.is_file():
+            path.unlink(missing_ok=True)
+        elif path.is_dir():
+            shutil.rmtree(path)
 
 
 def _encoder_compatible_dimension(value: int) -> int:
@@ -87,9 +182,14 @@ def build_compress_output_plan(config, out_dir: Path, file_path: Path, info: dic
         out_h = _encoder_compatible_dimension(out_h)
 
         effective_short = min(out_w, out_h)
-        label = f"COMPRESS_{resolution_label(effective_short)}"
-        watermark_suffix = "_wm" if getattr(config, "watermark_enabled", False) else ""
-        suffix_name = f"{label}_{vcodec}{watermark_suffix}"
+        resolution_name = resolution_label(effective_short)
+        label = f"COMPRESS_{resolution_name}"
+        watermark_suffix = _watermark_suffix(config)
+        suffix_name = compress_output_suffix(
+            resolution_name,
+            vcodec,
+            watermark_suffix,
+        )
         sub_dir = out_dir / suffix_name
         target_file = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
 
@@ -145,8 +245,14 @@ def build_reframe_output_plan(
 
         effective_short = min(out_w, out_h)
         label = resolution_label(effective_short)
-        watermark_suffix = "_wm" if getattr(config, "watermark_enabled", False) else ""
-        suffix_name = f"{ratio_width}x{ratio_height}_{label}_{vcodec}{watermark_suffix}"
+        watermark_suffix = _watermark_suffix(config)
+        suffix_name = reframe_output_suffix(
+            ratio_width,
+            ratio_height,
+            label,
+            vcodec,
+            watermark_suffix,
+        )
         sub_dir = out_dir / suffix_name
         target_file = sub_dir / f"{file_path.stem}_{suffix_name}.mp4"
 

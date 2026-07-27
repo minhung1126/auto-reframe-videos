@@ -2,14 +2,34 @@
 """Tests for the pre-processing confirmation summary."""
 
 import unittest
+from pathlib import Path
 
 from auto_reframe_core.compress import CompressConfig
-from auto_reframe_core.gui import build_job_confirmation_message
+from auto_reframe_core.gui import (
+    OUTPUT_CONFLICT_DELETE,
+    build_job_confirmation_message,
+    build_output_conflict_message,
+)
 from auto_reframe_core.reframe import ReframeConfig
 from auto_reframe_core.video_utils import h264, h265
 
 
 class JobConfirmationMessageTests(unittest.TestCase):
+    def test_output_conflict_message_explains_scope_and_all_actions(self):
+        message = build_output_conflict_message(
+            [
+                Path("output/4x5_FHD_h265"),
+                Path("output/4x5_HD_h265"),
+            ]
+        )
+
+        self.assertIn("與本次輸出目標相同", message)
+        self.assertIn("output/ 內其他資料夾與檔案不受影響", message)
+        self.assertIn("略過既有檔", message)
+        self.assertIn("覆寫同名檔", message)
+        self.assertIn("刪除目標資料夾", message)
+        self.assertIn("取消", message)
+
     def test_reframe_lists_every_target_normalized_text_and_watermark(self):
         config = ReframeConfig(
             final_ratio=(9, 16),
@@ -45,6 +65,17 @@ class JobConfirmationMessageTests(unittest.TestCase):
         self.assertIn("1. Full HD 1080p／H.264 / AVC", message)
         self.assertIn("2. HD 720p／H.265 / HEVC", message)
         self.assertNotIn("偵測到的上方文字", message)
+
+    def test_job_confirmation_repeats_selected_existing_output_action(self):
+        config = CompressConfig()
+
+        message = build_job_confirmation_message(
+            "compress",
+            config,
+            OUTPUT_CONFLICT_DELETE,
+        )
+
+        self.assertIn("既有輸出：刪除列出的目標資料夾後完整重做", message)
 
 
 if __name__ == "__main__":

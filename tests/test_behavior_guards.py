@@ -26,7 +26,12 @@ from auto_reframe_core.gui import (
     ensure_runtime_directories,
     normalize_target_sets,
 )
-from auto_reframe_core.output_plans import build_compress_output_plan, build_reframe_output_plan
+from auto_reframe_core.output_plans import (
+    build_compress_output_plan,
+    build_reframe_output_plan,
+    delete_target_output_conflicts,
+    find_target_output_conflicts,
+)
 from auto_reframe_core.platform_profile import (
     PlatformProfile,
     hidden_subprocess_kwargs,
@@ -82,7 +87,7 @@ class PlatformProfileTests(unittest.TestCase):
             self.assertTrue(input_dir.is_dir())
             self.assertTrue(output_dir.is_dir())
 
-    def test_batch_runner_stops_when_output_directory_has_any_entry(self):
+    def test_batch_runner_ignores_unrelated_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             input_dir = Path(tmp) / "input"
             output_dir = Path(tmp) / "output"
@@ -100,8 +105,8 @@ class PlatformProfileTests(unittest.TestCase):
 
             result = run_video_batch(config, processor, "測試")
 
-            self.assertEqual(result, (0, []))
-            processor.assert_not_called()
+            self.assertEqual(result, (1, []))
+            processor.assert_called_once()
 
 
 class EncoderProfileTests(unittest.TestCase):
@@ -270,6 +275,90 @@ class ReframeLayoutGuardTests(unittest.TestCase):
 
 
 class OutputPlanTests(unittest.TestCase):
+    def test_compress_preflight_only_matches_selected_target_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            matching = output_dir / "COMPRESS_FHD_h264"
+            lower_matching = output_dir / "COMPRESS_HD_h264"
+            empty_matching = output_dir / "COMPRESS_480P_h264"
+            unrelated = [
+                output_dir / "COMPRESS_2K_h264",
+                output_dir / "COMPRESS_FHD_h265",
+                output_dir / "COMPRESS_FHD_h264_wm",
+                output_dir / "4x5_FHD_h264",
+                output_dir / "previews",
+            ]
+            for directory in [matching, lower_matching, empty_matching, *unrelated]:
+                directory.mkdir()
+            (matching / "old.mp4").write_bytes(b"old")
+            (lower_matching / "old.mp4").write_bytes(b"old")
+            for directory in unrelated:
+                (directory / "keep.txt").write_text("keep", encoding="utf-8")
+
+            config = CompressConfig(
+                output_dir=str(output_dir),
+                targets=[{"resolution": "1080p", "vcodec": h264}],
+            )
+
+            conflicts = find_target_output_conflicts(config, "compress")
+
+            self.assertEqual(conflicts, [matching, lower_matching])
+
+    def test_reframe_preflight_matches_ratio_codec_and_watermark_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            matching = output_dir / "4x5_HD_h265_wm"
+            unrelated = [
+                output_dir / "1x1_HD_h265_wm",
+                output_dir / "4x5_HD_h264_wm",
+                output_dir / "4x5_HD_h265",
+            ]
+            for directory in [matching, *unrelated]:
+                directory.mkdir()
+                (directory / "old.mp4").write_bytes(b"old")
+
+            config = ReframeConfig(
+                output_dir=str(output_dir),
+                targets=[
+                    {"ratio": (4, 5), "resolution": "source", "vcodec": h265}
+                ],
+                watermark_enabled=True,
+                watermark_file="watermark/logo.png",
+            )
+
+            self.assertEqual(
+                find_target_output_conflicts(config, "reframe"),
+                [matching],
+            )
+
+    def test_delete_preflight_conflicts_preserves_unrelated_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            matching = output_dir / "COMPRESS_FHD_h264"
+            unrelated = output_dir / "COMPRESS_FHD_h265"
+            matching.mkdir()
+            unrelated.mkdir()
+            (matching / "old.mp4").write_bytes(b"old")
+            (unrelated / "keep.mp4").write_bytes(b"keep")
+
+            delete_target_output_conflicts(output_dir, [matching])
+
+            self.assertFalse(matching.exists())
+            self.assertTrue((unrelated / "keep.mp4").is_file())
+
+    def test_delete_preflight_conflicts_rejects_paths_outside_output(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output_dir = root / "output"
+            outside = root / "outside"
+            output_dir.mkdir()
+            outside.mkdir()
+
+            with self.assertRaisesRegex(ValueError, "output/ 以外"):
+                delete_target_output_conflicts(output_dir, [outside])
+
+            self.assertTrue(outside.is_dir())
+
     def test_compress_output_plan_preserves_suffixes(self):
         config = CompressConfig(
             output_dir="output",

@@ -49,7 +49,10 @@ from auto_reframe_core.updater import (
     prepare_update,
 )
 from auto_reframe_core.version import __version__
-from auto_reframe_core.batch_runner import output_directory_has_entries
+from auto_reframe_core.output_plans import (
+    delete_target_output_conflicts,
+    find_target_output_conflicts,
+)
 from auto_reframe_core.video_utils import h264, h265
 
 
@@ -70,9 +73,117 @@ MODE_LABELS = {
     "compress": "影片壓縮／縮小解析度",
 }
 MODE_KEYS_BY_LABEL = {label: key for key, label in MODE_LABELS.items()}
+OUTPUT_CONFLICT_SKIP = "skip"
+OUTPUT_CONFLICT_OVERWRITE = "overwrite"
+OUTPUT_CONFLICT_DELETE = "delete"
+OUTPUT_CONFLICT_CANCEL = "cancel"
+OUTPUT_CONFLICT_LABELS = {
+    OUTPUT_CONFLICT_SKIP: "略過既有同名檔，只產生缺少的輸出",
+    OUTPUT_CONFLICT_OVERWRITE: "覆寫本次同名檔，保留資料夾內其他內容",
+    OUTPUT_CONFLICT_DELETE: "刪除列出的目標資料夾後完整重做",
+}
 
 
-def build_job_confirmation_message(mode: str, config) -> str:
+def build_output_conflict_message(conflicts: list[Path]) -> str:
+    """Explain the exact output scope considered by the preflight check."""
+    shown = [f"  • {path.name}" for path in conflicts[:8]]
+    if len(conflicts) > len(shown):
+        shown.append(f"  • ……另有 {len(conflicts) - len(shown)} 個")
+    return "\n".join(
+        [
+            f"偵測到 {len(conflicts)} 個與本次輸出目標相同、且已有內容的子資料夾：",
+            "",
+            *shown,
+            "",
+            "只會處理上列項目；output/ 內其他資料夾與檔案不受影響。",
+            "",
+            "略過既有檔：保留全部內容，只產生缺少的同名輸出。",
+            "覆寫同名檔：重新產生本次同名影片，保留資料夾內其他檔案。",
+            "刪除目標資料夾：刪除上列資料夾的全部內容（無法復原），再完整重做。",
+            "取消：不開始本次工作。",
+        ]
+    )
+
+
+class OutputConflictDialog:
+    """Modal four-choice dialog for existing target output folders."""
+
+    def __init__(self, parent, conflicts: list[Path], prefer_skip: bool):
+        self.result = OUTPUT_CONFLICT_CANCEL
+        self.window = tk.Toplevel(parent)
+        self.window.title("已有相同輸出目標")
+        self.window.transient(parent)
+        self.window.resizable(True, False)
+        self.window.protocol("WM_DELETE_WINDOW", self._cancel)
+
+        body = ttk.Frame(self.window, padding=16)
+        body.grid(row=0, column=0, sticky="nsew")
+        self.window.columnconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            body,
+            text=build_output_conflict_message(conflicts),
+            justify="left",
+            wraplength=680,
+        ).grid(row=0, column=0, columnspan=4, sticky="w")
+
+        buttons = ttk.Frame(body)
+        buttons.grid(row=1, column=0, columnspan=4, sticky="e", pady=(16, 0))
+        skip_button = ttk.Button(
+            buttons,
+            text="略過既有檔",
+            command=lambda: self._choose(OUTPUT_CONFLICT_SKIP),
+        )
+        skip_button.grid(row=0, column=0, padx=(0, 8))
+        overwrite_button = ttk.Button(
+            buttons,
+            text="覆寫同名檔",
+            command=lambda: self._choose(OUTPUT_CONFLICT_OVERWRITE),
+        )
+        overwrite_button.grid(row=0, column=1, padx=(0, 8))
+        delete_button = ttk.Button(
+            buttons,
+            text="刪除目標資料夾",
+            command=lambda: self._choose(OUTPUT_CONFLICT_DELETE),
+        )
+        delete_button.grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(buttons, text="取消", command=self._cancel).grid(row=0, column=3)
+
+        default_button = skip_button if prefer_skip else overwrite_button
+        default_button.focus_set()
+        self.window.bind(
+            "<Return>",
+            lambda _event: self._choose(
+                OUTPUT_CONFLICT_SKIP if prefer_skip else OUTPUT_CONFLICT_OVERWRITE
+            ),
+        )
+        self.window.bind("<Escape>", lambda _event: self._cancel())
+        self.window.update_idletasks()
+        self.window.geometry(
+            f"+{parent.winfo_rootx() + 40}+{parent.winfo_rooty() + 40}"
+        )
+        self.window.grab_set()
+
+    def _choose(self, result: str):
+        self.result = result
+        self.window.destroy()
+
+    def _cancel(self):
+        self._choose(OUTPUT_CONFLICT_CANCEL)
+
+    @classmethod
+    def ask(cls, parent, conflicts: list[Path], prefer_skip: bool) -> str:
+        dialog = cls(parent, conflicts, prefer_skip)
+        parent.wait_window(dialog.window)
+        return dialog.result
+
+
+def build_job_confirmation_message(
+    mode: str,
+    config,
+    output_conflict_action: str | None = None,
+) -> str:
     """Describe the exact GUI job and ask the user to approve it."""
     watermark_file = Path(config.watermark_file).name
     watermark = (
@@ -85,9 +196,10 @@ def build_job_confirmation_message(mode: str, config) -> str:
         "",
         f"模式：{MODE_LABELS[mode]}",
         f"浮水印：{watermark}",
-        "",
-        "輸出組合：",
     ]
+    if output_conflict_action:
+        lines.append(f"既有輸出：{OUTPUT_CONFLICT_LABELS[output_conflict_action]}")
+    lines.extend(["", "輸出組合："])
 
     if mode == "reframe":
         final_width, final_height = config.final_ratio
@@ -1265,24 +1377,41 @@ class AutoReframeGUI:
             return
 
         output_dir = Path(config.output_dir)
-        if output_directory_has_entries(output_dir):
-            messagebox.showwarning(
-                "輸出資料夾不是空的",
-                "output/ 已有檔案或子資料夾。\n\n"
-                "為避免覆寫既有輸出，請先移出或清空內容後再開始處理。",
-                parent=self.root,
-            )
+        try:
+            conflicts = find_target_output_conflicts(config, mode)
+        except OSError as exc:
+            messagebox.showerror("無法檢查輸出資料夾", str(exc), parent=self.root)
             return
+
+        conflict_action = None
+        if conflicts:
+            conflict_action = OutputConflictDialog.ask(
+                self.root,
+                conflicts,
+                prefer_skip=config.skip_existing,
+            )
+            if conflict_action == OUTPUT_CONFLICT_CANCEL:
+                self.status_var.set("已取消開始處理")
+                return
+            config.skip_existing = conflict_action == OUTPUT_CONFLICT_SKIP
 
         if not messagebox.askyesno(
             "確認開始處理",
-            build_job_confirmation_message(mode, config),
+            build_job_confirmation_message(mode, config, conflict_action),
             parent=self.root,
             default=messagebox.NO,
         ):
             self.status_var.set("已取消開始處理")
             return
 
+        if conflict_action == OUTPUT_CONFLICT_DELETE:
+            try:
+                delete_target_output_conflicts(output_dir, conflicts)
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("無法刪除目標輸出", str(exc), parent=self.root)
+                return
+
+        self.skip_existing_var.set(config.skip_existing)
         self.running = True
         self._set_footer_buttons("disabled")
         self.status_var.set("正在偵測硬體並處理影片…")

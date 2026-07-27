@@ -7,11 +7,6 @@ from typing import Callable, Tuple
 from auto_reframe_core.video_utils import cleanup_tmp_files, resolve_workers, run_parallel
 
 
-def output_directory_has_entries(output_dir: Path) -> bool:
-    """Return whether ``output_dir`` has any entry without scanning its contents."""
-    return next(output_dir.iterdir(), None) is not None
-
-
 def run_video_batch(config, process_single_video: Callable, action_label: str) -> Tuple[int, list]:
     in_dir = Path(config.input_dir)
     input_was_missing = not in_dir.exists()
@@ -19,13 +14,6 @@ def run_video_batch(config, process_single_video: Callable, action_label: str) -
 
     out_dir = Path(config.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-
-    if output_directory_has_entries(out_dir):
-        print(
-            f"\n[提示] 輸出資料夾 '{out_dir.resolve()}' 不是空的。"
-            "請先移出或清空既有輸出後再開始處理。"
-        )
-        return 0, []
 
     if input_was_missing:
         print(f"\n[提示] 未找到 '{in_dir.resolve()}'，已自動創建，請放置影片後重新執行。")
