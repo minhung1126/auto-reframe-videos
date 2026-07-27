@@ -25,6 +25,12 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Install Linux GUI test dependency
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes python3-tk
+
       - name: Compile Python sources
         run: python -m compileall -q auto_reframe.py auto_compress.py auto_reframe_gui.py video_utils.py auto_reframe_core tests scripts
 
