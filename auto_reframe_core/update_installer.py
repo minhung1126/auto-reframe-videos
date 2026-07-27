@@ -13,6 +13,7 @@ import sys
 import tempfile
 from typing import Optional
 import unicodedata
+import time
 
 
 MANIFEST_NAME = ".release-manifest.json"
