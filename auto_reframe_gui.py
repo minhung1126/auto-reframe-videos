@@ -46,6 +46,7 @@ CONFIG_EXAMPLE_PATH = SCRIPT_DIR / "config.json.example"
 INPUT_DIR = SCRIPT_DIR / "input"
 OUTPUT_DIR = SCRIPT_DIR / "output"
 WATERMARK_DIR = SCRIPT_DIR / "watermark"
+CREDIT_SYMBOL = "©"
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"
 }
@@ -146,6 +147,13 @@ def _read_optional_text(path: Path) -> str:
         return ""
 
 
+def copy_text_to_clipboard(root, text: str) -> None:
+    """Copy text through Tk so the shortcut works on Windows and macOS."""
+    root.clipboard_clear()
+    root.clipboard_append(text)
+    root.update_idletasks()
+
+
 class AutoReframeGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
@@ -177,13 +185,20 @@ class AutoReframeGUI:
         if mode not in MODE_LABELS:
             raise ConfigStoreError(f"不支援的預設模式: {mode!r}")
         self.mode_var = tk.StringVar(value=MODE_LABELS[mode])
-        first_target = self.targets[mode][0]
         first_ratio = self.targets["reframe"][0]["ratio"]
         self.ratio_var = tk.StringVar(value=f"{first_ratio[0]}:{first_ratio[1]}")
-        self.resolution_var = tk.StringVar(
-            value=RESOLUTION_LABELS[first_target["resolution"]]
-        )
-        self.codec_var = tk.StringVar(value=CODEC_LABELS[first_target["vcodec"]])
+        self.resolution_vars = {
+            target_mode: tk.StringVar(
+                value=RESOLUTION_LABELS[self.targets[target_mode][0]["resolution"]]
+            )
+            for target_mode in MODE_LABELS
+        }
+        self.codec_vars = {
+            target_mode: tk.StringVar(
+                value=CODEC_LABELS[self.targets[target_mode][0]["vcodec"]]
+            )
+            for target_mode in MODE_LABELS
+        }
 
         self.watermark_enabled_var = tk.BooleanVar(
             value=bool(settings.get("watermark_enabled"))
@@ -215,16 +230,23 @@ class AutoReframeGUI:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 6))
 
-        self.main_tab = ttk.Frame(self.notebook, padding=12)
-        self.layout_tab = ttk.Frame(self.notebook, padding=12)
+        self.reframe_tab = ttk.Frame(self.notebook, padding=8)
+        self.compress_tab = ttk.Frame(self.notebook, padding=8)
         self.advanced_tab = ttk.Frame(self.notebook, padding=12)
-        self.notebook.add(self.main_tab, text="工作設定")
-        self.notebook.add(self.layout_tab, text="重製文字")
+        self.mode_tabs = {
+            "reframe": self.reframe_tab,
+            "compress": self.compress_tab,
+        }
+        self.notebook.add(self.reframe_tab, text="裁切重製")
+        self.notebook.add(self.compress_tab, text="影片壓縮")
         self.notebook.add(self.advanced_tab, text="進階設定")
 
-        self._build_main_tab()
-        self._build_layout_tab()
+        self.target_trees = {}
+        self.watermark_combos = {}
+        self._build_reframe_tab()
+        self._build_compress_tab()
         self._build_advanced_tab()
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
 
         log_frame = ttk.LabelFrame(self.root, text="執行日誌", padding=8)
         log_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=6)
@@ -251,25 +273,42 @@ class AutoReframeGUI:
         self.start_button = ttk.Button(footer, text="開始處理", command=self.start_job)
         self.start_button.grid(row=0, column=3, padx=(8, 0))
 
-    def _build_main_tab(self):
-        self.main_tab.columnconfigure(0, weight=1)
+    def _build_reframe_tab(self):
+        self.reframe_tab.columnconfigure(0, weight=1)
+        self.reframe_tab.rowconfigure(0, weight=1)
+        self.reframe_notebook = ttk.Notebook(self.reframe_tab)
+        self.reframe_notebook.grid(row=0, column=0, sticky="nsew")
 
-        job = ttk.LabelFrame(self.main_tab, text="工作", padding=10)
+        self.reframe_output_tab = ttk.Frame(self.reframe_notebook, padding=10)
+        self.context_tab = ttk.Frame(self.reframe_notebook, padding=10)
+        self.text_style_tab = ttk.Frame(self.reframe_notebook, padding=10)
+        self.reframe_notebook.add(self.reframe_output_tab, text="輸出設定")
+        self.reframe_notebook.add(self.context_tab, text="編輯上下文")
+        self.reframe_notebook.add(self.text_style_tab, text="文字樣式")
+
+        self._build_mode_output_tab(self.reframe_output_tab, "reframe")
+        self._build_context_tab()
+        self._build_text_style_tab()
+
+    def _build_compress_tab(self):
+        self.compress_tab.columnconfigure(0, weight=1)
+        self.compress_tab.rowconfigure(0, weight=1)
+        self.compress_notebook = ttk.Notebook(self.compress_tab)
+        self.compress_notebook.grid(row=0, column=0, sticky="nsew")
+
+        self.compress_output_tab = ttk.Frame(self.compress_notebook, padding=10)
+        self.compress_notebook.add(self.compress_output_tab, text="輸出設定")
+        self._build_mode_output_tab(self.compress_output_tab, "compress")
+
+    def _build_mode_output_tab(self, parent, mode):
+        parent.columnconfigure(0, weight=1)
+
+        job = ttk.LabelFrame(parent, text="固定工作資料夾", padding=10)
         job.grid(row=0, column=0, sticky="ew")
         job.columnconfigure(1, weight=1)
 
-        ttk.Label(job, text="功能").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
-        mode_combo = ttk.Combobox(
-            job,
-            textvariable=self.mode_var,
-            values=tuple(MODE_LABELS.values()),
-            state="readonly",
-        )
-        mode_combo.grid(row=0, column=1, sticky="ew", pady=4)
-        mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._switch_mode())
-
         ttk.Label(job, text="輸入資料夾").grid(
-            row=1, column=0, sticky="w", padx=(0, 8), pady=4
+            row=0, column=0, sticky="w", padx=(0, 8), pady=4
         )
         ttk.Label(
             job,
@@ -278,11 +317,11 @@ class AutoReframeGUI:
             anchor="w",
             padding=(5, 3),
         ).grid(
-            row=1, column=1, columnspan=2, sticky="ew", pady=4
+            row=0, column=1, columnspan=2, sticky="ew", pady=4
         )
 
         ttk.Label(job, text="輸出資料夾").grid(
-            row=2, column=0, sticky="w", padx=(0, 8), pady=4
+            row=1, column=0, sticky="w", padx=(0, 8), pady=4
         )
         ttk.Label(
             job,
@@ -291,39 +330,54 @@ class AutoReframeGUI:
             anchor="w",
             padding=(5, 3),
         ).grid(
-            row=2, column=1, columnspan=2, sticky="ew", pady=4
+            row=1, column=1, columnspan=2, sticky="ew", pady=4
         )
 
-        targets = ttk.LabelFrame(self.main_tab, text="輸出目標（可加入多個組合）", padding=10)
+        targets = ttk.LabelFrame(parent, text="輸出目標（可加入多個組合）", padding=10)
         targets.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
         targets.columnconfigure(0, weight=1)
-        self.main_tab.rowconfigure(1, weight=1)
+        parent.rowconfigure(1, weight=1)
 
-        self.target_tree = ttk.Treeview(
+        target_tree = ttk.Treeview(
             targets,
             columns=("ratio", "resolution", "codec"),
             show="headings",
             height=6,
             selectmode="extended",
         )
-        self.target_tree.heading("ratio", text="中央影片裁切比例")
-        self.target_tree.heading("resolution", text="解析度上限（不放大）")
-        self.target_tree.heading("codec", text="視訊編碼")
-        self.target_tree.column("ratio", width=160, anchor="center")
-        self.target_tree.column("resolution", width=260, anchor="center")
-        self.target_tree.column("codec", width=200, anchor="center")
-        self.target_tree.grid(row=0, column=0, columnspan=6, sticky="nsew")
+        target_tree.heading(
+            "ratio",
+            text="中央影片裁切比例" if mode == "reframe" else "輸出比例",
+        )
+        target_tree.heading("resolution", text="解析度上限（不放大）")
+        target_tree.heading("codec", text="視訊編碼")
+        target_tree.column("ratio", width=160, anchor="center")
+        target_tree.column("resolution", width=260, anchor="center")
+        target_tree.column("codec", width=200, anchor="center")
+        target_tree.grid(row=0, column=0, columnspan=6, sticky="nsew")
+        self.target_trees[mode] = target_tree
 
         ttk.Label(targets, text="比例").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        self.ratio_combo = ttk.Combobox(
-            targets, textvariable=self.ratio_var, values=RATIO_OPTIONS, width=12
-        )
-        self.ratio_combo.grid(row=2, column=0, sticky="ew", padx=(0, 8))
+        if mode == "reframe":
+            ttk.Combobox(
+                targets,
+                textvariable=self.ratio_var,
+                values=RATIO_OPTIONS,
+                width=12,
+            ).grid(row=2, column=0, sticky="ew", padx=(0, 8))
+        else:
+            ttk.Label(
+                targets,
+                text="保留來源比例",
+                relief="sunken",
+                anchor="center",
+                padding=(5, 3),
+            ).grid(row=2, column=0, sticky="ew", padx=(0, 8))
 
         ttk.Label(targets, text="解析度").grid(row=1, column=1, sticky="w", pady=(10, 0))
         ttk.Combobox(
             targets,
-            textvariable=self.resolution_var,
+            textvariable=self.resolution_vars[mode],
             values=tuple(label for _, label in RESOLUTION_OPTIONS),
             state="readonly",
             width=28,
@@ -332,23 +386,35 @@ class AutoReframeGUI:
         ttk.Label(targets, text="Codec").grid(row=1, column=2, sticky="w", pady=(10, 0))
         ttk.Combobox(
             targets,
-            textvariable=self.codec_var,
+            textvariable=self.codec_vars[mode],
             values=tuple(label for _, label in CODEC_OPTIONS),
             state="readonly",
             width=20,
         ).grid(row=2, column=2, sticky="ew", padx=(0, 8))
 
-        ttk.Button(targets, text="加入目標", command=self._add_target).grid(
+        ttk.Button(
+            targets,
+            text="加入目標",
+            command=lambda selected_mode=mode: self._add_target(selected_mode),
+        ).grid(
             row=2, column=3, padx=(0, 8)
         )
-        ttk.Button(targets, text="移除選取", command=self._remove_targets).grid(
+        ttk.Button(
+            targets,
+            text="移除選取",
+            command=lambda selected_mode=mode: self._remove_targets(selected_mode),
+        ).grid(
             row=2, column=4, padx=(0, 8)
         )
-        ttk.Button(targets, text="恢復預設", command=self._reset_targets).grid(
+        ttk.Button(
+            targets,
+            text="恢復預設",
+            command=lambda selected_mode=mode: self._reset_targets(selected_mode),
+        ).grid(
             row=2, column=5
         )
 
-        watermark = ttk.LabelFrame(self.main_tab, text="PNG 浮水印", padding=10)
+        watermark = ttk.LabelFrame(parent, text="PNG 浮水印", padding=10)
         watermark.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         watermark.columnconfigure(1, weight=1)
         ttk.Checkbutton(
@@ -356,12 +422,13 @@ class AutoReframeGUI:
             text="蓋浮水印",
             variable=self.watermark_enabled_var,
         ).grid(row=0, column=0, sticky="w", padx=(0, 12))
-        self.watermark_combo = ttk.Combobox(
+        watermark_combo = ttk.Combobox(
             watermark,
             textvariable=self.watermark_var,
             state="readonly",
         )
-        self.watermark_combo.grid(row=0, column=1, sticky="ew")
+        self.watermark_combos[mode] = watermark_combo
+        watermark_combo.grid(row=0, column=1, sticky="ew")
         ttk.Button(watermark, text="重新整理", command=self.refresh_watermarks).grid(
             row=0, column=2, padx=(8, 0)
         )
@@ -371,29 +438,61 @@ class AutoReframeGUI:
             foreground="#555555",
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
-    def _build_layout_tab(self):
-        self.layout_tab.columnconfigure(0, weight=1)
+    def _build_context_tab(self):
+        self.context_tab.columnconfigure(0, weight=1)
         ttk.Label(
-            self.layout_tab,
+            self.context_tab,
             text="最終畫布固定為 9:16，並永遠維持「上方文字／中央影片／下方文字」三層。",
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        ttk.Label(self.layout_tab, text="上方文字（可多行）").grid(
-            row=1, column=0, sticky="w"
+        credit = ttk.LabelFrame(
+            self.context_tab,
+            text="Credit／版權符號",
+            padding=(10, 6),
         )
-        self.top_text = scrolledtext.ScrolledText(self.layout_tab, height=5, wrap="word")
-        self.top_text.grid(row=2, column=0, sticky="nsew", pady=(4, 10))
-
-        ttk.Label(self.layout_tab, text="下方文字（可多行）").grid(
-            row=3, column=0, sticky="w"
+        credit.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        ttk.Label(credit, text=CREDIT_SYMBOL, font=("TkDefaultFont", 16)).grid(
+            row=0, column=0, padx=(0, 12)
         )
-        self.bottom_text = scrolledtext.ScrolledText(self.layout_tab, height=4, wrap="word")
-        self.bottom_text.grid(row=4, column=0, sticky="nsew", pady=(4, 10))
-        self.layout_tab.rowconfigure(2, weight=1)
-        self.layout_tab.rowconfigure(4, weight=1)
+        ttk.Button(
+            credit,
+            text="複製 ©",
+            command=self._copy_credit_symbol,
+        ).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(
+            credit,
+            text="插入上方文字",
+            command=lambda: self._insert_credit_symbol(self.top_text),
+        ).grid(row=0, column=2, padx=(0, 8))
+        ttk.Button(
+            credit,
+            text="插入下方文字",
+            command=lambda: self._insert_credit_symbol(self.bottom_text),
+        ).grid(row=0, column=3)
 
-        style = ttk.LabelFrame(self.layout_tab, text="文字樣式", padding=10)
-        style.grid(row=5, column=0, sticky="ew")
+        ttk.Label(self.context_tab, text="上方文字（可多行）").grid(
+            row=2, column=0, sticky="w"
+        )
+        self.top_text = scrolledtext.ScrolledText(self.context_tab, height=5, wrap="word")
+        self.top_text.grid(row=3, column=0, sticky="nsew", pady=(4, 10))
+
+        ttk.Label(self.context_tab, text="下方文字（可多行）").grid(
+            row=4, column=0, sticky="w"
+        )
+        self.bottom_text = scrolledtext.ScrolledText(self.context_tab, height=4, wrap="word")
+        self.bottom_text.grid(row=5, column=0, sticky="nsew", pady=(4, 0))
+        self.context_tab.rowconfigure(3, weight=1)
+        self.context_tab.rowconfigure(5, weight=1)
+
+    def _build_text_style_tab(self):
+        self.text_style_tab.columnconfigure(0, weight=1)
+        ttk.Label(
+            self.text_style_tab,
+            text="此頁設定只套用到「裁切重製」的上、下方文字。",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 10))
+
+        style = ttk.LabelFrame(self.text_style_tab, text="文字樣式", padding=10)
+        style.grid(row=1, column=0, sticky="ew")
         style.columnconfigure(1, weight=1)
 
         ttk.Label(style, text="字型").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=3)
@@ -484,26 +583,47 @@ class AutoReframeGUI:
         if selected:
             target_var.set(selected)
 
+    def _copy_credit_symbol(self):
+        try:
+            copy_text_to_clipboard(self.root, CREDIT_SYMBOL)
+        except tk.TclError as exc:
+            messagebox.showerror("無法複製", str(exc), parent=self.root)
+            return
+        self.status_var.set("已複製 © 到剪貼簿")
+
+    def _insert_credit_symbol(self, target):
+        target.insert("insert", CREDIT_SYMBOL)
+        target.focus_set()
+        self.status_var.set("已插入 ©")
+
     def _mode_key(self):
         return MODE_KEYS_BY_LABEL[self.mode_var.get()]
 
-    def _switch_mode(self):
-        reframe = self._mode_key() == "reframe"
-        self.ratio_combo.configure(state="normal" if reframe else "disabled")
-        self.notebook.tab(self.layout_tab, state="normal" if reframe else "disabled")
-        self._refresh_targets()
+    def _on_main_tab_changed(self, _event=None):
+        selected_tab = self.notebook.select()
+        for mode, tab in self.mode_tabs.items():
+            if selected_tab == str(tab):
+                self.mode_var.set(MODE_LABELS[mode])
+                self._refresh_targets(mode)
+                return
 
-    def _refresh_targets(self):
-        for item in self.target_tree.get_children():
-            self.target_tree.delete(item)
+    def _switch_mode(self):
         mode = self._mode_key()
+        self.notebook.select(self.mode_tabs[mode])
+        self._refresh_targets(mode)
+
+    def _refresh_targets(self, mode=None):
+        mode = mode or self._mode_key()
+        target_tree = self.target_trees[mode]
+        for item in target_tree.get_children():
+            target_tree.delete(item)
         for target in self.targets[mode]:
             ratio = (
                 f"{target['ratio'][0]}:{target['ratio'][1]}"
                 if mode == "reframe"
                 else "保留來源比例"
             )
-            self.target_tree.insert(
+            target_tree.insert(
                 "",
                 "end",
                 values=(
@@ -513,10 +633,9 @@ class AutoReframeGUI:
                 ),
             )
 
-    def _add_target(self):
-        mode = self._mode_key()
-        resolution = RESOLUTION_KEYS_BY_LABEL[self.resolution_var.get()]
-        codec = CODEC_KEYS_BY_LABEL[self.codec_var.get()]
+    def _add_target(self, mode):
+        resolution = RESOLUTION_KEYS_BY_LABEL[self.resolution_vars[mode].get()]
+        codec = CODEC_KEYS_BY_LABEL[self.codec_vars[mode].get()]
         if mode == "reframe":
             try:
                 ratio = parse_ratio(self.ratio_var.get())
@@ -533,22 +652,28 @@ class AutoReframeGUI:
             messagebox.showinfo("目標已存在", "相同的輸出目標已在清單中。", parent=self.root)
             return
         self.targets[mode].append(target)
-        self._refresh_targets()
+        self._refresh_targets(mode)
 
-    def _remove_targets(self):
+    def _remove_targets(self, mode):
+        target_tree = self.target_trees[mode]
         indices = sorted(
-            (self.target_tree.index(item) for item in self.target_tree.selection()),
+            (target_tree.index(item) for item in target_tree.selection()),
             reverse=True,
         )
         for index in indices:
-            self.targets[self._mode_key()].pop(index)
-        self._refresh_targets()
+            self.targets[mode].pop(index)
+        self._refresh_targets(mode)
 
-    def _reset_targets(self):
-        mode = self._mode_key()
+    def _reset_targets(self, mode):
         default_targets = normalize_target_sets(self.default_settings)
         self.targets[mode] = default_targets[mode]
-        self._refresh_targets()
+        first_target = self.targets[mode][0]
+        self.resolution_vars[mode].set(RESOLUTION_LABELS[first_target["resolution"]])
+        self.codec_vars[mode].set(CODEC_LABELS[first_target["vcodec"]])
+        if mode == "reframe":
+            ratio = first_target["ratio"]
+            self.ratio_var.set(f"{ratio[0]}:{ratio[1]}")
+        self._refresh_targets(mode)
 
     def refresh_watermarks(self):
         try:
@@ -561,7 +686,11 @@ class AutoReframeGUI:
         self.watermark_paths = {item.name: item for item in files}
         names = tuple(self.watermark_paths)
         current = self.watermark_var.get()
-        self.watermark_combo.configure(values=names, state="readonly" if names else "disabled")
+        for watermark_combo in self.watermark_combos.values():
+            watermark_combo.configure(
+                values=names,
+                state="readonly" if names else "disabled",
+            )
         if current not in self.watermark_paths:
             self.watermark_var.set(names[0] if names else "")
         if not names:
@@ -693,6 +822,14 @@ class AutoReframeGUI:
     def _apply_settings_to_widgets(self, settings):
         mode = str(settings["mode"])
         self.mode_var.set(MODE_LABELS[mode])
+        for target_mode in MODE_LABELS:
+            first_target = self.targets[target_mode][0]
+            self.resolution_vars[target_mode].set(
+                RESOLUTION_LABELS[first_target["resolution"]]
+            )
+            self.codec_vars[target_mode].set(CODEC_LABELS[first_target["vcodec"]])
+        first_ratio = self.targets["reframe"][0]["ratio"]
+        self.ratio_var.set(f"{first_ratio[0]}:{first_ratio[1]}")
         self.watermark_enabled_var.set(bool(settings["watermark_enabled"]))
         preferred = str(settings.get("watermark_file", ""))
         self.watermark_var.set(
@@ -731,6 +868,8 @@ class AutoReframeGUI:
                 )
             ),
         )
+        for target_mode in MODE_LABELS:
+            self._refresh_targets(target_mode)
         self._switch_mode()
 
     def start_job(self):

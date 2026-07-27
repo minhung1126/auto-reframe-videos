@@ -21,6 +21,8 @@ from auto_reframe_core.batch_runner import run_video_batch
 from auto_reframe_core.config_store import clear_config, load_config, save_config
 from auto_reframe_gui import (
     CONFIG_EXAMPLE_PATH,
+    CREDIT_SYMBOL,
+    copy_text_to_clipboard,
     ensure_runtime_directories,
     normalize_target_sets,
 )
@@ -332,6 +334,29 @@ class CompressCommandGuardTests(unittest.TestCase):
 
 
 class WatermarkAndGuiOptionTests(unittest.TestCase):
+    def test_credit_symbol_copy_helper_uses_tk_clipboard(self):
+        class FakeRoot:
+            def __init__(self):
+                self.clipboard = None
+                self.updated = False
+
+            def clipboard_clear(self):
+                self.clipboard = ""
+
+            def clipboard_append(self, value):
+                self.clipboard += value
+
+            def update_idletasks(self):
+                self.updated = True
+
+        root = FakeRoot()
+
+        copy_text_to_clipboard(root, CREDIT_SYMBOL)
+
+        self.assertEqual(CREDIT_SYMBOL, "©")
+        self.assertEqual(root.clipboard, "©")
+        self.assertTrue(root.updated)
+
     def test_watermark_png_scan_is_case_insensitive_and_sorted(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
