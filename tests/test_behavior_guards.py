@@ -29,7 +29,12 @@ from auto_reframe_gui import (
 from auto_reframe_core.output_plans import build_compress_output_plan, build_reframe_output_plan
 from auto_reframe_core.platform_profile import PlatformProfile, resolve_workers
 from auto_reframe_core.reframe_geometry import calculate_reframe_dimensions
-from auto_reframe_core.text_layout import escape_drawtext_text, escape_filter_path
+from auto_reframe_core.text_layout import (
+    TextLayoutConfig,
+    append_fixed_reframe_text_filters,
+    escape_drawtext_text,
+    escape_filter_path,
+)
 from auto_reframe_core.gui_options import list_watermark_pngs, parse_ratio
 from auto_reframe_core.watermark import WatermarkConfig, build_watermark_config
 from video_utils import get_video_info, h264, h265
@@ -107,7 +112,7 @@ class ReframeLayoutGuardTests(unittest.TestCase):
     def test_drawtext_escaping_is_preserved(self):
         self.assertEqual(
             escape_drawtext_text(r"C:\A:B% 'quote'"),
-            "C\\:\\\\A\\:B%% '\\''quote'\\''",
+            "C\\:\\\\A\\:B% '\\''quote'\\''",
         )
         self.assertEqual(
             escape_filter_path(Path("C:/fonts/NotoSerifTC.ttf")),
@@ -151,10 +156,77 @@ class ReframeLayoutGuardTests(unittest.TestCase):
         self.assertEqual(filter_complex.count("drawtext="), 3)
         self.assertNotIn("\n", filter_complex)
         self.assertEqual(filter_complex.count("fix_bounds=true"), 3)
+        self.assertEqual(filter_complex.count("expansion=none"), 3)
         self.assertIn("y=420-20-ascent-1*line_h*1.08", filter_complex)
         self.assertIn("y=420-20-ascent-0*line_h*1.08", filter_complex)
         self.assertIn("y=1920-420+20+0*line_h*1.2", filter_complex)
         self.assertLess(filter_complex.index("[t_0_0]"), filter_complex.index("[b_0_0]"))
+
+    @unittest.skipUnless(shutil.which("ffmpeg"), "FFmpeg is required")
+    def test_literal_percent_is_rendered_by_ffmpeg_without_expansion_error(self):
+        font_path = Path(__file__).resolve().parents[1] / "fonts" / "NotoSerifTC.ttf"
+        if not font_path.is_file():
+            self.skipTest("Bundled test font is unavailable")
+
+        layout = TextLayoutConfig(
+            font_path=escape_filter_path(font_path),
+            font_color="white",
+            text_margin=0,
+            top_font_size=640,
+            bottom_font_size=640,
+            top_line_spacing_ratio=1.0,
+            bottom_line_spacing_ratio=1.0,
+            top_text="100%",
+            bottom_text="",
+        )
+        filter_complex, output_label = append_fixed_reframe_text_filters(
+            "[0:v]null[base]",
+            "[base]",
+            0,
+            120,
+            {
+                "pad_top": 100,
+                "pad_bottom": 20,
+                "final_h": 120,
+            },
+            layout,
+        )
+        result = subprocess.run(
+            [
+                shutil.which("ffmpeg"),
+                "-hide_banner",
+                "-loglevel",
+                "warning",
+                "-f",
+                "lavfi",
+                "-i",
+                "color=c=black:s=320x120:r=1:d=1",
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                output_label,
+                "-frames:v",
+                "1",
+                "-pix_fmt",
+                "gray",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        stderr = result.stderr.decode("utf-8", errors="replace")
+
+        self.assertEqual(result.returncode, 0, stderr)
+        self.assertNotIn("Stray %", stderr)
+        self.assertEqual(len(result.stdout), 320 * 120)
+        self.assertGreater(
+            max(result.stdout),
+            min(result.stdout),
+            "drawtext produced a uniform blank frame",
+        )
 
 
 class OutputPlanTests(unittest.TestCase):
@@ -173,6 +245,79 @@ class OutputPlanTests(unittest.TestCase):
         self.assertEqual(plan.active_maps[0][:3], (1920, 1080, "COMPRESS_FHD"))
         self.assertEqual(plan.active_maps[0][5], h264)
         self.assertEqual(plan.finals[0], Path("output/COMPRESS_FHD_h264/demo_COMPRESS_FHD_h264.mp4"))
+
+    def test_compress_output_plan_aligns_odd_source_down_without_upscaling(self):
+        config = CompressConfig(
+            output_dir="output",
+            targets=[{"resolution": "source", "vcodec": h265}],
+        )
+        plan = build_compress_output_plan(
+            config,
+            Path("output"),
+            Path("input/demo.mp4"),
+            {"width": 1919, "height": 1079, "fps": 30.0},
+        )
+
+        out_w, out_h = plan.active_maps[0][:2]
+        self.assertEqual((out_w, out_h), (1918, 1078))
+        self.assertLessEqual(out_w, 1919)
+        self.assertLessEqual(out_h, 1079)
+
+    def test_compress_output_plan_deduplicates_equivalent_resolved_targets(self):
+        config = CompressConfig(
+            output_dir="output",
+            targets=[
+                {"resolution": "source", "vcodec": h265},
+                {"resolution": "4k", "vcodec": h265},
+            ],
+        )
+        plan = build_compress_output_plan(
+            config,
+            Path("output"),
+            Path("input/demo.mp4"),
+            {"width": 1920, "height": 1080, "fps": 30.0},
+        )
+
+        self.assertEqual(len(plan.active_maps), 1)
+        self.assertEqual(len(plan.tmps), 1)
+        self.assertEqual(len(plan.finals), 1)
+        self.assertEqual(plan.active_maps[0][:2], (1920, 1080))
+
+    def test_compress_output_plan_deduplicates_same_pixels_across_labels(self):
+        config = CompressConfig(
+            output_dir="output",
+            targets=[
+                {"resolution": "source", "vcodec": h265},
+                {"resolution": "360p", "vcodec": h265},
+            ],
+        )
+        plan = build_compress_output_plan(
+            config,
+            Path("output"),
+            Path("input/demo.mp4"),
+            {"width": 361, "height": 361, "fps": 30.0},
+        )
+
+        self.assertEqual(len(plan.active_maps), 1)
+        self.assertEqual(plan.active_maps[0][:2], (360, 360))
+        self.assertIn("COMPRESS_360P_h265", str(plan.finals[0]))
+
+    def test_compress_output_plan_rejects_distinct_outputs_with_same_path(self):
+        config = CompressConfig(
+            output_dir="output",
+            targets=[
+                {"resolution": "source", "vcodec": h265},
+                {"resolution": "720p", "vcodec": h265},
+            ],
+        )
+
+        with self.assertRaisesRegex(ValueError, "相同輸出路徑"):
+            build_compress_output_plan(
+                config,
+                Path("output"),
+                Path("input/demo.mp4"),
+                {"width": 1919, "height": 1079, "fps": 30.0},
+            )
 
     def test_reframe_geometry_and_output_plan_preserve_dimensions(self):
         dims = calculate_reframe_dimensions(1920, 1080, (4, 5), (9, 16))

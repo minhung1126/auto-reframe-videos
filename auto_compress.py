@@ -170,8 +170,13 @@ class VideoCompressor:
 
     def process_single_video(self, task_info: Tuple[int, int, Path], position_q: Queue) -> bool:
         idx, total, file_path = task_info
+        cancellation = getattr(position_q, "cancellation", None)
+        if cancellation is not None and cancellation.cancelled:
+            return False
         info = get_video_info(self.config.ffprobe_path, file_path)
         if not info:
+            return False
+        if cancellation is not None and cancellation.cancelled:
             return False
 
         out_dir = Path(self.config.output_dir)
@@ -190,6 +195,9 @@ class VideoCompressor:
         returncode = 1
         stderr_log = []
         for attempt_index, (attempt_label, cmd) in enumerate(attempts, 1):
+            if cancellation is not None and cancellation.cancelled:
+                cleanup_temp_outputs(plan.tmps)
+                return False
             desc = f"({idx}/{total}) {file_path.stem[:12]} [Auto Compress]"
             if attempt_index > 1:
                 tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
@@ -198,6 +206,9 @@ class VideoCompressor:
             returncode, stderr_log = run_ffmpeg_with_progress(
                 cmd, info, desc, position_q, debug_log_path
             )
+            if cancellation is not None and cancellation.cancelled:
+                cleanup_temp_outputs(plan.tmps)
+                return False
             if returncode == 0:
                 break
             cleanup_temp_outputs(plan.tmps)

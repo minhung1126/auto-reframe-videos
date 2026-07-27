@@ -1,11 +1,14 @@
 import json
+import math
 import re
 import shlex
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from queue import Queue
+from threading import Event, Lock
 from typing import Tuple, Optional, Dict, Any, List
 
 from auto_reframe_core.encoder_profiles import (
@@ -17,6 +20,11 @@ from auto_reframe_core.encoder_profiles import (
     double_bitrate,
 )
 from auto_reframe_core.platform_profile import resolve_workers
+
+# FFmpeg autorotate selects transpose at ±0.5° from a quarter turn; outside
+# that range it keeps the coded canvas and applies a general rotate filter.
+_QUARTER_TURN_TOLERANCE = 0.5
+
 
 def parse_fps(fps_str: str) -> float:
     """安全解析 FFmpeg 的 fps 字串（如 '30000/1001' 或 '29.97'）"""
@@ -44,8 +52,76 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
+def _normalize_rotation(value: Any) -> Optional[float]:
+    """將 FFprobe 的旋轉角度正規化為 [0, 360)，並吸附常見的直角誤差。"""
+    try:
+        rotation = float(value)
+    except (TypeError, ValueError):
+        return None
+
+    if not math.isfinite(rotation):
+        return None
+
+    rotation %= 360.0
+    nearest_quarter_turn = (round(rotation / 90.0) * 90) % 360
+    if min(
+        abs(rotation - nearest_quarter_turn),
+        abs(rotation - nearest_quarter_turn - 360),
+        abs(rotation - nearest_quarter_turn + 360),
+    ) <= _QUARTER_TURN_TOLERANCE:
+        return float(nearest_quarter_turn)
+    return rotation
+
+
+def _display_matrix_rotation(value: Any) -> Optional[float]:
+    """Recover the non-rounded angle from FFprobe's textual display matrix."""
+    if not isinstance(value, str):
+        return None
+    rows = []
+    for line in value.splitlines():
+        if ":" not in line:
+            continue
+        _offset, values = line.split(":", 1)
+        numbers = re.findall(r"-?\d+", values)
+        if len(numbers) >= 3:
+            rows.append(tuple(int(number) for number in numbers[:3]))
+    if len(rows) < 2:
+        return None
+    matrix_a = rows[0][0]
+    matrix_c = rows[1][0]
+    if matrix_a == 0 and matrix_c == 0:
+        return None
+    return _normalize_rotation(math.degrees(math.atan2(matrix_c, matrix_a)))
+
+
+def _stream_rotation(v_stream: Dict[str, Any]) -> float:
+    """優先讀取 display matrix side data，否則回退至舊式 rotate tag。"""
+    side_data_list = v_stream.get("side_data_list")
+    if isinstance(side_data_list, list):
+        for side_data in side_data_list:
+            if not isinstance(side_data, dict):
+                continue
+            rotation = _display_matrix_rotation(side_data.get("displaymatrix"))
+            if rotation is not None:
+                return rotation
+            if "rotation" in side_data:
+                rotation = _normalize_rotation(side_data.get("rotation"))
+                if rotation is not None:
+                    return rotation
+
+    tags = v_stream.get("tags")
+    if isinstance(tags, dict):
+        for key, value in tags.items():
+            if str(key).casefold() == "rotate":
+                rotation = _normalize_rotation(value)
+                if rotation is not None:
+                    return rotation
+
+    return 0.0
+
+
 def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, Any]]:
-    """呼叫 FFprobe 獲取影片解析度、時長、FPS 等資訊"""
+    """呼叫 FFprobe 獲取影片資訊；width/height 為 FFmpeg autorotate 後的顯示尺寸。"""
     try:
         res = subprocess.run(
             [ffprobe_path, "-v", "quiet", "-print_format", "json",
@@ -67,11 +143,24 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
         print(f"  [警告] 影片 {input_file.name} 中未找到視訊串流，已跳過。")
         return None
 
-    width = _safe_int(v_stream.get("width"), 0)
-    height = _safe_int(v_stream.get("height"), 0)
-    if width <= 0 or height <= 0:
-        print(f"  [警告] 影片 {input_file.name} 解析度異常（{width}x{height}），已跳過。")
+    source_width = _safe_int(v_stream.get("width"), 0)
+    source_height = _safe_int(v_stream.get("height"), 0)
+    if source_width <= 0 or source_height <= 0:
+        print(
+            f"  [警告] 影片 {input_file.name} 解析度異常"
+            f"（{source_width}x{source_height}），已跳過。"
+        )
         return None
+
+    coded_width = _safe_int(v_stream.get("coded_width"), source_width)
+    coded_height = _safe_int(v_stream.get("coded_height"), source_height)
+    rotation = _stream_rotation(v_stream)
+    swaps_dimensions = rotation in (90.0, 270.0)
+    width, height = (
+        (source_height, source_width)
+        if swaps_dimensions
+        else (source_width, source_height)
+    )
 
     fps_str = v_stream.get("r_frame_rate", "30/1")
     fps = parse_fps(fps_str)
@@ -81,6 +170,11 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
     return {
         "width": width,
         "height": height,
+        "source_width": source_width,
+        "source_height": source_height,
+        "coded_width": coded_width,
+        "coded_height": coded_height,
+        "rotation": int(rotation) if rotation.is_integer() else rotation,
         "fps": round(fps, 3),
         "duration": max(duration, 0.0),
         "has_audio": a_stream is not None,
@@ -129,7 +223,6 @@ def cleanup_tmp_files(out_dir: Path):
     """清理先前執行殘留的 .tmp 暫存檔"""
     if not out_dir.exists():
         return
-    import time
     tmp_files = list(out_dir.rglob("*.tmp"))
     if tmp_files:
         deleted_count = 0
@@ -206,6 +299,90 @@ def tqdm_write(msg: str) -> None:
         print(msg)
 
 
+def _terminate_process(process: subprocess.Popen, timeout: float = 3.0) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        process.terminate()
+    except OSError:
+        return
+    try:
+        process.wait(timeout=max(0.0, timeout))
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait()
+        except OSError:
+            pass
+
+
+class FFmpegCancellation:
+    """Thread-safe cancellation state and registry for active FFmpeg processes."""
+
+    def __init__(self) -> None:
+        self._event = Event()
+        self._lock = Lock()
+        self._processes = set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def active_process_count(self) -> int:
+        with self._lock:
+            return len(self._processes)
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        return self._event.wait(timeout)
+
+    def register(self, process: subprocess.Popen) -> None:
+        terminate_immediately = False
+        with self._lock:
+            if self._event.is_set():
+                terminate_immediately = True
+            else:
+                self._processes.add(process)
+        if terminate_immediately:
+            _terminate_process(process)
+
+    def unregister(self, process: subprocess.Popen) -> None:
+        with self._lock:
+            self._processes.discard(process)
+
+    def cancel(self, timeout: float = 3.0) -> None:
+        """Stop every registered child, escalating to kill after one shared deadline."""
+        self._event.set()
+        with self._lock:
+            processes = list(self._processes)
+
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+
+        deadline = time.monotonic() + max(0.0, timeout)
+        for process in processes:
+            if process.poll() is not None:
+                continue
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                process.wait(timeout=remaining)
+            except subprocess.TimeoutExpired:
+                break
+
+        for process in processes:
+            if process.poll() is None:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+
 def run_ffmpeg_with_progress(
     cmd: List[str],
     info: Dict[str, Any],
@@ -222,50 +399,59 @@ def run_ffmpeg_with_progress(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         universal_newlines=True, encoding="utf-8", errors="replace",
     )
+    cancellation = getattr(position_q, "cancellation", None)
+    if cancellation is not None:
+        cancellation.register(proc)
 
-    pos = position_q.get()
+    pos = None
     pbar = None
-    if _HAS_TQDM:
-        pbar = _tqdm(
-            total=info["duration"], desc=desc, position=pos, leave=False,
-            bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}",
-        )
-    else:
-        sys.stdout.write(f"\n{desc} 處理中...")
-        sys.stdout.flush()
-
     stderr_log: List[str] = []
     debug_fd = None
     try:
+        pos = position_q.get()
+        if _HAS_TQDM:
+            pbar = _tqdm(
+                total=info["duration"], desc=desc, position=pos, leave=False,
+                bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}",
+            )
+        else:
+            sys.stdout.write(f"\n{desc} 處理中...")
+            sys.stdout.flush()
+
         if debug_log_path:
             debug_fd = open(debug_log_path, "w", encoding="utf-8")
             debug_fd.write(f"{' '.join(shlex.quote(s) for s in cmd)}\n\n")
 
-        for line in proc.stdout:
-            stderr_log.append(line)
-            if len(stderr_log) > 15:
-                stderr_log.pop(0)
-            if debug_fd:
-                debug_fd.write(line)
-                debug_fd.flush()
-            if "time=" in line:
-                # 支援變長的小時數與 1~3 位的毫秒數 (例如 00:00:05.3 或 00:00:05.123)
-                m = re.search(r"time=(\d+:\d{2}:\d{2}(?:\.\d+)?)", line)
-                if m and pbar:
-                    pbar.n = min(parse_ffmpeg_time(m.group(1)), info["duration"])
-                    pbar.refresh()
+        if proc.stdout is not None:
+            for line in proc.stdout:
+                stderr_log.append(line)
+                if len(stderr_log) > 15:
+                    stderr_log.pop(0)
+                if debug_fd:
+                    debug_fd.write(line)
+                    debug_fd.flush()
+                if "time=" in line:
+                    # 支援變長的小時數與 1~3 位的毫秒數 (例如 00:00:05.3 或 00:00:05.123)
+                    m = re.search(r"time=(\d+:\d{2}:\d{2}(?:\.\d+)?)", line)
+                    if m and pbar:
+                        pbar.n = min(parse_ffmpeg_time(m.group(1)), info["duration"])
+                        pbar.refresh()
 
         proc.wait()
-    except Exception:
-        proc.terminate()
-        proc.wait()
+    except BaseException:
+        _terminate_process(proc)
         raise
     finally:
         if pbar:
             pbar.close()
         if debug_fd:
             debug_fd.close()
-        position_q.put(pos)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if pos is not None:
+            position_q.put(pos)
+        if cancellation is not None:
+            cancellation.unregister(proc)
 
     return proc.returncode, stderr_log
 
@@ -281,31 +467,38 @@ def run_parallel(
     task_info 格式：(idx, total, Path)
     回傳 (success_count, failed_file_names)。
     """
+    cancellation = FFmpegCancellation()
     position_q: Queue = Queue()
+    position_q.cancellation = cancellation
     for i in range(workers):
         position_q.put(i)
 
     success_count = 0
     failed_files: List[str] = []
 
-    with ThreadPoolExecutor(max_workers=workers) as executor:
+    executor = ThreadPoolExecutor(max_workers=workers)
+    interrupted = False
+    futures = {}
+    try:
         futures = {executor.submit(process_fn, t, position_q): t for t in tasks}
-        try:
-            for fut in as_completed(futures):
-                t = futures[fut]
-                try:
-                    if fut.result():
-                        success_count += 1
-                    else:
-                        failed_files.append(t[2].name)
-                except Exception as e:
+        for fut in as_completed(futures):
+            t = futures[fut]
+            try:
+                if fut.result():
+                    success_count += 1
+                else:
                     failed_files.append(t[2].name)
-                    print(f"\n[錯誤] 處理 {t[2].name} 時發生異常: {e}")
-        except KeyboardInterrupt:
-            for fut in futures:
-                fut.cancel()
-            executor.shutdown(wait=False, cancel_futures=True)
-            print("\n[中斷] 已收到停止指令，正在停止尚未開始的任務。")
-            raise
+            except Exception as e:
+                failed_files.append(t[2].name)
+                print(f"\n[錯誤] 處理 {t[2].name} 時發生異常: {e}")
+    except KeyboardInterrupt:
+        interrupted = True
+        cancellation.cancel()
+        for fut in futures:
+            fut.cancel()
+        print("\n[中斷] 已收到停止指令，正在終止執行中與尚未開始的任務。")
+        raise
+    finally:
+        executor.shutdown(wait=True, cancel_futures=interrupted)
 
     return success_count, failed_files

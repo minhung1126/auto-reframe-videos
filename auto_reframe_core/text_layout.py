@@ -28,7 +28,6 @@ def escape_drawtext_text(text: str) -> str:
         text.replace("\\", "\\\\")
         .replace("'", "'\\''")
         .replace(":", "\\:")
-        .replace("%", "%%")
     )
 
 
@@ -48,6 +47,7 @@ def append_fixed_reframe_text_filters(
     - bottom_text is rendered in the bottom padding and grows downward from the video edge
     - each text line receives its own drawtext filter; no newline is passed to FFmpeg
     - fix_bounds=true and the full FFmpeg variable name ascent are required
+    - expansion=none keeps literal percent signs from being parsed as expressions
     """
     scale_rate = out_h / 1920.0
     border_color = layout.font_color
@@ -66,7 +66,7 @@ def append_fixed_reframe_text_filters(
             seq += (
                 f";{curr_lbl}drawtext=fontfile='{layout.font_path}':text='{text_esc}':fontsize={fz}:"
                 f"fontcolor={layout.font_color}:borderw={bw}:bordercolor={border_color}:"
-                f"fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}"
+                f"expansion=none:fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}"
             )
             curr_lbl = next_lbl
 
@@ -83,7 +83,7 @@ def append_fixed_reframe_text_filters(
             seq += (
                 f";{curr_lbl}drawtext=fontfile='{layout.font_path}':text='{text_esc}':fontsize={fz}:"
                 f"fontcolor={layout.font_color}:borderw={bw}:bordercolor={border_color}:"
-                f"fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}"
+                f"expansion=none:fix_bounds=true:x=(w-text_w)/2:y={y_pos}{next_lbl}"
             )
             curr_lbl = next_lbl
 
