@@ -24,7 +24,7 @@
     },
     "final_ratio": [9, 16],
     "watermark_enabled": false,
-    "watermark_file": "default-watermark.png",
+    "watermark_file": "",
     "watermark_position": "bottom-center",
     "watermark_width_ratio": 0.32,
     "watermark_opacity": 0.85,

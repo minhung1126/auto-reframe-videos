@@ -2,9 +2,11 @@
 """Cross-platform Tk desktop interface for reframe and compress jobs."""
 
 import io
+import os
 import queue
 import sys
 import threading
+import webbrowser
 from copy import deepcopy
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -37,6 +39,16 @@ from auto_reframe_core.config_store import (
     load_config,
     save_config,
 )
+from auto_reframe_core.updater import (
+    GITHUB_OWNER,
+    GITHUB_REPOSITORY,
+    UpdateError,
+    can_self_update,
+    check_for_update,
+    launch_installer,
+    prepare_update,
+)
+from auto_reframe_core.version import __version__
 from video_utils import h264, h265
 
 
@@ -46,6 +58,7 @@ CONFIG_EXAMPLE_PATH = SCRIPT_DIR / "config.json.example"
 INPUT_DIR = SCRIPT_DIR / "input"
 OUTPUT_DIR = SCRIPT_DIR / "output"
 WATERMARK_DIR = SCRIPT_DIR / "watermark"
+UPDATE_ERROR_PATH = SCRIPT_DIR / "update-error.log"
 CREDIT_SYMBOL = "©"
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"
@@ -157,7 +170,7 @@ def copy_text_to_clipboard(root, text: str) -> None:
 class AutoReframeGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("Auto Reframe Videos")
+        self.root.title(f"Auto Reframe Videos v{__version__}")
         self.root.geometry("1040x850")
         self.root.minsize(900, 720)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -165,6 +178,10 @@ class AutoReframeGUI:
         self.event_queue = queue.Queue()
         self.worker = None
         self.running = False
+        self.update_worker = None
+        self.update_busy = False
+        self.installing_update = False
+        self.update_info = None
         self.watermark_paths = {}
         ensure_runtime_directories()
         self.default_settings, self.settings = load_effective_settings()
@@ -179,6 +196,7 @@ class AutoReframeGUI:
             self.watermark_var.set(preferred_watermark)
         self._switch_mode()
         self.root.after(80, self._drain_events)
+        self.root.after(250, self._show_pending_update_error)
 
     def _create_variables(self, settings):
         mode = str(settings.get("mode", ""))
@@ -222,6 +240,7 @@ class AutoReframeGUI:
         self.skip_existing_var = tk.BooleanVar(value=bool(settings["skip_existing"]))
         self.debug_var = tk.BooleanVar(value=bool(settings["debug"]))
         self.status_var = tk.StringVar(value="準備就緒")
+        self.update_status_var = tk.StringVar(value="尚未檢查更新")
 
     def _build_ui(self):
         self.root.columnconfigure(0, weight=1)
@@ -233,6 +252,7 @@ class AutoReframeGUI:
         self.reframe_tab = ttk.Frame(self.notebook, padding=8)
         self.compress_tab = ttk.Frame(self.notebook, padding=8)
         self.advanced_tab = ttk.Frame(self.notebook, padding=12)
+        self.update_tab = ttk.Frame(self.notebook, padding=12)
         self.mode_tabs = {
             "reframe": self.reframe_tab,
             "compress": self.compress_tab,
@@ -240,12 +260,14 @@ class AutoReframeGUI:
         self.notebook.add(self.reframe_tab, text="裁切重製")
         self.notebook.add(self.compress_tab, text="影片壓縮")
         self.notebook.add(self.advanced_tab, text="進階設定")
+        self.notebook.add(self.update_tab, text="關於／更新")
 
         self.target_trees = {}
         self.watermark_combos = {}
         self._build_reframe_tab()
         self._build_compress_tab()
         self._build_advanced_tab()
+        self._build_update_tab()
         self.notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
 
         log_frame = ttk.LabelFrame(self.root, text="執行日誌", padding=8)
@@ -546,6 +568,86 @@ class AutoReframeGUI:
             variable=self.debug_var,
         ).grid(row=5, column=0, columnspan=3, sticky="w", pady=5)
 
+    def _build_update_tab(self):
+        self.update_tab.columnconfigure(0, weight=1)
+        about = ttk.LabelFrame(self.update_tab, text="Auto Reframe Videos", padding=12)
+        about.grid(row=0, column=0, sticky="ew")
+        about.columnconfigure(1, weight=1)
+        ttk.Label(about, text="目前版本").grid(
+            row=0, column=0, sticky="w", padx=(0, 12), pady=4
+        )
+        ttk.Label(about, text=f"v{__version__}").grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(about, text="更新來源").grid(
+            row=1, column=0, sticky="w", padx=(0, 12), pady=4
+        )
+        ttk.Label(
+            about,
+            text=f"github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases",
+        ).grid(row=1, column=1, sticky="w", pady=4)
+
+        updater = ttk.LabelFrame(self.update_tab, text="軟體更新", padding=12)
+        updater.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
+        updater.columnconfigure(0, weight=1)
+        self.update_tab.rowconfigure(1, weight=1)
+        ttk.Label(
+            updater,
+            textvariable=self.update_status_var,
+            wraplength=850,
+        ).grid(row=0, column=0, columnspan=3, sticky="w")
+
+        self.check_update_button = ttk.Button(
+            updater,
+            text="檢查更新",
+            command=self.check_for_updates,
+        )
+        self.check_update_button.grid(row=1, column=0, sticky="w", pady=(10, 8))
+        self.install_update_button = ttk.Button(
+            updater,
+            text="下載並安裝",
+            command=self.install_update,
+            state="disabled",
+        )
+        self.install_update_button.grid(
+            row=1, column=1, sticky="w", padx=(8, 0), pady=(10, 8)
+        )
+        self.open_release_button = ttk.Button(
+            updater,
+            text="開啟 Release 頁面",
+            command=self.open_release_page,
+        )
+        self.open_release_button.grid(
+            row=1, column=2, sticky="w", padx=(8, 0), pady=(10, 8)
+        )
+
+        allowed, reason = can_self_update(SCRIPT_DIR)
+        environment_text = (
+            "此安裝可自動更新；安裝時會備份舊版，並保留 config.json、"
+            "input/、output/、watermark/ 與上下方文字。"
+            if allowed
+            else reason
+        )
+        ttk.Label(
+            updater,
+            text=environment_text,
+            foreground="#555555",
+            wraplength=850,
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
+        ttk.Label(updater, text="版本說明").grid(
+            row=3, column=0, columnspan=3, sticky="w"
+        )
+        self.release_notes = scrolledtext.ScrolledText(
+            updater,
+            height=12,
+            wrap="word",
+            state="disabled",
+            font=("TkDefaultFont", 9),
+        )
+        self.release_notes.grid(
+            row=4, column=0, columnspan=3, sticky="nsew", pady=(4, 0)
+        )
+        updater.rowconfigure(4, weight=1)
+
     def _advanced_path_row(self, label, variable, row):
         ttk.Label(self.advanced_tab, text=label).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=5
@@ -582,6 +684,201 @@ class AutoReframeGUI:
         selected = filedialog.askopenfilename(title="選擇執行檔")
         if selected:
             target_var.set(selected)
+
+    def _set_release_notes(self, value):
+        self.release_notes.configure(state="normal")
+        self.release_notes.delete("1.0", "end")
+        self.release_notes.insert("1.0", value)
+        self.release_notes.configure(state="disabled")
+
+    def _show_pending_update_error(self):
+        if not UPDATE_ERROR_PATH.is_file():
+            return
+        try:
+            error = UPDATE_ERROR_PATH.read_text(encoding="utf-8")[:16000].strip()
+            UPDATE_ERROR_PATH.unlink()
+        except (OSError, UnicodeError) as exc:
+            error = f"無法讀取更新錯誤紀錄: {exc}"
+        if error:
+            self.status_var.set("上一個軟體更新未完成")
+            messagebox.showerror(
+                "軟體更新未完成",
+                error,
+                parent=self.root,
+            )
+
+    def open_release_page(self):
+        url = (
+            self.update_info.release_url
+            if self.update_info is not None
+            else f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases"
+        )
+        try:
+            opened = webbrowser.open(url)
+        except webbrowser.Error as exc:
+            messagebox.showerror("無法開啟瀏覽器", str(exc), parent=self.root)
+            return
+        if not opened:
+            messagebox.showinfo(
+                "Release 頁面",
+                url,
+                parent=self.root,
+            )
+
+    def check_for_updates(self):
+        if self.update_busy:
+            return
+        self.update_busy = True
+        self.update_info = None
+        self.check_update_button.configure(state="disabled")
+        self.install_update_button.configure(state="disabled")
+        self.update_status_var.set("正在連線 GitHub 檢查最新正式版本…")
+        self.status_var.set("正在檢查軟體更新…")
+        self.update_worker = threading.Thread(
+            target=self._run_update_check,
+            name="update-check",
+            daemon=True,
+        )
+        self.update_worker.start()
+
+    def _run_update_check(self):
+        try:
+            info = check_for_update()
+        except BaseException as exc:
+            self.event_queue.put(("update_check_error", f"{type(exc).__name__}: {exc}"))
+        else:
+            self.event_queue.put(("update_check_done", info))
+
+    def _finish_update_check(self, info):
+        self.update_busy = False
+        self.update_info = info
+        self.check_update_button.configure(state="normal")
+        immutable_text = "不可變 Release" if info.immutable else "一般 Release"
+        if info.available:
+            self.update_status_var.set(
+                f"有新版本 v{info.latest_version}（目前 v{info.current_version}，"
+                f"{immutable_text}）。"
+            )
+            allowed, _reason = can_self_update(SCRIPT_DIR)
+            if allowed and not self.running:
+                self.install_update_button.configure(state="normal")
+            self.status_var.set(f"可更新至 v{info.latest_version}")
+        else:
+            self.update_status_var.set(
+                f"目前已是最新版 v{info.current_version}（GitHub: "
+                f"v{info.latest_version}）。"
+            )
+            self.install_update_button.configure(state="disabled")
+            self.status_var.set("目前已是最新版")
+        notes = info.notes.strip() or "此版本沒有附加版本說明。"
+        self._set_release_notes(notes)
+
+    def _finish_update_check_error(self, error):
+        self.update_busy = False
+        self.check_update_button.configure(state="normal")
+        self.install_update_button.configure(state="disabled")
+        self.update_status_var.set("更新檢查失敗。")
+        self.status_var.set("無法檢查更新")
+        self._set_release_notes(error)
+        messagebox.showerror("無法檢查更新", error, parent=self.root)
+
+    def install_update(self):
+        if self.update_busy or self.update_info is None or not self.update_info.available:
+            return
+        if self.running:
+            messagebox.showwarning(
+                "影片處理中",
+                "請等待影片處理完成後再安裝更新。",
+                parent=self.root,
+            )
+            return
+        allowed, reason = can_self_update(SCRIPT_DIR)
+        if not allowed:
+            messagebox.showinfo("此環境不可自動更新", reason, parent=self.root)
+            return
+        confirmed = messagebox.askyesno(
+            "安裝軟體更新",
+            f"將下載並安裝 v{self.update_info.latest_version}。\n\n"
+            "更新檔會先驗證 SHA-256，舊程式會備份；個人設定、影片、"
+            "浮水印與上下方文字不會被覆寫。完成後程式會自動重新啟動。\n\n"
+            "要繼續嗎？",
+            parent=self.root,
+        )
+        if not confirmed:
+            return
+        try:
+            settings = self._collect_settings()
+            normalize_target_sets(settings)
+            save_config(CONFIG_PATH, settings)
+            self.settings = deepcopy(settings)
+        except (ConfigStoreError, OSError, ValueError) as exc:
+            messagebox.showerror(
+                "無法在更新前儲存設定",
+                str(exc),
+                parent=self.root,
+            )
+            return
+
+        self.update_busy = True
+        self.check_update_button.configure(state="disabled")
+        self.install_update_button.configure(state="disabled")
+        self._set_footer_buttons("disabled")
+        self.update_status_var.set("正在下載並驗證更新檔…")
+        self.status_var.set("正在準備軟體更新…")
+        self.update_worker = threading.Thread(
+            target=self._run_update_prepare,
+            args=(self.update_info,),
+            name="update-download",
+            daemon=True,
+        )
+        self.update_worker.start()
+
+    def _run_update_prepare(self, info):
+        def report_progress(received, total):
+            self.event_queue.put(("update_progress", (received, total)))
+
+        try:
+            staged = prepare_update(info, SCRIPT_DIR, progress=report_progress)
+        except BaseException as exc:
+            self.event_queue.put(("update_install_error", f"{type(exc).__name__}: {exc}"))
+        else:
+            self.event_queue.put(("update_staged", staged))
+
+    def _finish_update_staged(self, staged):
+        messagebox.showinfo(
+            "更新已準備完成",
+            "程式將關閉、安裝已驗證的更新，然後自動重新啟動。",
+            parent=self.root,
+        )
+        restart_command = (
+            [sys.executable]
+            if getattr(sys, "frozen", False)
+            else [sys.executable, str(SCRIPT_DIR / "auto_reframe_gui.py")]
+        )
+        try:
+            launch_installer(
+                staged,
+                SCRIPT_DIR,
+                restart_command,
+                parent_pid=os.getpid(),
+            )
+        except UpdateError as exc:
+            self._finish_update_install_error(str(exc))
+            return
+        self.installing_update = True
+        self.update_status_var.set("更新安裝程式已啟動，正在關閉…")
+        self.status_var.set("即將安裝更新並重新啟動")
+        self.root.after(200, self.root.destroy)
+
+    def _finish_update_install_error(self, error):
+        self.update_busy = False
+        self.check_update_button.configure(state="normal")
+        if self.update_info is not None and self.update_info.available:
+            self.install_update_button.configure(state="normal")
+        self._set_footer_buttons("normal")
+        self.update_status_var.set("更新安裝失敗。")
+        self.status_var.set("更新安裝失敗")
+        messagebox.showerror("無法安裝更新", error, parent=self.root)
 
     def _copy_credit_symbol(self):
         try:
@@ -915,6 +1212,22 @@ class AutoReframeGUI:
                     self._finish_with_error(payload)
                 elif event == "done":
                     self._finish_success(payload)
+                elif event == "update_check_done":
+                    self._finish_update_check(payload)
+                elif event == "update_check_error":
+                    self._finish_update_check_error(payload)
+                elif event == "update_progress":
+                    received, total = payload
+                    percent = int(received * 100 / total) if total else 0
+                    self.update_status_var.set(
+                        f"正在下載並驗證更新檔… {percent}% "
+                        f"({received / 1024 / 1024:.1f} / "
+                        f"{total / 1024 / 1024:.1f} MiB)"
+                    )
+                elif event == "update_staged":
+                    self._finish_update_staged(payload)
+                elif event == "update_install_error":
+                    self._finish_update_install_error(payload)
         except queue.Empty:
             pass
         self.root.after(80, self._drain_events)
@@ -936,6 +1249,10 @@ class AutoReframeGUI:
     def _finish_success(self, result):
         self.running = False
         self._set_footer_buttons("normal")
+        if self.update_info is not None and self.update_info.available:
+            allowed, _reason = can_self_update(SCRIPT_DIR)
+            if allowed and not self.update_busy:
+                self.install_update_button.configure(state="normal")
         success_count, failed_files = result
         if failed_files:
             self.status_var.set(f"完成：成功 {success_count}，失敗 {len(failed_files)}")
@@ -953,11 +1270,25 @@ class AutoReframeGUI:
     def _finish_with_error(self, error):
         self.running = False
         self._set_footer_buttons("normal")
+        if self.update_info is not None and self.update_info.available:
+            allowed, _reason = can_self_update(SCRIPT_DIR)
+            if allowed and not self.update_busy:
+                self.install_update_button.configure(state="normal")
         self.status_var.set("處理失敗")
         self._append_log(f"\n[錯誤] {error}\n")
         messagebox.showerror("處理失敗", error, parent=self.root)
 
     def _on_close(self):
+        if self.installing_update:
+            self.root.destroy()
+            return
+        if self.update_busy:
+            messagebox.showwarning(
+                "更新進行中",
+                "正在檢查或準備軟體更新，請稍候。",
+                parent=self.root,
+            )
+            return
         if self.running:
             messagebox.showwarning(
                 "工作進行中",

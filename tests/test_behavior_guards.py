@@ -393,7 +393,7 @@ class WatermarkAndGuiOptionTests(unittest.TestCase):
         settings = load_config(CONFIG_EXAMPLE_PATH)
 
         self.assertIsNotNone(settings)
-        self.assertEqual(settings["watermark_file"], "default-watermark.png")
+        self.assertEqual(settings["watermark_file"], "")
         self.assertEqual(settings["watermark_position"], "bottom-center")
         self.assertEqual(settings["watermark_width_ratio"], 0.32)
         self.assertEqual(

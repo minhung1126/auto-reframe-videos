@@ -11,3 +11,22 @@ config.json
 *_text.txt
 
 .DS_Store
+
+# Release and updater artifacts
+dist/
+build/
+.update-backups/
+update-error.log
+
+# Local secrets and signing material must never be committed
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials*.json
+secrets*.json
+.ipynb_checkpoints/
+*.ipynb

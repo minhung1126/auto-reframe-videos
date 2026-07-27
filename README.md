@@ -1,4 +1,4 @@
-# Auto Reframe Video v2.0
+# Auto Reframe Videos
 
 將橫向影片透過 FFmpeg 自動裁切、轉換為手機直式影片（9:16），也可只做等比例壓縮。支援跨平台 GUI、PNG 浮水印、硬體加速、平行處理、單次解碼多路輸出，並可在上下黑邊疊加自訂文字。
 
@@ -27,6 +27,7 @@ GUI 以主頁簽區分功能：
 
 - **比例裁切／直式重製**：維持固定的「上方文字／中央影片／下方文字」三層 9:16 版面。
 - **影片壓縮／縮小解析度**：保留來源比例，只縮小與轉碼。
+- **關於／更新**：檢查 GitHub 最新正式 Release，下載、驗證並安裝更新。
 
 「裁切重製」內另有「輸出設定／編輯上下文／文字樣式」子頁簽，只有需要上下方文字的裁切工作會顯示上下文編輯器。「編輯上下文」提供 `©` 一鍵複製，以及直接插入上方或下方文字的按鈕。
 
@@ -46,6 +47,25 @@ GUI 以主頁簽區分功能：
 - 按下「還原預設」會刪除 `config.json`，重新使用 `config.json.example`。
 
 輸入／輸出路徑刻意不放進設定檔，永遠固定為專案內的 `input/` 與 `output/`。
+
+### 軟體更新
+
+GUI 的「關於／更新」頁籤可手動檢查與安裝更新。更新程式只接受
+`minhung1126/auto-reframe-videos` 的最新正式 GitHub Release，並驗證 GitHub
+Releases API 提供的 SHA-256 digest 與 Release 內的逐檔 manifest。
+
+安裝前會在 `.update-backups/` 備份舊程式，且不會覆寫：
+
+- `config.json`
+- `input/`、`output/`
+- `top_text.txt`、`bottom_text.txt`
+- `watermark/`
+
+成功更新後，下載與 staging 暫存檔會自動清除；`.update-backups/` 會保留，
+方便需要時手動回復舊程式。
+
+如果程式位於 Git 工作目錄，為避免破壞開發中的 tracked files，自動安裝會停用，
+請改用 `git pull`。從 Release ZIP 解壓縮的版本才會啟用一鍵安裝。
 
 ### 一般執行 (Windows / macOS / Linux)
 
@@ -188,7 +208,7 @@ watermark/               # GUI 掃描的 PNG 浮水印資料夾（小寫）
 顯示在影片**下方黑邊**中，支援多行。排列方式與上方相同，從黑邊頂端起向下排列。**留空檔案則不顯示任何文字。**
 
 ```text {.line-numbers}
-1: ©example.credit
+1: ©your.credit
 ```
 
 ### 注意事項
@@ -266,6 +286,34 @@ python3 -m py_compile auto_reframe.py auto_compress.py auto_reframe_gui.py video
 python3 -m unittest discover -s tests
 git diff --check
 ```
+
+---
+
+## 建立 Release
+
+`.github/workflows/release.yml` 提供手動 `workflow_dispatch`：
+
+1. 更新 `auto_reframe_core/version.py` 的 `VERSION`。
+2. 確認根目錄的 `LICENSE` 保留所有權利聲明仍符合發佈意圖。
+3. 將通過測試的版本推送到 `main`。
+4. 在 GitHub **Actions → Release → Run workflow** 選擇 `main`。
+5. 輸入不含 `v` 的 `MAJOR.MINOR.PATCH`，例如 `2.4.0`。
+
+Workflow 會先在 Windows、macOS、Linux 跑完整測試，再建立含逐檔 manifest 的
+ZIP、SHA-256 checksum 與 GitHub Release。Action dependency 固定至完整 commit
+SHA，Release job 只有最小的 `contents: write` 權限。
+
+公開與首次發佈前，請完成
+[`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md)，特別是啟用
+GitHub Immutable Releases、private vulnerability reporting 與 branch protection。
+
+## 授權
+
+本專案採 **All Rights Reserved（保留所有權利）**，不是開放原始碼授權。
+公開可見不等於取得使用、修改、建立衍生作品或再散布的權利；完整條款見根目錄
+[`LICENSE`](LICENSE)。內建 Noto Serif TC 字型不受上述限制，而是依 SIL Open
+Font License 1.1 授權，完整文字已隨附於 `fonts/LICENSE`，來源與固定雜湊詳見
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
 
 使用真實輸入的四格 smoke test（在系統暫存目錄擷取短片，結束後自動清理）：
 
