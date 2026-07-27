@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import importlib
+import io
 import unittest
 from unittest.mock import patch
 
@@ -8,6 +9,26 @@ from auto_reframe_core import cli
 
 
 class UnifiedEntrypointTests(unittest.TestCase):
+    def test_stdio_is_reconfigured_for_localized_windows_output(self):
+        class ReconfigurableStream(io.StringIO):
+            def __init__(self):
+                super().__init__()
+                self.settings = None
+
+            def reconfigure(self, **settings):
+                self.settings = settings
+
+        stdout = ReconfigurableStream()
+        stderr = ReconfigurableStream()
+        with patch.object(cli.sys, "stdout", stdout), patch.object(
+            cli.sys, "stderr", stderr
+        ):
+            cli.configure_utf8_stdio()
+
+        expected = {"encoding": "utf-8", "errors": "replace"}
+        self.assertEqual(stdout.settings, expected)
+        self.assertEqual(stderr.settings, expected)
+
     def test_default_mode_is_gui(self):
         args = cli.build_parser().parse_args([])
 

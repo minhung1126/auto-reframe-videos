@@ -2,12 +2,20 @@
 """Unified command-line entry for GUI, Reframe, and Compress modes."""
 
 import argparse
+import sys
 from collections.abc import Sequence
 
 from auto_reframe_core.version import __version__
 
 
 MODES = ("gui", "reframe", "compress")
+
+
+def configure_utf8_stdio() -> None:
+    """Keep localized CLI output writable on Windows and redirected streams."""
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    configure_utf8_stdio()
     args = build_parser().parse_args(argv)
 
     if args.mode == "gui":
