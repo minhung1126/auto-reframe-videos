@@ -460,7 +460,7 @@ class AutoReframeGUI:
         )
         ttk.Label(
             watermark,
-            text="來源：watermark/*.png；預設下方中央，寬度為輸出畫面的 32%，底部距離以 FHD 56px 等比縮放。",
+            text="來源：watermark/*.png；預設下方中央，大小比照 Lightroom 等比例 7、垂直插入 3。",
             foreground="#555555",
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 

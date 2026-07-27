@@ -98,9 +98,9 @@ class ReframeConfig:
     watermark_enabled: bool = False
     watermark_file: str = ""
     watermark_position: str = "bottom-center"
-    watermark_width_ratio: float = 0.32
+    watermark_width_ratio: float = 0.07
     watermark_opacity: float = 0.85
-    watermark_margin: int = 56
+    watermark_margin: int = 3
 
     # GUI 可直接提供文字；None 時維持既有文字檔讀取行為。
     top_text_override: Optional[str] = None

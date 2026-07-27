@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 input/
 output/
+watermark/
 .venv/
 tmp/
 *.tmp

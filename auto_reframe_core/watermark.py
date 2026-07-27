@@ -2,6 +2,7 @@
 """Shared image-watermark configuration and FFmpeg filter helpers."""
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,9 +24,9 @@ class WatermarkConfig:
     enabled: bool = False
     path: Optional[Path] = None
     position: str = "bottom-center"
-    width_ratio: float = 0.32
+    width_ratio: float = 0.07
     opacity: float = 0.85
-    margin: int = 56
+    margin: int = 3
 
 
 def build_watermark_config(
@@ -53,8 +54,8 @@ def build_watermark_config(
         raise ValueError("watermark_opacity 必須介於 0.0 與 1.0。")
 
     normalized_margin = int(margin)
-    if normalized_margin < 0:
-        raise ValueError("watermark_margin 不可小於 0。")
+    if not 0 <= normalized_margin <= 100:
+        raise ValueError("watermark_margin 必須介於 0 與 100。")
 
     raw_path = str(watermark_file).strip()
     resolved_path: Optional[Path] = None
@@ -101,6 +102,44 @@ def watermark_overlay_xy(position: str, margin: int) -> Tuple[str, str]:
         raise ValueError(f"不支援的浮水印位置: {position!r}") from exc
 
 
+def lightroom_proportional_dimensions(
+    out_width: int,
+    out_height: int,
+    watermark_width: int,
+    watermark_height: int,
+    proportional_ratio: float,
+) -> Tuple[float, float]:
+    """Return Lightroom-style proportional canvas dimensions before rounding."""
+    scale = proportional_ratio * math.sqrt(
+        (out_width * out_height) / (watermark_width * watermark_height)
+    )
+    return watermark_width * scale, watermark_height * scale
+
+
+def watermark_width_expression(
+    out_width: int,
+    out_height: int,
+    proportional_ratio: float,
+) -> str:
+    """Build the FFmpeg width expression using the watermark input aspect."""
+    return (
+        f"round(sqrt({out_width}*{out_height}*iw/ih)"
+        f"*{proportional_ratio:g})"
+    )
+
+
+def watermark_inset_pixels(
+    out_width: int,
+    out_height: int,
+    inset_percent: int,
+) -> int:
+    """Convert a Lightroom-style inset percentage to output pixels."""
+    return max(
+        0,
+        int(round(math.sqrt(out_width * out_height) * inset_percent / 100.0)),
+    )
+
+
 def append_watermark_source_filter(
     filters: list,
     branch_count: int,
@@ -135,15 +174,23 @@ def append_watermark_overlay_filter(
     config: WatermarkConfig,
 ) -> str:
     """Scale and overlay a watermark on one finished resolution branch."""
-    watermark_width = max(2, int(round(out_width * config.width_ratio)))
-    watermark_width += watermark_width % 2
-    scaled_margin = max(0, int(round(config.margin * out_height / 1920.0)))
+    watermark_width = watermark_width_expression(
+        out_width,
+        out_height,
+        config.width_ratio,
+    )
+    scaled_margin = watermark_inset_pixels(
+        out_width,
+        out_height,
+        config.margin,
+    )
     x_expr, y_expr = watermark_overlay_xy(config.position, scaled_margin)
     scaled_label = f"[wm_scaled_{group_index}]"
     output_label = f"[wm_out_{group_index}]"
 
     filters.append(
-        f"{watermark_label}scale={watermark_width}:-2:flags=lanczos{scaled_label};"
+        f"{watermark_label}scale={watermark_width}:-2:"
+        f"flags=lanczos{scaled_label};"
         f"{video_label}{scaled_label}overlay=x={x_expr}:y={y_expr}:"
         f"eof_action=repeat:shortest=0:repeatlast=1{output_label}"
     )

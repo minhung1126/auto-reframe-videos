@@ -40,7 +40,12 @@ from auto_reframe_core.text_layout import (
     escape_filter_path,
 )
 from auto_reframe_core.gui_options import list_watermark_pngs, parse_ratio
-from auto_reframe_core.watermark import WatermarkConfig, build_watermark_config
+from auto_reframe_core.watermark import (
+    WatermarkConfig,
+    build_watermark_config,
+    lightroom_proportional_dimensions,
+    watermark_inset_pixels,
+)
 from auto_reframe_core.video_utils import get_video_info, h264, h265
 
 
@@ -419,9 +424,9 @@ class CompressCommandGuardTests(unittest.TestCase):
             enabled=True,
             path=Path("C:/含 空白/logo.png"),
             position="bottom-center",
-            width_ratio=0.18,
+            width_ratio=0.07,
             opacity=0.75,
-            margin=48,
+            margin=3,
         )
 
         outputs = [
@@ -437,9 +442,12 @@ class CompressCommandGuardTests(unittest.TestCase):
         self.assertNotIn(str(compressor.watermark.path), filter_complex)
         self.assertEqual(filter_complex.count("overlay="), 1)
         self.assertIn("scale=1920:1080", filter_complex)
-        self.assertIn("scale=346:-2:flags=lanczos", filter_complex)
+        self.assertIn(
+            "scale=round(sqrt(1920*1080*iw/ih)*0.07):-2:flags=lanczos",
+            filter_complex,
+        )
         self.assertIn("x=(main_w-overlay_w)/2", filter_complex)
-        self.assertIn("y=main_h-overlay_h-27", filter_complex)
+        self.assertIn("y=main_h-overlay_h-43", filter_complex)
         self.assertIn("shortest=0", filter_complex)
         self.assertLess(filter_complex.index("overlay="), filter_complex.index("split=2[out_0][out_1]"))
         self.assertEqual(cmd.count("0:a:0"), 2)
@@ -542,11 +550,26 @@ class WatermarkAndGuiOptionTests(unittest.TestCase):
                     enabled=True,
                     watermark_file="watermark/missing.png",
                     position="bottom-center",
-                    width_ratio=0.18,
+                    width_ratio=0.07,
                     opacity=0.75,
-                    margin=48,
+                    margin=3,
                     base_dir=base_dir,
                 )
+
+    def test_watermark_geometry_matches_lightroom_reference_without_fudge(self):
+        portrait = lightroom_proportional_dimensions(
+            1246, 1558, 1008, 96, 0.07
+        )
+        landscape = lightroom_proportional_dimensions(
+            4096, 2304, 1008, 96, 0.07
+        )
+
+        self.assertAlmostEqual(portrait[0], 316.0351856993142)
+        self.assertAlmostEqual(portrait[1], 30.098589114220403)
+        self.assertAlmostEqual(landscape[0], 696.8092398928131)
+        self.assertAlmostEqual(landscape[1], 66.3627847516965)
+        self.assertEqual(watermark_inset_pixels(1246, 1558, 3), 42)
+        self.assertEqual(watermark_inset_pixels(4096, 2304, 3), 92)
 
     def test_config_example_is_the_valid_default_source(self):
         settings = load_config(CONFIG_EXAMPLE_PATH)
@@ -554,7 +577,8 @@ class WatermarkAndGuiOptionTests(unittest.TestCase):
         self.assertIsNotNone(settings)
         self.assertEqual(settings["watermark_file"], "")
         self.assertEqual(settings["watermark_position"], "bottom-center")
-        self.assertEqual(settings["watermark_width_ratio"], 0.32)
+        self.assertEqual(settings["watermark_width_ratio"], 0.07)
+        self.assertEqual(settings["watermark_margin"], 3)
         self.assertEqual(
             normalize_target_sets(settings)["reframe"][0]["ratio"],
             (4, 5),
@@ -623,9 +647,9 @@ class WatermarkFFmpegIntegrationTests(unittest.TestCase):
                 enabled=True,
                 path=watermark_file,
                 position="bottom-center",
-                width_ratio=0.18,
+                width_ratio=0.07,
                 opacity=0.75,
-                margin=48,
+                margin=3,
             )
             info = get_video_info("ffprobe", input_file)
             outputs = [(320, 180, "SOURCE", "1M", output_file, h264)]
