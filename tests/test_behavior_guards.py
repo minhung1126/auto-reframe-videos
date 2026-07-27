@@ -27,7 +27,11 @@ from auto_reframe_core.gui import (
     normalize_target_sets,
 )
 from auto_reframe_core.output_plans import build_compress_output_plan, build_reframe_output_plan
-from auto_reframe_core.platform_profile import PlatformProfile, resolve_workers
+from auto_reframe_core.platform_profile import (
+    PlatformProfile,
+    hidden_subprocess_kwargs,
+    resolve_workers,
+)
 from auto_reframe_core.reframe_geometry import calculate_reframe_dimensions
 from auto_reframe_core.text_layout import (
     TextLayoutConfig,
@@ -45,6 +49,16 @@ class PlatformProfileTests(unittest.TestCase):
         self.assertEqual(resolve_workers(0, PlatformProfile("darwin", "posix", 16)), 4)
         self.assertEqual(resolve_workers(0, PlatformProfile("win32", "nt", 32)), 8)
         self.assertEqual(resolve_workers(99, PlatformProfile("linux", "posix", 4)), 4)
+
+    def test_windows_helper_processes_hide_their_console_window(self):
+        self.assertEqual(
+            hidden_subprocess_kwargs(PlatformProfile("win32", "nt", 4)),
+            {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)},
+        )
+        self.assertEqual(
+            hidden_subprocess_kwargs(PlatformProfile("linux", "posix", 4)),
+            {},
+        )
 
     def test_batch_runner_creates_fixed_input_and_output_directories(self):
         with tempfile.TemporaryDirectory() as tmp:

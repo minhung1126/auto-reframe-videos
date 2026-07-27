@@ -150,6 +150,10 @@ class QueueStream(io.TextIOBase):
     def flush(self):
         return None
 
+    def isatty(self):
+        """Tell progress renderers to use newline-delimited GUI log output."""
+        return False
+
 
 def _read_optional_text(path: Path) -> str:
     if not path.is_file():

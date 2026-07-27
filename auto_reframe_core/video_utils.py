@@ -21,7 +21,7 @@ from auto_reframe_core.encoder_profiles import (
     detect_hwaccel_for_cmd,
     double_bitrate,
 )
-from auto_reframe_core.platform_profile import resolve_workers
+from auto_reframe_core.platform_profile import hidden_subprocess_kwargs, resolve_workers
 
 # FFmpeg autorotate selects transpose at ±0.5° from a quarter turn; outside
 # that range it keeps the coded canvas and applies a general rotate filter.
@@ -128,7 +128,8 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
         res = subprocess.run(
             [ffprobe_path, "-v", "quiet", "-print_format", "json",
              "-show_streams", "-show_format", str(input_file)],
-            capture_output=True, text=True, timeout=30
+            capture_output=True, text=True, timeout=30,
+            **hidden_subprocess_kwargs(),
         )
         if res.returncode != 0 or not res.stdout.strip():
             print(f"  [警告] FFprobe 無法解析影片: {input_file.name}")
@@ -400,6 +401,7 @@ def run_ffmpeg_with_progress(
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         universal_newlines=True, encoding="utf-8", errors="replace",
+        **hidden_subprocess_kwargs(),
     )
     cancellation = getattr(position_q, "cancellation", None)
     if cancellation is not None:
@@ -411,14 +413,15 @@ def run_ffmpeg_with_progress(
     debug_fd = None
     try:
         pos = position_q.get()
-        if _HAS_TQDM:
+        use_tqdm = _HAS_TQDM and sys.stderr.isatty()
+        progress_step = -1
+        if use_tqdm:
             pbar = _tqdm(
                 total=info["duration"], desc=desc, position=pos, leave=False,
                 bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}",
             )
         else:
-            sys.stdout.write(f"\n{desc} 處理中...")
-            sys.stdout.flush()
+            print(f"[處理] {desc}：0%")
 
         if debug_log_path:
             debug_fd = open(debug_log_path, "w", encoding="utf-8")
@@ -438,6 +441,14 @@ def run_ffmpeg_with_progress(
                     if m and pbar:
                         pbar.n = min(parse_ffmpeg_time(m.group(1)), info["duration"])
                         pbar.refresh()
+                    elif m:
+                        elapsed = min(parse_ffmpeg_time(m.group(1)), info["duration"])
+                        duration = info["duration"]
+                        percent = int(elapsed * 100 / duration) if duration else 0
+                        step = min(100, percent // 5 * 5)
+                        if step > progress_step:
+                            progress_step = step
+                            print(f"[進度] {desc}：{step}%")
 
         proc.wait()
     except BaseException:

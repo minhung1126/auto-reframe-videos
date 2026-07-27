@@ -3,8 +3,9 @@
 
 from dataclasses import dataclass
 import os
+import subprocess
 import sys
-from typing import Optional
+from typing import Dict, Optional
 
 
 @dataclass(frozen=True)
@@ -52,3 +53,12 @@ def should_pause_with_windows_prompt(profile: Optional[PlatformProfile] = None) 
 def pause_for_windows_shell(profile: Optional[PlatformProfile] = None) -> None:
     if should_pause_with_windows_prompt(profile):
         os.system("pause")
+
+
+def hidden_subprocess_kwargs(
+    profile: Optional[PlatformProfile] = None,
+) -> Dict[str, int]:
+    """Prevent Windows console windows from being created for helper processes."""
+    if not (profile or current_platform()).is_windows:
+        return {}
+    return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}

@@ -4,7 +4,11 @@
 import subprocess
 from typing import List, Optional, Tuple
 
-from .platform_profile import PlatformProfile, current_platform
+from .platform_profile import (
+    PlatformProfile,
+    current_platform,
+    hidden_subprocess_kwargs,
+)
 
 
 # Priority is preserved from the previous implementation:
@@ -77,6 +81,7 @@ def _detect_hw_encoder(
             capture_output=True,
             text=True,
             timeout=10,
+            **hidden_subprocess_kwargs(profile),
         )
         encoders = res.stdout
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -97,6 +102,7 @@ def _detect_hw_encoder(
                     capture_output=True,
                     text=True,
                     timeout=30,
+                    **hidden_subprocess_kwargs(profile),
                 )
             except (OSError, subprocess.TimeoutExpired):
                 continue
