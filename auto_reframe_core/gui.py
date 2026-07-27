@@ -72,6 +72,53 @@ MODE_LABELS = {
 MODE_KEYS_BY_LABEL = {label: key for key, label in MODE_LABELS.items()}
 
 
+def build_job_confirmation_message(mode: str, config) -> str:
+    """Describe the exact GUI job and ask the user to approve it."""
+    watermark_file = Path(config.watermark_file).name
+    watermark = (
+        f"已套用（{watermark_file}）"
+        if config.watermark_enabled
+        else "未套用"
+    )
+    lines = [
+        "請確認以下設定是否正確。",
+        "",
+        f"模式：{MODE_LABELS[mode]}",
+        f"浮水印：{watermark}",
+        "",
+        "輸出組合：",
+    ]
+
+    if mode == "reframe":
+        final_width, final_height = config.final_ratio
+        for index, target in enumerate(config.targets, 1):
+            ratio_width, ratio_height = target["ratio"]
+            lines.append(
+                f"  {index}. 裁切 {ratio_width}:{ratio_height} → 畫布 "
+                f"{final_width}:{final_height}／{RESOLUTION_LABELS[target['resolution']]}／"
+                f"{CODEC_LABELS[target['vcodec']]}"
+            )
+        lines.extend(
+            [
+                "",
+                "偵測到的上方文字：",
+                VideoReframer._normalize_text(config.top_text_override or "") or "（未設定）",
+                "",
+                "偵測到的下方文字：",
+                VideoReframer._normalize_text(config.bottom_text_override or "") or "（未設定）",
+            ]
+        )
+    else:
+        for index, target in enumerate(config.targets, 1):
+            lines.append(
+                f"  {index}. {RESOLUTION_LABELS[target['resolution']]}／"
+                f"{CODEC_LABELS[target['vcodec']]}"
+            )
+
+    lines.extend(["", "要繼續開始處理嗎？"])
+    return "\n".join(lines)
+
+
 def ensure_runtime_directories(paths=None):
     """Create the fixed runtime directories before any job starts."""
     runtime_paths = tuple(paths) if paths is not None else (
@@ -170,6 +217,36 @@ def copy_text_to_clipboard(root, text: str) -> None:
     root.clipboard_clear()
     root.clipboard_append(text)
     root.update_idletasks()
+
+
+class ScrollableTab(ttk.Frame):
+    """A notebook tab whose content remains reachable in short windows."""
+
+    def __init__(self, parent, *, padding=0):
+        super().__init__(parent)
+        self.columnconfigure(0, weight=1)
+        self.rowconfigure(0, weight=1)
+
+        self.canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(
+            self, orient="vertical", command=self.canvas.yview
+        )
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.grid(row=0, column=0, sticky="nsew")
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+
+        self.content = ttk.Frame(self.canvas, padding=padding)
+        self._content_window = self.canvas.create_window(
+            (0, 0), window=self.content, anchor="nw"
+        )
+        self.content.bind("<Configure>", self._update_scroll_region)
+        self.canvas.bind("<Configure>", self._resize_content)
+
+    def _update_scroll_region(self, _event=None):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _resize_content(self, event):
+        self.canvas.itemconfigure(self._content_window, width=event.width)
 
 
 class AutoReframeGUI:
@@ -277,11 +354,14 @@ class AutoReframeGUI:
 
         log_frame = ttk.LabelFrame(self.root, text="執行日誌", padding=8)
         log_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=6)
-        self.root.rowconfigure(1, weight=1)
+        # Give the settings tabs the available height first.  macOS controls use
+        # a taller native font, so an expanding log area can otherwise hide the
+        # lower text editor before the user has a chance to scroll to it.
+        self.root.rowconfigure(1, weight=0)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.log_text = scrolledtext.ScrolledText(
-            log_frame, height=10, wrap="word", state="disabled", font=("TkFixedFont", 9)
+            log_frame, height=6, wrap="word", state="disabled", font=("TkFixedFont", 9)
         )
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
@@ -307,7 +387,7 @@ class AutoReframeGUI:
         self.reframe_notebook.grid(row=0, column=0, sticky="nsew")
 
         self.reframe_output_tab = ttk.Frame(self.reframe_notebook, padding=10)
-        self.context_tab = ttk.Frame(self.reframe_notebook, padding=10)
+        self.context_tab = ScrollableTab(self.reframe_notebook, padding=10)
         self.text_style_tab = ttk.Frame(self.reframe_notebook, padding=10)
         self.reframe_notebook.add(self.reframe_output_tab, text="輸出設定")
         self.reframe_notebook.add(self.context_tab, text="編輯上下文")
@@ -466,14 +546,15 @@ class AutoReframeGUI:
         ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def _build_context_tab(self):
-        self.context_tab.columnconfigure(0, weight=1)
+        content = self.context_tab.content
+        content.columnconfigure(0, weight=1)
         ttk.Label(
-            self.context_tab,
+            content,
             text="最終畫布固定為 9:16，並永遠維持「上方文字／中央影片／下方文字」三層。",
         ).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
         credit = ttk.LabelFrame(
-            self.context_tab,
+            content,
             text="Credit／版權符號",
             padding=(10, 6),
         )
@@ -497,19 +578,19 @@ class AutoReframeGUI:
             command=lambda: self._insert_credit_symbol(self.bottom_text),
         ).grid(row=0, column=3)
 
-        ttk.Label(self.context_tab, text="上方文字（可多行）").grid(
+        ttk.Label(content, text="上方文字（可多行）").grid(
             row=2, column=0, sticky="w"
         )
-        self.top_text = scrolledtext.ScrolledText(self.context_tab, height=5, wrap="word")
+        self.top_text = scrolledtext.ScrolledText(content, height=5, wrap="word")
         self.top_text.grid(row=3, column=0, sticky="nsew", pady=(4, 10))
 
-        ttk.Label(self.context_tab, text="下方文字（可多行）").grid(
+        ttk.Label(content, text="下方文字（可多行）").grid(
             row=4, column=0, sticky="w"
         )
-        self.bottom_text = scrolledtext.ScrolledText(self.context_tab, height=4, wrap="word")
+        self.bottom_text = scrolledtext.ScrolledText(content, height=4, wrap="word")
         self.bottom_text.grid(row=5, column=0, sticky="nsew", pady=(4, 0))
-        self.context_tab.rowconfigure(3, weight=1)
-        self.context_tab.rowconfigure(5, weight=1)
+        content.rowconfigure(3, weight=1)
+        content.rowconfigure(5, weight=1)
 
     def _build_text_style_tab(self):
         self.text_style_tab.columnconfigure(0, weight=1)
@@ -1191,6 +1272,15 @@ class AutoReframeGUI:
                 "為避免覆寫既有輸出，請先移出或清空內容後再開始處理。",
                 parent=self.root,
             )
+            return
+
+        if not messagebox.askyesno(
+            "確認開始處理",
+            build_job_confirmation_message(mode, config),
+            parent=self.root,
+            default=messagebox.NO,
+        ):
+            self.status_var.set("已取消開始處理")
             return
 
         self.running = True
