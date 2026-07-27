@@ -60,11 +60,11 @@ Current status:
 
 - Completed: GitHub Support purged the pre-rewrite cached objects and the
   three known direct URLs were independently verified to return HTTP 404.
-- Completed: Release v2.4.0 was published from commit
-  `300e5f37514a9ba0510360156cc46446f95c7484` after Windows, macOS, and Linux
+- Completed: Release v2.5.0 was published from commit
+  `28da1fd5ceaa39d873180ada57dd6e6719e61add` after Windows, macOS, and Linux
   verification passed. Its ZIP and checksum assets were verified against the
   published SHA-256 digest.
-- Pending: Release v2.4.0 currently reports `immutable: false` through the
+- Pending: Release v2.5.0 currently reports `immutable: false` through the
   GitHub Releases API. Enable release immutability only after confirming that
   no asset or release-note correction is required.
 

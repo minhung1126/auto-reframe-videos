@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 
-import importlib
 import io
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
 from auto_reframe_core import cli
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class UnifiedEntrypointTests(unittest.TestCase):
@@ -45,19 +48,12 @@ class UnifiedEntrypointTests(unittest.TestCase):
                 self.assertEqual(cli.main([mode]), 0)
                 run.assert_called_once_with()
 
-    def test_legacy_modules_alias_package_implementations(self):
-        aliases = {
-            "auto_reframe": "auto_reframe_core.reframe",
-            "auto_compress": "auto_reframe_core.compress",
-            "auto_reframe_gui": "auto_reframe_core.gui",
-            "video_utils": "auto_reframe_core.video_utils",
-        }
-        for legacy_name, implementation_name in aliases.items():
-            with self.subTest(module=legacy_name):
-                self.assertIs(
-                    importlib.import_module(legacy_name),
-                    importlib.import_module(implementation_name),
-                )
+    def test_platform_launchers_use_only_the_unified_gui_entry(self):
+        for launcher in ("run.bat", "run.command"):
+            with self.subTest(launcher=launcher):
+                content = (ROOT / launcher).read_text(encoding="utf-8")
+                self.assertIn("-m auto_reframe_core gui", content)
+                self.assertNotIn("auto_reframe_gui.py", content)
 
 
 if __name__ == "__main__":

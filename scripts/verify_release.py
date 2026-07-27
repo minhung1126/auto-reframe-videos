@@ -54,6 +54,20 @@ def verify_release(version: str, dist_dir: Path) -> None:
             raise RuntimeError("Release archive does not contain the unified entry point.")
         if not (staged.staged_root / "auto_reframe_core" / "gui.py").is_file():
             raise RuntimeError("Release archive does not contain the GUI module.")
+        if not (staged.staged_root / "run.bat").is_file():
+            raise RuntimeError("Release archive does not contain the Windows launcher.")
+        if not (staged.staged_root / "run.command").is_file():
+            raise RuntimeError("Release archive does not contain the macOS launcher.")
+        for legacy_entry in (
+            "auto_reframe.py",
+            "auto_compress.py",
+            "auto_reframe_gui.py",
+            "video_utils.py",
+        ):
+            if (staged.staged_root / legacy_entry).exists():
+                raise RuntimeError(
+                    f"Release archive contains legacy entry point: {legacy_entry}"
+                )
         if not (staged.staged_root / "auto_reframe_core" / "updater.py").is_file():
             raise RuntimeError("Release archive does not contain the updater.")
         if not (staged.staged_root / "fonts" / "LICENSE").is_file():

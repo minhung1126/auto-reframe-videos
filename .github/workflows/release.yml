@@ -37,7 +37,7 @@ jobs:
           sudo apt-get install --yes python3-tk
 
       - name: Compile Python sources
-        run: python -m compileall -q auto_reframe.py auto_compress.py auto_reframe_gui.py video_utils.py auto_reframe_core tests scripts
+        run: python -m compileall -q auto_reframe_core tests scripts
 
       - name: Check unified entry point
         run: python -m auto_reframe_core --help

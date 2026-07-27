@@ -17,8 +17,9 @@ class ReleaseBuilderTests(unittest.TestCase):
         self.assertIn("auto_reframe_core/__main__.py", relative)
         self.assertIn("auto_reframe_core/cli.py", relative)
         self.assertIn("auto_reframe_core/gui.py", relative)
-        self.assertIn("auto_reframe_gui.py", relative)
         self.assertIn("auto_reframe_core/updater.py", relative)
+        self.assertIn("run.bat", relative)
+        self.assertIn("run.command", relative)
         self.assertIn("fonts/NotoSerifTC.ttf", relative)
         self.assertIn("fonts/LICENSE", relative)
         self.assertIn("SECURITY.md", relative)
@@ -27,14 +28,21 @@ class ReleaseBuilderTests(unittest.TestCase):
         self.assertFalse(any(name.startswith(".github/") for name in relative))
         self.assertNotIn("AGENTS.md", relative)
         self.assertNotIn("config.json", relative)
+        self.assertNotIn("auto_reframe.py", relative)
+        self.assertNotIn("auto_compress.py", relative)
+        self.assertNotIn("auto_reframe_gui.py", relative)
+        self.assertNotIn("video_utils.py", relative)
 
     def test_manifest_matches_project_version_and_has_unique_paths(self):
         version = project_version()
         manifest, payloads = manifest_for(version, application_files())
         paths = [item["path"] for item in manifest["files"]]
+        modes = {item["path"]: item["mode"] for item in manifest["files"]}
         self.assertEqual(manifest["version"], version)
         self.assertEqual(len(paths), len(set(path.casefold() for path in paths)))
         self.assertEqual(set(paths), set(payloads))
+        self.assertEqual(modes["run.command"], 0o755)
+        self.assertEqual(modes["run.bat"], 0o644)
 
     def test_bundled_font_hash_and_license_notice_are_pinned(self):
         root = Path(__file__).resolve().parents[1]

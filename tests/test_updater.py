@@ -198,7 +198,7 @@ class ArchiveStagingTests(unittest.TestCase):
             root = Path(directory)
             archive = root / "update.zip"
             files = [
-                ("auto_reframe_gui.py", b"print('new')\n", 0o644),
+                ("auto_reframe_core/__main__.py", b"print('new')\n", 0o644),
                 ("auto_reframe_core/version.py", b"__version__='2.4.0'\n", 0o644),
             ]
             write_update_archive(archive, "2.4.0", files)
@@ -208,7 +208,7 @@ class ArchiveStagingTests(unittest.TestCase):
             work.mkdir()
             staged = stage_update(archive, info, work)
             self.assertEqual(
-                (staged.staged_root / "auto_reframe_gui.py").read_bytes(),
+                (staged.staged_root / "auto_reframe_core" / "__main__.py").read_bytes(),
                 files[0][1],
             )
             self.assertTrue(staged.manifest_path.is_file())
@@ -233,7 +233,7 @@ class ArchiveStagingTests(unittest.TestCase):
             write_update_archive(
                 archive,
                 "2.4.0",
-                [("auto_reframe_gui.py", b"safe", 0o644)],
+                [("auto_reframe_core/__main__.py", b"safe", 0o644)],
                 [
                     (
                         "auto-reframe-videos-v2.4.0/../outside.py",
@@ -268,7 +268,7 @@ class ArchiveStagingTests(unittest.TestCase):
             write_update_archive(
                 symlink_archive,
                 "2.4.0",
-                [("auto_reframe_gui.py", b"safe", 0o644)],
+                [("auto_reframe_core/__main__.py", b"safe", 0o644)],
             )
             with zipfile.ZipFile(symlink_archive, "a") as bundle:
                 entry = zipfile.ZipInfo(
@@ -285,6 +285,24 @@ class ArchiveStagingTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
+    def test_self_update_accepts_unified_and_legacy_install_markers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unified = root / "auto_reframe_core" / "__main__.py"
+            unified.parent.mkdir()
+            unified.write_text("", encoding="utf-8")
+            self.assertEqual(can_self_update(root), (True, ""))
+
+            unified.unlink()
+            legacy = root / "auto_reframe_gui.py"
+            legacy.write_text("", encoding="utf-8")
+            self.assertEqual(can_self_update(root), (True, ""))
+
+            legacy.unlink()
+            allowed, reason = can_self_update(root)
+            self.assertFalse(allowed)
+            self.assertIn("統一入口", reason)
+
     def test_transaction_updates_managed_files_and_preserves_user_data(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory) / "app"
@@ -303,7 +321,7 @@ class InstallerTests(unittest.TestCase):
             (root / "watermark" / "mine.png").write_bytes(b"personal watermark")
 
             new_files = [
-                ("auto_reframe_gui.py", b"new gui", 0o644),
+                ("auto_reframe_core/__main__.py", b"new entry", 0o644),
                 ("new_module.py", b"new module", 0o644),
             ]
             manifest = write_installed_manifest(staged, "2.4.0", new_files)
@@ -316,7 +334,11 @@ class InstallerTests(unittest.TestCase):
                 "2.4.0",
                 backup_stamp="test",
             )
-            self.assertEqual((root / "auto_reframe_gui.py").read_bytes(), b"new gui")
+            self.assertEqual(
+                (root / "auto_reframe_core" / "__main__.py").read_bytes(),
+                b"new entry",
+            )
+            self.assertFalse((root / "auto_reframe_gui.py").exists())
             self.assertEqual((root / "new_module.py").read_bytes(), b"new module")
             self.assertFalse((root / "obsolete.py").exists())
             self.assertEqual(
@@ -352,7 +374,7 @@ class InstallerTests(unittest.TestCase):
             write_installed_manifest(
                 staged,
                 "2.4.0",
-                [("auto_reframe_gui.py", b"new gui", 0o644)],
+                [("auto_reframe_core/__main__.py", b"new entry", 0o644)],
             )
             with self.assertRaisesRegex(
                 update_installer.InstallError,
@@ -388,7 +410,7 @@ class InstallerTests(unittest.TestCase):
                 staged,
                 "2.4.0",
                 [
-                    ("auto_reframe_gui.py", b"new gui", 0o644),
+                    ("auto_reframe_core/__main__.py", b"new entry", 0o644),
                     ("module.py", b"new module", 0o644),
                 ],
             )
@@ -415,6 +437,7 @@ class InstallerTests(unittest.TestCase):
                     )
 
             self.assertEqual((root / "auto_reframe_gui.py").read_bytes(), b"old gui")
+            self.assertFalse((root / "auto_reframe_core" / "__main__.py").exists())
             self.assertEqual((root / "module.py").read_bytes(), b"old module")
             self.assertEqual(
                 json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8"))["version"],

@@ -16,15 +16,9 @@ INCLUDED_ROOT_FILES = (
     "README.md",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
-    "auto_compress.command",
-    "auto_compress.py",
-    "auto_reframe.command",
-    "auto_reframe.py",
-    "auto_reframe_gui.bat",
-    "auto_reframe_gui.command",
-    "auto_reframe_gui.py",
     "config.json.example",
-    "video_utils.py",
+    "run.bat",
+    "run.command",
 )
 INCLUDED_GLOBS = (
     "auto_reframe_core/*.py",
@@ -79,10 +73,7 @@ def manifest_for(version: str, paths: list, root: Path = ROOT) -> tuple:
     for path in paths:
         relative = path.relative_to(root.resolve()).as_posix()
         payload = path.read_bytes()
-        mode = stat.S_IMODE(path.stat().st_mode)
         if relative.endswith(".command"):
-            mode = 0o755
-        elif mode & 0o111:
             mode = 0o755
         else:
             mode = 0o644

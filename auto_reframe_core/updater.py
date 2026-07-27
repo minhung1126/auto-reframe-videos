@@ -457,8 +457,12 @@ def can_self_update(install_root: Path) -> Tuple[bool, str]:
     root = Path(install_root).resolve()
     if (root / ".git").exists():
         return False, "偵測到 Git 工作目錄；請使用 git pull 更新開發版本。"
-    if not (root / "auto_reframe_gui.py").is_file():
-        return False, "找不到 Auto Reframe GUI 主程式。"
+    entrypoints = (
+        root / "auto_reframe_core" / "__main__.py",
+        root / "auto_reframe_gui.py",
+    )
+    if not any(path.is_file() for path in entrypoints):
+        return False, "找不到 Auto Reframe 統一入口。"
     if not os.access(str(root), os.W_OK):
         return False, "程式目錄不可寫入，無法自動安裝更新。"
     return True, ""

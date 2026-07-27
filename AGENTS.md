@@ -21,9 +21,10 @@ Windows 與 macOS 是主要使用平台；Linux 由 CI 驗證匯入、核心邏�
    還原、暫存或順手提交不屬於目前任務的檔案。
 2. 以現行程式碼與測試中的行為契約為準。測試失敗時修正實作，不得為了變綠而削弱
    守衛測試。
-3. 保留所有既有使用者入口與設定相容性，除非任務明確要求破壞性變更。
-4. 所有實作放入 `auto_reframe_core/`；根目錄 Python 檔只保留舊入口與匯入路徑
-   的薄型相容層。
+3. 使用者入口統一為 `python -m auto_reframe_core`；不得重新加入根目錄 Python
+   相容入口或分模式啟動器。
+4. 所有實作放入 `auto_reframe_core/`；根目錄只保留跨平台啟動器、必要設定、
+   文件、授權與專案目錄。
 5. 不得將個人媒體、浮水印、帳號資料、Email、Notebook metadata、憑證或本機路徑
    加入版本控制或 Release。
 
@@ -161,7 +162,7 @@ auto_reframe_core/gui_options.py
 - 未完成輸出只寫入 `.tmp`；整組成功後才 promotion。取消或失敗要清理本次 `.tmp`，
   已完成的 final 輸出則保留。
 
-取消與子程序生命週期由 `video_utils.FFmpegCancellation`、
+取消與子程序生命週期由 `auto_reframe_core.video_utils.FFmpegCancellation`、
 `run_ffmpeg_with_progress()`、`run_parallel()` 與 `tests/test_cancellation.py`
 共同守衛。
 
@@ -169,11 +170,10 @@ auto_reframe_core/gui_options.py
 
 - 統一入口為 `python -m auto_reframe_core`；省略 mode 時啟動 GUI，也支援
   `reframe` 與 `compress` mode。
-- `auto_reframe_gui.py` 是 GUI 相容入口；必須保留
-  `auto_reframe_gui.bat` 與 `auto_reframe_gui.command`。
-- 舊 CLI 相容入口必須保留：
-  - `python auto_reframe.py`
-  - `python auto_compress.py`
+- Windows／macOS 雙擊啟動器分別為 `run.bat` 與 `run.command`，兩者都只啟動
+  統一入口的 GUI mode。
+- 更新器可辨識舊版 `auto_reframe_gui.py`，僅用於讓既有 Release 升級並交易式
+  移除舊檔；新 Release 不得再包含根目錄相容入口。
 - GUI 的 `input/`、`output/`、`watermark/` 是固定專案內路徑，不可改成任意外部路徑
   而破壞既有資料與更新保護模型。
 - `config.json.example` 是已提交的完整預設值來源；`config.json` 是忽略且可刪除的
@@ -236,10 +236,8 @@ immutability 與 repository hardening 檢查。
 ## 專案結構與職責
 
 ```text
-auto_reframe.py                 Reframe 舊入口／匯入相容層
-auto_compress.py                Compress 舊入口／匯入相容層
-auto_reframe_gui.py             GUI 舊入口／匯入相容層
-video_utils.py                  舊匯入路徑相容層
+run.bat                         Windows GUI 啟動器
+run.command                     macOS GUI 啟動器
 config.json.example             GUI 已提交預設值
 auto_reframe_core/
   __main__.py                   `python -m auto_reframe_core` 統一入口
@@ -266,6 +264,7 @@ scripts/
   build_release.py              Release allowlist、manifest、ZIP、checksum
   verify_release.py             用 updater staging 驗證 Release
 tests/
+  test_entrypoint.py             統一入口、模式路由與 Windows UTF-8
   test_behavior_guards.py       版面、graph、targets、GUI、浮水印守衛
   test_cancellation.py          中斷與 FFmpeg 子程序終止
   test_release_builder.py       Release allowlist、manifest、字型來源
@@ -282,7 +281,7 @@ tests/
 所有程式修改至少執行：
 
 ```bash
-python -m compileall -q auto_reframe.py auto_compress.py auto_reframe_gui.py video_utils.py auto_reframe_core tests scripts
+python -m compileall -q auto_reframe_core tests scripts
 python -m unittest discover -s tests
 git diff --check
 ```

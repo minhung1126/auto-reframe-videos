@@ -24,10 +24,10 @@ python -m auto_reframe_core compress
 python -m auto_reframe_core --help
 ```
 
-也可直接雙擊既有啟動器；它們都會轉送至上述統一入口：
+也可直接雙擊平台啟動器；兩者都會轉送至上述統一入口：
 
-- Windows：`auto_reframe_gui.bat`
-- macOS：`auto_reframe_gui.command`
+- Windows：`run.bat`
+- macOS：`run.command`
 
 GUI 的輸入與輸出路徑固定為專案內的 `input/` 與 `output/`，不可編輯。程式每次啟動都會自動建立缺少的 `input/`、`output/` 與 `watermark/`。
 
@@ -75,27 +75,12 @@ Releases API 提供的 SHA-256 digest 與 Release 內的逐檔 manifest。
 如果程式位於 Git 工作目錄，為避免破壞開發中的 tracked files，自動安裝會停用，
 請改用 `git pull`。從 Release ZIP 解壓縮的版本才會啟用一鍵安裝。
 
-### 舊入口相容性
-
-下列舊指令仍保留為薄型相容層，既有捷徑或自動化不需立即修改：
-
-1. 將影片放入 `input/` 資料夾
-2. （選填）編輯 `top_text.txt` 與 `bottom_text.txt`
-3. 執行需要的腳本：
-
-```bash
-python auto_reframe.py
-python auto_compress.py
-```
-
 ### macOS 一鍵執行
 
-專案內保留 macOS 專用啟動腳本；兩者都透過套件的統一入口執行：
-- `auto_reframe.command`
-- `auto_compress.command`
+專案內提供單一 macOS 啟動腳本 `run.command`，會開啟 GUI。
 
 **如何使用：**
-只需在 Finder 中雙擊這些 `.command` 檔案，系統就會自動開啟終端機並執行對應的程式。
+只需在 Finder 中雙擊 `run.command`，系統就會自動開啟終端機並啟動 GUI。
 
 **⚠️ 首次執行注意事項（權限問題）：**
 如果雙擊檔案時出現「沒有權限」或「無法執行」的錯誤（常見於從 Windows 傳送檔案到 macOS 時遺失執行權限），請進行以下設定：
@@ -111,11 +96,9 @@ python auto_compress.py
 ## 專案結構
 
 ```text
-auto_reframe.py          # 舊 Reframe 入口相容層
-auto_compress.py         # 舊 Compress 入口相容層
-auto_reframe_gui.py      # 舊 GUI 入口相容層
-video_utils.py           # 舊匯入路徑相容層
 auto_reframe_core/       # 所有應用程式實作與統一入口
+run.bat                  # Windows GUI 啟動器
+run.command              # macOS GUI 啟動器
 config.json.example      # GUI 預設設定，納入 Git
 tests/                   # 行為守衛與入口測試
 scripts/                 # Release 建置與驗證
@@ -152,8 +135,7 @@ watermark/               # 固定 PNG 浮水印目錄（Git 忽略內容）
 
 ## 設定值說明（`ReframeConfig`）
 
-所有設定值均在 `auto_reframe_core/reframe.py` 的 `ReframeConfig` 類別中定義；
-根目錄 `auto_reframe.py` 只保留舊匯入與執行方式的相容性。
+所有設定值均在 `auto_reframe_core/reframe.py` 的 `ReframeConfig` 類別中定義。
 
 ### 輸入 / 輸出
 
@@ -298,7 +280,7 @@ Tkinter 通常隨 Windows 的 python.org 安裝程式提供。macOS 若使用精
 ## 驗證
 
 ```bash
-python -m compileall -q auto_reframe.py auto_compress.py auto_reframe_gui.py video_utils.py auto_reframe_core tests scripts
+python -m compileall -q auto_reframe_core tests scripts
 python -m auto_reframe_core --help
 python3 -m unittest discover -s tests
 git diff --check

@@ -181,9 +181,12 @@ def apply_update(
     staged = Path(staged_root).resolve()
     if (root / ".git").exists():
         raise InstallError("Refusing to update a Git working tree.")
-    gui_path = _confined_path(root, PurePosixPath("auto_reframe_gui.py"))
-    if not gui_path.is_file():
-        raise InstallError("Install root does not contain auto_reframe_gui.py.")
+    entrypoints = (
+        PurePosixPath("auto_reframe_core/__main__.py"),
+        PurePosixPath("auto_reframe_gui.py"),
+    )
+    if not any(_confined_path(root, path).is_file() for path in entrypoints):
+        raise InstallError("Install root does not contain an application entry point.")
     new_manifest = _load_manifest(Path(manifest_path), version)
     verify_staged_files(staged, new_manifest)
 
