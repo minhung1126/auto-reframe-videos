@@ -11,7 +11,12 @@ from .watermark import (
     append_watermark_overlay_filter,
     append_watermark_source_filter,
 )
-from video_utils import build_output_args, detect_hwaccel_for_cmd, h264, h265
+from auto_reframe_core.video_utils import (
+    build_output_args,
+    detect_hwaccel_for_cmd,
+    h264,
+    h265,
+)
 
 
 def _collect_hwaccels(outputs: list, encoder_hwaccel_for_codec: Callable[[str], str]) -> set:

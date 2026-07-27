@@ -6,17 +6,25 @@
 
 ## 快速開始
 
-### 圖形介面（建議）
+### 統一入口（建議）
 
 1. 將影片放入 `input/`。
 2. 如需浮水印，將一個或多個 PNG 放入小寫的 `watermark/`。
-3. 啟動 GUI：
+3. 透過統一入口啟動 GUI：
 
 ```bash
-python auto_reframe_gui.py
+python -m auto_reframe_core
 ```
 
-也可直接雙擊：
+同一入口也可執行個別模式：
+
+```bash
+python -m auto_reframe_core reframe
+python -m auto_reframe_core compress
+python -m auto_reframe_core --help
+```
+
+也可直接雙擊既有啟動器；它們都會轉送至上述統一入口：
 
 - Windows：`auto_reframe_gui.bat`
 - macOS：`auto_reframe_gui.command`
@@ -67,9 +75,9 @@ Releases API 提供的 SHA-256 digest 與 Release 內的逐檔 manifest。
 如果程式位於 Git 工作目錄，為避免破壞開發中的 tracked files，自動安裝會停用，
 請改用 `git pull`。從 Release ZIP 解壓縮的版本才會啟用一鍵安裝。
 
-### 一般執行 (Windows / macOS / Linux)
+### 舊入口相容性
 
-舊有 CLI 入口仍保留相容性：
+下列舊指令仍保留為薄型相容層，既有捷徑或自動化不需立即修改：
 
 1. 將影片放入 `input/` 資料夾
 2. （選填）編輯 `top_text.txt` 與 `bottom_text.txt`
@@ -82,7 +90,7 @@ python auto_compress.py
 
 ### macOS 一鍵執行
 
-專案內提供了 macOS 專用的啟動腳本：
+專案內保留 macOS 專用啟動腳本；兩者都透過套件的統一入口執行：
 - `auto_reframe.command`
 - `auto_compress.command`
 
@@ -102,23 +110,30 @@ python auto_compress.py
 
 ## 專案結構
 
-```
-auto_reframe.py          # 直式重製入口與 ReframeConfig
-auto_compress.py         # 壓縮入口與 CompressConfig
-auto_reframe_gui.py      # Windows / macOS 共用 Tk GUI
+```text
+auto_reframe.py          # 舊 Reframe 入口相容層
+auto_compress.py         # 舊 Compress 入口相容層
+auto_reframe_gui.py      # 舊 GUI 入口相容層
+video_utils.py           # 舊匯入路徑相容層
+auto_reframe_core/       # 所有應用程式實作與統一入口
 config.json.example      # GUI 預設設定，納入 Git
-config.json              # 本機 GUI 設定，Git 忽略
-video_utils.py           # 相容層與共用低階工具
-auto_reframe_core/       # 內部核心模組
-tests/                   # 行為守衛測試
-fonts/                   # 內建字型
-watermark/               # GUI 掃描的 PNG 浮水印資料夾（小寫）
+tests/                   # 行為守衛與入口測試
+scripts/                 # Release 建置與驗證
+fonts/                   # 內建字型與授權
+input/                   # 固定來源影片目錄（Git 忽略內容）
+output/                  # 固定輸出目錄（Git 忽略內容）
+watermark/               # 固定 PNG 浮水印目錄（Git 忽略內容）
 ```
 
 `auto_reframe_core/` 內部職責：
 
 | 模組 | 職責 |
 |---|---|
+| `__main__.py` / `cli.py` | GUI、Reframe、Compress 的統一啟動路由 |
+| `gui.py` | Windows / macOS 共用 Tk GUI |
+| `reframe.py` | `ReframeConfig` 與 Reframe 工作協調 |
+| `compress.py` | `CompressConfig` 與 Compress 工作協調 |
+| `video_utils.py` | FFprobe、bitrate、進度、平行化與取消 |
 | `platform_profile.py` | Windows/macOS 平台判斷與 worker 上限 |
 | `encoder_profiles.py` | H.264/H.265 硬體編碼器偵測與 encoder 參數 |
 | `target_specs.py` | targets 驗證與正規化 |
@@ -137,7 +152,8 @@ watermark/               # GUI 掃描的 PNG 浮水印資料夾（小寫）
 
 ## 設定值說明（`ReframeConfig`）
 
-所有設定值均在 `auto_reframe.py` 的 `ReframeConfig` 類別中定義。
+所有設定值均在 `auto_reframe_core/reframe.py` 的 `ReframeConfig` 類別中定義；
+根目錄 `auto_reframe.py` 只保留舊匯入與執行方式的相容性。
 
 ### 輸入 / 輸出
 
@@ -282,7 +298,8 @@ Tkinter 通常隨 Windows 的 python.org 安裝程式提供。macOS 若使用精
 ## 驗證
 
 ```bash
-python3 -m py_compile auto_reframe.py auto_compress.py auto_reframe_gui.py video_utils.py auto_reframe_core/*.py tests/test_behavior_guards.py
+python -m compileall -q auto_reframe.py auto_compress.py auto_reframe_gui.py video_utils.py auto_reframe_core tests scripts
+python -m auto_reframe_core --help
 python3 -m unittest discover -s tests
 git diff --check
 ```

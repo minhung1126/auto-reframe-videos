@@ -5,7 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List
 
-from video_utils import get_youtube_bitrate, resolve_short_side, resolution_label
+from auto_reframe_core.video_utils import (
+    get_youtube_bitrate,
+    resolve_short_side,
+    resolution_label,
+)
 
 
 @dataclass

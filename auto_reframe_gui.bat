@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
-pythonw auto_reframe_gui.py
+pythonw -m auto_reframe_core gui
 if errorlevel 1 (
-    python auto_reframe_gui.py
+    python -m auto_reframe_core gui
     pause
 )

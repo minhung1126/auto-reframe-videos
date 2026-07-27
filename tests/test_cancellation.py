@@ -10,9 +10,13 @@ import time
 import unittest
 from unittest.mock import patch
 
-from auto_compress import VideoCompressor
-from auto_reframe import VideoReframer
-from video_utils import FFmpegCancellation, run_ffmpeg_with_progress, run_parallel
+from auto_reframe_core.compress import VideoCompressor
+from auto_reframe_core.reframe import VideoReframer
+from auto_reframe_core.video_utils import (
+    FFmpegCancellation,
+    run_ffmpeg_with_progress,
+    run_parallel,
+)
 
 
 class FFmpegCancellationTests(unittest.TestCase):
@@ -67,7 +71,10 @@ class FFmpegCancellationTests(unittest.TestCase):
             raise KeyboardInterrupt
 
         tasks = [(1, 1, Path("input.mp4"))]
-        with patch("video_utils.as_completed", side_effect=interrupt_after_worker_started):
+        with patch(
+            "auto_reframe_core.video_utils.as_completed",
+            side_effect=interrupt_after_worker_started,
+        ):
             with self.assertRaises(KeyboardInterrupt):
                 run_parallel(tasks, process_task, workers=1)
 
@@ -80,8 +87,8 @@ class FFmpegCancellationTests(unittest.TestCase):
         task = (1, 1, Path("input.mp4"))
 
         for processor_type, probe_target in (
-            (VideoCompressor, "auto_compress.get_video_info"),
-            (VideoReframer, "auto_reframe.get_video_info"),
+            (VideoCompressor, "auto_reframe_core.compress.get_video_info"),
+            (VideoReframer, "auto_reframe_core.reframe.get_video_info"),
         ):
             with self.subTest(processor=processor_type.__name__):
                 processor = object.__new__(processor_type)
@@ -114,7 +121,7 @@ class FFmpegCancellationTests(unittest.TestCase):
 
         from concurrent.futures import ThreadPoolExecutor
 
-        with patch("video_utils._HAS_TQDM", False):
+        with patch("auto_reframe_core.video_utils._HAS_TQDM", False):
             with ThreadPoolExecutor(max_workers=1) as executor:
                 future = executor.submit(
                     run_ffmpeg_with_progress,

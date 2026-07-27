@@ -22,8 +22,8 @@ Windows 與 macOS 是主要使用平台；Linux 由 CI 驗證匯入、核心邏�
 2. 以現行程式碼與測試中的行為契約為準。測試失敗時修正實作，不得為了變綠而削弱
    守衛測試。
 3. 保留所有既有使用者入口與設定相容性，除非任務明確要求破壞性變更。
-4. 共用邏輯放入 `auto_reframe_core/` 或 `video_utils.py`；根目錄入口只負責組態、
-   協調與使用者介面。
+4. 所有實作放入 `auto_reframe_core/`；根目錄 Python 檔只保留舊入口與匯入路徑
+   的薄型相容層。
 5. 不得將個人媒體、浮水印、帳號資料、Email、Notebook metadata、憑證或本機路徑
    加入版本控制或 Release。
 
@@ -167,9 +167,11 @@ auto_reframe_core/gui_options.py
 
 ## GUI 與設定檔契約
 
-- GUI 入口為 `auto_reframe_gui.py`；必須保留
+- 統一入口為 `python -m auto_reframe_core`；省略 mode 時啟動 GUI，也支援
+  `reframe` 與 `compress` mode。
+- `auto_reframe_gui.py` 是 GUI 相容入口；必須保留
   `auto_reframe_gui.bat` 與 `auto_reframe_gui.command`。
-- CLI 入口必須保留：
+- 舊 CLI 相容入口必須保留：
   - `python auto_reframe.py`
   - `python auto_compress.py`
 - GUI 的 `input/`、`output/`、`watermark/` 是固定專案內路徑，不可改成任意外部路徑
@@ -234,12 +236,18 @@ immutability 與 repository hardening 檢查。
 ## 專案結構與職責
 
 ```text
-auto_reframe.py                 Reframe CLI、ReframeConfig、工作協調
-auto_compress.py                Compress CLI、CompressConfig、工作協調
-auto_reframe_gui.py             Tk GUI、設定、背景工作與更新 UI
-video_utils.py                  FFprobe、bitrate、進度、平行化與取消
+auto_reframe.py                 Reframe 舊入口／匯入相容層
+auto_compress.py                Compress 舊入口／匯入相容層
+auto_reframe_gui.py             GUI 舊入口／匯入相容層
+video_utils.py                  舊匯入路徑相容層
 config.json.example             GUI 已提交預設值
 auto_reframe_core/
+  __main__.py                   `python -m auto_reframe_core` 統一入口
+  cli.py                        GUI／Reframe／Compress mode 路由
+  reframe.py                    ReframeConfig、處理器與工作協調
+  compress.py                   CompressConfig、處理器與工作協調
+  gui.py                        Tk GUI、設定、背景工作與更新 UI
+  video_utils.py                FFprobe、bitrate、進度、平行化與取消
   batch_runner.py               掃描 input、清理 tmp、批次總結
   config_store.py               版本化 GUI 設定讀寫
   encoder_profiles.py           硬體編碼探測與 encoder args

@@ -15,8 +15,8 @@ then
     exit
 fi
 
-# 執行主程式
-python3 auto_reframe.py
+# 透過統一入口執行 Reframe 模式
+python3 -m auto_reframe_core reframe
 
 echo "========================================="
 echo "                處理完成                 "

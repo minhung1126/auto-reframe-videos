@@ -4,7 +4,7 @@
 from pathlib import Path
 from typing import Callable, Tuple
 
-from video_utils import cleanup_tmp_files, resolve_workers, run_parallel
+from auto_reframe_core.video_utils import cleanup_tmp_files, resolve_workers, run_parallel
 
 
 def run_video_batch(config, process_single_video: Callable, action_label: str) -> Tuple[int, list]:

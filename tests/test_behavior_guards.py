@@ -10,8 +10,8 @@ from queue import Queue
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from auto_reframe import ReframeConfig, VideoReframer
-from auto_compress import CompressConfig, VideoCompressor
+from auto_reframe_core.reframe import ReframeConfig, VideoReframer
+from auto_reframe_core.compress import CompressConfig, VideoCompressor
 from auto_reframe_core.encoder_profiles import (
     build_output_args,
     detect_h264_hw_encoder,
@@ -19,7 +19,7 @@ from auto_reframe_core.encoder_profiles import (
 )
 from auto_reframe_core.batch_runner import run_video_batch
 from auto_reframe_core.config_store import clear_config, load_config, save_config
-from auto_reframe_gui import (
+from auto_reframe_core.gui import (
     CONFIG_EXAMPLE_PATH,
     CREDIT_SYMBOL,
     copy_text_to_clipboard,
@@ -37,7 +37,7 @@ from auto_reframe_core.text_layout import (
 )
 from auto_reframe_core.gui_options import list_watermark_pngs, parse_ratio
 from auto_reframe_core.watermark import WatermarkConfig, build_watermark_config
-from video_utils import get_video_info, h264, h265
+from auto_reframe_core.video_utils import get_video_info, h264, h265
 
 
 class PlatformProfileTests(unittest.TestCase):
@@ -430,8 +430,8 @@ class CompressCommandGuardTests(unittest.TestCase):
         self.assertLess(filter_complex.index("overlay="), filter_complex.index("split=2[out_0][out_1]"))
         self.assertEqual(cmd.count("0:a:0"), 2)
 
-    @patch("auto_compress.run_ffmpeg_with_progress")
-    @patch("auto_compress.get_video_info")
+    @patch("auto_reframe_core.compress.run_ffmpeg_with_progress")
+    @patch("auto_reframe_core.compress.get_video_info")
     def test_runtime_fallback_keeps_hw_encode_before_software(
         self, get_info, run_progress
     ):

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from auto_reframe_core.reframe_geometry import calculate_reframe_dimensions
-from video_utils import get_video_info
+from auto_reframe_core.video_utils import get_video_info
 
 
 def _ffprobe_result(video_stream: dict) -> subprocess.CompletedProcess:
@@ -26,7 +26,7 @@ def _ffprobe_result(video_stream: dict) -> subprocess.CompletedProcess:
 
 
 class VideoInfoRotationTests(unittest.TestCase):
-    @patch("video_utils.subprocess.run")
+    @patch("auto_reframe_core.video_utils.subprocess.run")
     def test_unrotated_video_keeps_coded_dimensions(self, run):
         run.return_value = _ffprobe_result(
             {
@@ -46,7 +46,7 @@ class VideoInfoRotationTests(unittest.TestCase):
         self.assertEqual((info["coded_width"], info["coded_height"]), (336, 192))
         self.assertEqual(info["rotation"], 0)
 
-    @patch("video_utils.subprocess.run")
+    @patch("auto_reframe_core.video_utils.subprocess.run")
     def test_display_matrix_quarter_turn_swaps_display_dimensions(self, run):
         run.return_value = _ffprobe_result(
             {
@@ -76,7 +76,7 @@ class VideoInfoRotationTests(unittest.TestCase):
             (180, 224, 0, 48),
         )
 
-    @patch("video_utils.subprocess.run")
+    @patch("auto_reframe_core.video_utils.subprocess.run")
     def test_rotate_tag_is_supported_case_insensitively(self, run):
         run.return_value = _ffprobe_result(
             {
@@ -93,7 +93,7 @@ class VideoInfoRotationTests(unittest.TestCase):
         self.assertEqual((info["width"], info["height"]), (1080, 1920))
         self.assertEqual(info["rotation"], 90)
 
-    @patch("video_utils.subprocess.run")
+    @patch("auto_reframe_core.video_utils.subprocess.run")
     def test_display_matrix_takes_precedence_over_legacy_tag(self, run):
         run.return_value = _ffprobe_result(
             {
@@ -116,7 +116,7 @@ class VideoInfoRotationTests(unittest.TestCase):
         self.assertEqual((info["width"], info["height"]), (320, 180))
         self.assertEqual(info["rotation"], 180)
 
-    @patch("video_utils.subprocess.run")
+    @patch("auto_reframe_core.video_utils.subprocess.run")
     def test_display_matrix_precision_overrides_rounded_rotation_value(self, run):
         base_stream = {
             "codec_type": "video",

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Shared target validation for reframe and compress configurations."""
 
-from video_utils import RESOLUTION_MAP, h264, h265
+from auto_reframe_core.video_utils import RESOLUTION_MAP, h264, h265
 
 
 VALID_CODECS = {h264, h265}

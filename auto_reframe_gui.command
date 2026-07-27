@@ -9,4 +9,4 @@ then
     exit 1
 fi
 
-python3 auto_reframe_gui.py
+python3 -m auto_reframe_core gui

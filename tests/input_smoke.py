@@ -12,9 +12,9 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 if str(PROJECT_DIR) not in sys.path:
     sys.path.insert(0, str(PROJECT_DIR))
 
-from auto_compress import CompressConfig, VideoCompressor
-from auto_reframe import ReframeConfig, VideoReframer
-from video_utils import h264, h265
+from auto_reframe_core.compress import CompressConfig, VideoCompressor
+from auto_reframe_core.reframe import ReframeConfig, VideoReframer
+from auto_reframe_core.video_utils import h264, h265
 
 
 def run_checked(command):

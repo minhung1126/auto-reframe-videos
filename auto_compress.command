@@ -15,8 +15,8 @@ then
     exit
 fi
 
-# 執行主程式
-python3 auto_compress.py
+# 透過統一入口執行 Compress 模式
+python3 -m auto_reframe_core compress
 
 echo "========================================="
 echo "                處理完成                 "

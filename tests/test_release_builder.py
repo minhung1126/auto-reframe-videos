@@ -14,6 +14,9 @@ class ReleaseBuilderTests(unittest.TestCase):
             path.relative_to(Path(__file__).resolve().parents[1]).as_posix()
             for path in paths
         }
+        self.assertIn("auto_reframe_core/__main__.py", relative)
+        self.assertIn("auto_reframe_core/cli.py", relative)
+        self.assertIn("auto_reframe_core/gui.py", relative)
         self.assertIn("auto_reframe_gui.py", relative)
         self.assertIn("auto_reframe_core/updater.py", relative)
         self.assertIn("fonts/NotoSerifTC.ttf", relative)

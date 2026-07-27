@@ -48,8 +48,12 @@ def verify_release(version: str, dist_dir: Path) -> None:
     temporary = tempfile.TemporaryDirectory(prefix="verify-release-")
     try:
         staged = stage_update(archive, info, Path(temporary.name))
-        if not (staged.staged_root / "auto_reframe_gui.py").is_file():
-            raise RuntimeError("Release archive does not contain the GUI entry point.")
+        if not (
+            staged.staged_root / "auto_reframe_core" / "__main__.py"
+        ).is_file():
+            raise RuntimeError("Release archive does not contain the unified entry point.")
+        if not (staged.staged_root / "auto_reframe_core" / "gui.py").is_file():
+            raise RuntimeError("Release archive does not contain the GUI module.")
         if not (staged.staged_root / "auto_reframe_core" / "updater.py").is_file():
             raise RuntimeError("Release archive does not contain the updater.")
         if not (staged.staged_root / "fonts" / "LICENSE").is_file():
