@@ -574,15 +574,24 @@ class CompressCommandGuardTests(unittest.TestCase):
             "duration": 1.0,
             "has_audio": False,
         }
-        run_progress.side_effect = [
+        attempt_results = iter([
             (1, ["hardware decode failed"]),
             (1, ["hardware encode failed"]),
             (0, []),
-        ]
+        ])
+
+        def report_attempt_progress(*_args, progress_callback=None, **_kwargs):
+            if progress_callback is not None:
+                progress_callback(25)
+            return next(attempt_results)
+
+        run_progress.side_effect = report_attempt_progress
 
         with tempfile.TemporaryDirectory() as tmp:
+            progress_events = []
             compressor = object.__new__(VideoCompressor)
             compressor.script_dir = Path(tmp)
+            compressor.progress_callback = progress_events.append
             compressor.config = CompressConfig(
                 output_dir=str(Path(tmp) / "output"),
                 targets=[{"resolution": "1080p", "vcodec": h265}],
@@ -608,6 +617,16 @@ class CompressCommandGuardTests(unittest.TestCase):
         self.assertIn("hevc_nvenc", commands[1])
         self.assertNotIn("-hwaccel", commands[2])
         self.assertIn("libx265", commands[2])
+        retry_events = [event for event in progress_events if event.kind == "retry"]
+        self.assertEqual([event.attempt for event in retry_events], [2, 3])
+        self.assertTrue(
+            any(
+                event.kind == "progress"
+                and event.progress == 25
+                and event.attempt == 3
+                for event in progress_events
+            )
+        )
 
 
 class WatermarkAndGuiOptionTests(unittest.TestCase):

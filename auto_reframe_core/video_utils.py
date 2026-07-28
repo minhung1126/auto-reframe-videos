@@ -8,10 +8,11 @@ import subprocess
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 from threading import Event, Lock
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from auto_reframe_core.encoder_profiles import (
     build_encoder_args,
@@ -26,6 +27,52 @@ from auto_reframe_core.platform_profile import hidden_subprocess_kwargs, resolve
 # FFmpeg autorotate selects transpose at ±0.5° from a quarter turn; outside
 # that range it keeps the coded canvas and applies a general rotate filter.
 _QUARTER_TURN_TOLERANCE = 0.5
+
+
+@dataclass(frozen=True)
+class VideoProgressEvent:
+    """Structured state update for one input video in a parallel batch."""
+
+    kind: str
+    index: int
+    total: int
+    filename: str
+    progress: Optional[int] = None
+    phase: str = ""
+    attempt: int = 1
+    message: str = ""
+
+
+VideoProgressCallback = Optional[Callable[[VideoProgressEvent], None]]
+
+
+def emit_video_progress(
+    callback: VideoProgressCallback,
+    task_info,
+    *,
+    kind: str,
+    progress: Optional[int] = None,
+    phase: str = "",
+    attempt: int = 1,
+    message: str = "",
+) -> None:
+    """Deliver a task-scoped progress event when a structured sink is present."""
+
+    if callback is None:
+        return
+    index, total, file_path = task_info
+    callback(
+        VideoProgressEvent(
+            kind=kind,
+            index=index,
+            total=total,
+            filename=file_path.name,
+            progress=progress,
+            phase=phase,
+            attempt=attempt,
+            message=message,
+        )
+    )
 
 
 def parse_fps(fps_str: str) -> float:
@@ -392,9 +439,10 @@ def run_ffmpeg_with_progress(
     desc: str,
     position_q: Queue,
     debug_log_path=None,
+    progress_callback: Optional[Callable[[int], None]] = None,
 ) -> Tuple[int, List[str]]:
     """
-    以 Popen 執行 FFmpeg 指令，並透過 tqdm（或純文字）顯示即時進度。
+    以 Popen 執行 FFmpeg 指令，並透過 callback、tqdm 或純文字顯示即時進度。
     回傳 (returncode, stderr_log_tail)。
     position_q 用於 tqdm 多列進度條的位置管理，執行完畢後自動歸還。
     """
@@ -413,9 +461,12 @@ def run_ffmpeg_with_progress(
     debug_fd = None
     try:
         pos = position_q.get()
-        use_tqdm = _HAS_TQDM and sys.stderr.isatty()
+        use_tqdm = progress_callback is None and _HAS_TQDM and sys.stderr.isatty()
         progress_step = -1
-        if use_tqdm:
+        if progress_callback is not None:
+            progress_callback(0)
+            progress_step = 0
+        elif use_tqdm:
             pbar = _tqdm(
                 total=info["duration"], desc=desc, position=pos, leave=False,
                 bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}",
@@ -448,9 +499,14 @@ def run_ffmpeg_with_progress(
                         step = min(100, percent // 5 * 5)
                         if step > progress_step:
                             progress_step = step
-                            print(f"[進度] {desc}：{step}%")
+                            if progress_callback is not None:
+                                progress_callback(step)
+                            else:
+                                print(f"[進度] {desc}：{step}%")
 
         proc.wait()
+        if proc.returncode == 0 and progress_callback is not None and progress_step < 100:
+            progress_callback(100)
     except BaseException:
         _terminate_process(proc)
         raise
@@ -473,6 +529,7 @@ def run_parallel(
     tasks: list,
     process_fn,
     workers: int,
+    progress_callback: VideoProgressCallback = None,
 ) -> Tuple[int, List[str]]:
     """
     以 ThreadPoolExecutor 平行執行任務並彙整結果。
@@ -485,24 +542,60 @@ def run_parallel(
     position_q.cancellation = cancellation
     for i in range(workers):
         position_q.put(i)
+    for task in tasks:
+        emit_video_progress(
+            progress_callback,
+            task,
+            kind="queued",
+            progress=0,
+            phase="等待處理",
+        )
 
     success_count = 0
     failed_files: List[str] = []
+
+    def execute_task(task):
+        emit_video_progress(
+            progress_callback,
+            task,
+            kind="started",
+            progress=0,
+            phase="讀取影片資訊",
+        )
+        return process_fn(task, position_q)
 
     executor = ThreadPoolExecutor(max_workers=workers)
     interrupted = False
     futures = {}
     try:
-        futures = {executor.submit(process_fn, t, position_q): t for t in tasks}
+        futures = {executor.submit(execute_task, t): t for t in tasks}
         for fut in as_completed(futures):
             t = futures[fut]
             try:
                 if fut.result():
                     success_count += 1
+                    emit_video_progress(
+                        progress_callback,
+                        t,
+                        kind="completed",
+                        progress=100,
+                    )
                 else:
                     failed_files.append(t[2].name)
+                    emit_video_progress(
+                        progress_callback,
+                        t,
+                        kind="failed",
+                        message="處理未完成",
+                    )
             except Exception as e:
                 failed_files.append(t[2].name)
+                emit_video_progress(
+                    progress_callback,
+                    t,
+                    kind="failed",
+                    message=str(e),
+                )
                 print(f"\n[錯誤] 處理 {t[2].name} 時發生異常: {e}")
     except KeyboardInterrupt:
         interrupted = True

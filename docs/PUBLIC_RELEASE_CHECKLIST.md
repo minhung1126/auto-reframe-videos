@@ -1,6 +1,6 @@
 # Public repository and release safety checklist
 
-Audit date: 2026-07-27
+Audit date: 2026-07-28
 
 ## Audit result
 
@@ -64,19 +64,23 @@ Current status:
   `28da1fd5ceaa39d873180ada57dd6e6719e61add` after Windows, macOS, and Linux
   verification passed. Its ZIP and checksum assets were verified against the
   published SHA-256 digest.
-- Pending: Release v2.5.0 currently reports `immutable: false` through the
-  GitHub Releases API. Enable release immutability only after confirming that
-  no asset or release-note correction is required.
+- Completed: Release v3.0.6 contains the expected ZIP and checksum assets with
+  GitHub SHA-256 digests, and no asset or release-note correction is pending.
+- Completed: Repository Release immutability was enabled on 2026-07-28 after
+  verifying v3.0.6. Newly published Release assets and tags can no longer be
+  modified.
+- Completed: The default `GITHUB_TOKEN` permission is read-only. The Release
+  job alone requests the minimal `contents: write` permission.
+- Completed: Every third-party Action reference in the current workflows is
+  pinned to a full-length commit SHA.
 
 Repository hardening still to confirm:
 
-- Enable **Settings → Releases → Enable release immutability**.
-- Keep the default `GITHUB_TOKEN` permission read-only.
-- Require full-length commit SHA pinning for Actions if the repository setting
-  is available.
+- Enable repository-level enforcement that requires Actions to be pinned to a
+  full-length commit SHA.
 - Enable private vulnerability reporting.
-- Enable secret scanning and push protection if GitHub offers them for the
-  repository.
+- Enable GitHub Secret Protection, including secret scanning and push
+  protection.
 - Protect `main`: require the cross-platform CI checks and prevent force
   pushes.
 

@@ -7,7 +7,12 @@ from typing import Callable, Tuple
 from auto_reframe_core.video_utils import cleanup_tmp_files, resolve_workers, run_parallel
 
 
-def run_video_batch(config, process_single_video: Callable, action_label: str) -> Tuple[int, list]:
+def run_video_batch(
+    config,
+    process_single_video: Callable,
+    action_label: str,
+    progress_callback=None,
+) -> Tuple[int, list]:
     in_dir = Path(config.input_dir)
     input_was_missing = not in_dir.exists()
     in_dir.mkdir(parents=True, exist_ok=True)
@@ -34,7 +39,12 @@ def run_video_batch(config, process_single_video: Callable, action_label: str) -
 
     tasks = [(i, len(videos), v) for i, v in enumerate(sorted(videos), 1)]
     try:
-        success_count, failed_files = run_parallel(tasks, process_single_video, workers)
+        success_count, failed_files = run_parallel(
+            tasks,
+            process_single_video,
+            workers,
+            progress_callback=progress_callback,
+        )
     except KeyboardInterrupt:
         print("\n[中斷] 任務已停止。已完成的輸出會保留，未完成的 .tmp 會在下次執行時清理。")
         return 0, []

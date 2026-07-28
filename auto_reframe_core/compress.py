@@ -30,7 +30,7 @@ from auto_reframe_core.video_utils import (
     # 共用常數
     h264, h265,
     # 執行工具
-    tqdm_write, run_ffmpeg_with_progress,
+    emit_video_progress, tqdm_write, run_ffmpeg_with_progress,
 )
 from auto_reframe_core.target_specs import normalize_compress_target
 from auto_reframe_core.watermark import WatermarkConfig, build_watermark_config
@@ -84,8 +84,9 @@ class CompressConfig:
 
 
 class VideoCompressor:
-    def __init__(self, config: CompressConfig):
+    def __init__(self, config: CompressConfig, progress_callback=None):
         self.config = config
+        self.progress_callback = progress_callback
         self.script_dir = Path(__file__).resolve().parents[1]
         self._validate_config()
         self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
@@ -185,6 +186,13 @@ class VideoCompressor:
         plan = build_compress_output_plan(self.config, out_dir, file_path, info)
 
         if not plan.has_work:
+            emit_video_progress(
+                getattr(self, "progress_callback", None),
+                task_info,
+                kind="progress",
+                progress=100,
+                phase="無需處理",
+            )
             return True
 
         debug_log_path = None
@@ -194,17 +202,50 @@ class VideoCompressor:
         attempts = self._ffmpeg_attempts(file_path, plan.active_maps, info)
         returncode = 1
         stderr_log = []
+        phase = "影片壓縮"
         for attempt_index, (attempt_label, cmd) in enumerate(attempts, 1):
             if cancellation is not None and cancellation.cancelled:
                 cleanup_temp_outputs(plan.tmps)
                 return False
             desc = f"({idx}/{total}) {file_path.stem[:12]} [Auto Compress]"
             if attempt_index > 1:
-                tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
+                emit_video_progress(
+                    getattr(self, "progress_callback", None),
+                    task_info,
+                    kind="retry",
+                    progress=0,
+                    phase=phase,
+                    attempt=attempt_index,
+                    message=attempt_label,
+                )
+                if getattr(self, "progress_callback", None) is None:
+                    tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
                 desc += f" [重試 {attempt_index}]"
 
+            progress_callback = getattr(self, "progress_callback", None)
+            ffmpeg_progress = None
+            if progress_callback is not None:
+                def ffmpeg_progress(
+                    percent,
+                    current_attempt=attempt_index,
+                    current_label=attempt_label,
+                ):
+                    emit_video_progress(
+                        progress_callback,
+                        task_info,
+                        kind="progress",
+                        progress=percent,
+                        phase=phase,
+                        attempt=current_attempt,
+                        message=current_label,
+                    )
             returncode, stderr_log = run_ffmpeg_with_progress(
-                cmd, info, desc, position_q, debug_log_path
+                cmd,
+                info,
+                desc,
+                position_q,
+                debug_log_path,
+                progress_callback=ffmpeg_progress,
             )
             if cancellation is not None and cancellation.cancelled:
                 cleanup_temp_outputs(plan.tmps)
@@ -214,18 +255,25 @@ class VideoCompressor:
             cleanup_temp_outputs(plan.tmps)
 
         if returncode != 0:
-            tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name}")
+            if getattr(self, "progress_callback", None) is None:
+                tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name}")
             print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
             print(f"\n指令輸出結尾：\n{''.join(stderr_log)}")
             return False
 
-        tqdm_write(f"({idx}/{total}) {file_path.name} 處理完成!")
+        if getattr(self, "progress_callback", None) is None:
+            tqdm_write(f"({idx}/{total}) {file_path.name} 處理完成!")
         promote_temp_outputs(plan.tmps, plan.finals)
 
         return True
 
     def run(self):
-        return run_video_batch(self.config, self.process_single_video, "進行自動壓縮")
+        return run_video_batch(
+            self.config,
+            self.process_single_video,
+            "進行自動壓縮",
+            progress_callback=getattr(self, "progress_callback", None),
+        )
 
 
 def main():

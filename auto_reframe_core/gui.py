@@ -53,7 +53,7 @@ from auto_reframe_core.output_plans import (
     delete_target_output_conflicts,
     find_target_output_conflicts,
 )
-from auto_reframe_core.video_utils import h264, h265
+from auto_reframe_core.video_utils import VideoProgressEvent, h264, h265
 
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1]
@@ -82,6 +82,36 @@ OUTPUT_CONFLICT_LABELS = {
     OUTPUT_CONFLICT_OVERWRITE: "覆寫本次同名檔，保留資料夾內其他內容",
     OUTPUT_CONFLICT_DELETE: "刪除列出的目標資料夾後完整重做",
 }
+
+
+def calculate_responsive_window_geometry(
+    screen_width: int,
+    screen_height: int,
+) -> tuple[int, int, int, int]:
+    """Return a usable initial and minimum size for desktop and small displays."""
+
+    width = min(1100, max(640, screen_width - 96), screen_width)
+    height = min(900, max(520, screen_height - 120), screen_height)
+    min_width = min(820, width)
+    min_height = min(620, height)
+    return width, height, min_width, min_height
+
+
+def format_video_event_log(event: VideoProgressEvent) -> str:
+    """Format only lifecycle events that should remain in the GUI history."""
+
+    prefix = f"[{event.index}/{event.total}] {event.filename}"
+    if event.kind == "started":
+        return f"{prefix}：開始處理"
+    if event.kind == "retry":
+        detail = event.message or "重新嘗試"
+        return f"{prefix}：{detail}（第 {event.attempt} 次嘗試）"
+    if event.kind == "completed":
+        return f"{prefix}：處理完成"
+    if event.kind == "failed":
+        detail = event.message or "處理未完成"
+        return f"{prefix}：失敗－{detail}"
+    return ""
 
 
 def build_output_conflict_message(conflicts: list[Path]) -> str:
@@ -365,8 +395,14 @@ class AutoReframeGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(f"Auto Reframe Videos v{__version__}")
-        self.root.geometry("1040x850")
-        self.root.minsize(900, 720)
+        window_width, window_height, min_width, min_height = (
+            calculate_responsive_window_geometry(
+                self.root.winfo_screenwidth(),
+                self.root.winfo_screenheight(),
+            )
+        )
+        self.root.geometry(f"{window_width}x{window_height}")
+        self.root.minsize(min_width, min_height)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         self.event_queue = queue.Queue()
@@ -377,6 +413,7 @@ class AutoReframeGUI:
         self.installing_update = False
         self.update_info = None
         self.watermark_paths = {}
+        self.video_progress_states = {}
         ensure_runtime_directories()
         self.default_settings, self.settings = load_effective_settings()
         self.targets = normalize_target_sets(self.settings)
@@ -434,6 +471,7 @@ class AutoReframeGUI:
         self.skip_existing_var = tk.BooleanVar(value=bool(settings["skip_existing"]))
         self.debug_var = tk.BooleanVar(value=bool(settings["debug"]))
         self.status_var = tk.StringVar(value="準備就緒")
+        self.progress_summary_var = tk.StringVar(value="尚未開始處理")
         self.update_status_var = tk.StringVar(value="尚未檢查更新")
 
     def _build_ui(self):
@@ -445,6 +483,7 @@ class AutoReframeGUI:
 
         self.reframe_tab = ttk.Frame(self.notebook, padding=8)
         self.compress_tab = ttk.Frame(self.notebook, padding=8)
+        self.activity_tab = ttk.Frame(self.notebook, padding=8)
         self.advanced_tab = ttk.Frame(self.notebook, padding=12)
         self.update_tab = ttk.Frame(self.notebook, padding=12)
         self.mode_tabs = {
@@ -453,6 +492,7 @@ class AutoReframeGUI:
         }
         self.notebook.add(self.reframe_tab, text="裁切重製")
         self.notebook.add(self.compress_tab, text="影片壓縮")
+        self.notebook.add(self.activity_tab, text="處理進度")
         self.notebook.add(self.advanced_tab, text="進階設定")
         self.notebook.add(self.update_tab, text="關於／更新")
 
@@ -464,21 +504,92 @@ class AutoReframeGUI:
         self._build_update_tab()
         self.notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
 
-        log_frame = ttk.LabelFrame(self.root, text="執行日誌", padding=8)
-        log_frame.grid(row=1, column=0, sticky="nsew", padx=12, pady=6)
-        # Give the settings tabs the available height first.  macOS controls use
-        # a taller native font, so an expanding log area can otherwise hide the
-        # lower text editor before the user has a chance to scroll to it.
-        self.root.rowconfigure(1, weight=0)
+        self.activity_tab.columnconfigure(0, weight=1)
+        self.activity_tab.rowconfigure(0, weight=1)
+        self.activity_pane = ttk.Panedwindow(self.activity_tab, orient="vertical")
+        self.activity_pane.grid(row=0, column=0, sticky="nsew")
+        self._activity_sash_initialized = False
+
+        progress_frame = ttk.LabelFrame(
+            self.activity_pane,
+            text="影片處理進度",
+            padding=8,
+        )
+        progress_frame.columnconfigure(0, weight=1)
+        progress_frame.rowconfigure(1, weight=1)
+        ttk.Label(
+            progress_frame,
+            textvariable=self.progress_summary_var,
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+
+        columns = ("sequence", "filename", "status", "phase", "progress")
+        self.progress_tree = ttk.Treeview(
+            progress_frame,
+            columns=columns,
+            show="headings",
+            height=5,
+        )
+        headings = {
+            "sequence": "序號",
+            "filename": "影片",
+            "status": "狀態",
+            "phase": "目前階段",
+            "progress": "目前進度",
+        }
+        widths = {
+            "sequence": 70,
+            "filename": 250,
+            "status": 90,
+            "phase": 310,
+            "progress": 90,
+        }
+        for column in columns:
+            self.progress_tree.heading(column, text=headings[column])
+            self.progress_tree.column(
+                column,
+                width=widths[column],
+                minwidth=60,
+                stretch=column in {"filename", "phase"},
+                anchor="w" if column in {"filename", "phase"} else "center",
+            )
+
+        progress_y_scroll = ttk.Scrollbar(
+            progress_frame,
+            orient="vertical",
+            command=self.progress_tree.yview,
+        )
+        progress_x_scroll = ttk.Scrollbar(
+            progress_frame,
+            orient="horizontal",
+            command=self.progress_tree.xview,
+        )
+        self.progress_tree.configure(
+            yscrollcommand=progress_y_scroll.set,
+            xscrollcommand=progress_x_scroll.set,
+        )
+        self.progress_tree.grid(row=1, column=0, sticky="nsew")
+        progress_y_scroll.grid(row=1, column=1, sticky="ns")
+        progress_x_scroll.grid(row=2, column=0, sticky="ew")
+
+        log_frame = ttk.LabelFrame(self.activity_pane, text="事件日誌", padding=8)
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
         self.log_text = scrolledtext.ScrolledText(
-            log_frame, height=6, wrap="word", state="disabled", font=("TkFixedFont", 9)
+            log_frame,
+            height=5,
+            wrap="word",
+            state="disabled",
+            font=("TkFixedFont", 9),
         )
         self.log_text.grid(row=0, column=0, sticky="nsew")
 
+        self.activity_pane.add(progress_frame, weight=3)
+        self.activity_pane.add(log_frame, weight=2)
+        self.activity_pane.bind("<Configure>", self._initialize_activity_sash)
+
         footer = ttk.Frame(self.root, padding=(12, 4, 12, 12))
-        footer.grid(row=2, column=0, sticky="ew")
+        footer.grid(row=1, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
         ttk.Label(footer, textvariable=self.status_var).grid(row=0, column=0, sticky="w")
         self.restore_button = ttk.Button(
@@ -491,6 +602,18 @@ class AutoReframeGUI:
         self.save_button.grid(row=0, column=2, padx=(8, 0))
         self.start_button = ttk.Button(footer, text="開始處理", command=self.start_job)
         self.start_button.grid(row=0, column=3, padx=(8, 0))
+
+    def _initialize_activity_sash(self, _event=None):
+        """Set a portable initial split once the progress tab has real dimensions."""
+
+        if self._activity_sash_initialized:
+            return
+        activity_height = self.activity_pane.winfo_height()
+        if activity_height < 180:
+            return
+        split = max(100, min(round(activity_height * 0.58), activity_height - 100))
+        self.activity_pane.sashpos(0, split)
+        self._activity_sash_initialized = True
 
     def _build_reframe_tab(self):
         self.reframe_tab.columnconfigure(0, weight=1)
@@ -1415,6 +1538,8 @@ class AutoReframeGUI:
         self.running = True
         self._set_footer_buttons("disabled")
         self.status_var.set("正在偵測硬體並處理影片…")
+        self._reset_video_progress()
+        self.notebook.select(self.activity_tab)
         self._append_log("\n" + "=" * 60 + "\n")
         self._append_log(f"開始：{MODE_LABELS[mode]}\n")
         self.worker = threading.Thread(
@@ -1427,9 +1552,14 @@ class AutoReframeGUI:
 
     def _run_worker(self, mode, config):
         stream = QueueStream(self.event_queue)
+        report_progress = lambda event: self.event_queue.put(("video_progress", event))
         try:
             with redirect_stdout(stream), redirect_stderr(stream):
-                processor = VideoReframer(config) if mode == "reframe" else VideoCompressor(config)
+                processor = (
+                    VideoReframer(config, progress_callback=report_progress)
+                    if mode == "reframe"
+                    else VideoCompressor(config, progress_callback=report_progress)
+                )
                 result = processor.run()
         except BaseException as exc:
             self.event_queue.put(("error", f"{type(exc).__name__}: {exc}"))
@@ -1442,6 +1572,8 @@ class AutoReframeGUI:
                 event, payload = self.event_queue.get_nowait()
                 if event == "log":
                     self._append_log(payload)
+                elif event == "video_progress":
+                    self._handle_video_progress(payload)
                 elif event == "error":
                     self._finish_with_error(payload)
                 elif event == "done":
@@ -1475,6 +1607,82 @@ class AutoReframeGUI:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
+    def _reset_video_progress(self):
+        for item in self.progress_tree.get_children():
+            self.progress_tree.delete(item)
+        self.video_progress_states.clear()
+        self.progress_summary_var.set("正在建立影片任務…")
+
+    def _handle_video_progress(self, event: VideoProgressEvent):
+        item_id = f"video-{event.index}"
+        current_phase = ""
+        current_progress = ""
+        if self.progress_tree.exists(item_id):
+            values = self.progress_tree.item(item_id, "values")
+            if len(values) >= 5:
+                current_phase = values[3]
+                current_progress = values[4]
+
+        status_by_kind = {
+            "queued": "排隊中",
+            "started": "準備中",
+            "progress": "重試中" if event.attempt > 1 else "處理中",
+            "retry": "重試中",
+            "completed": "已完成",
+            "failed": "失敗",
+        }
+        status = status_by_kind.get(event.kind, "處理中")
+        phase = event.phase or current_phase
+        progress = (
+            f"{max(0, min(100, event.progress))}%"
+            if event.progress is not None
+            else current_progress
+        )
+        values = (
+            f"{event.index}/{event.total}",
+            event.filename,
+            status,
+            phase,
+            progress,
+        )
+        if self.progress_tree.exists(item_id):
+            self.progress_tree.item(item_id, values=values)
+        else:
+            self.progress_tree.insert("", "end", iid=item_id, values=values)
+
+        if event.kind == "queued":
+            state = "queued"
+        elif event.kind == "completed":
+            state = "completed"
+        elif event.kind == "failed":
+            state = "failed"
+        elif event.kind == "retry" or event.attempt > 1:
+            state = "retry"
+        else:
+            state = "running"
+        self.video_progress_states[event.index] = state
+        self._update_progress_summary(event.total)
+
+        log_line = format_video_event_log(event)
+        if log_line:
+            self._append_log(log_line + "\n")
+
+    def _update_progress_summary(self, total: int):
+        states = list(self.video_progress_states.values())
+        completed = states.count("completed")
+        failed = states.count("failed")
+        active = states.count("running") + states.count("retry")
+        queued = states.count("queued")
+        parts = [
+            f"總計 {total}",
+            f"完成 {completed}",
+            f"處理中 {active}",
+            f"排隊 {queued}",
+        ]
+        if failed:
+            parts.append(f"失敗 {failed}")
+        self.progress_summary_var.set("｜".join(parts))
+
     def _set_footer_buttons(self, state):
         self.start_button.configure(state=state)
         self.save_button.configure(state=state)
@@ -1488,6 +1696,8 @@ class AutoReframeGUI:
             if allowed and not self.update_busy:
                 self.install_update_button.configure(state="normal")
         success_count, failed_files = result
+        if not self.video_progress_states:
+            self.progress_summary_var.set("沒有可處理的影片")
         if failed_files:
             self.status_var.set(f"完成：成功 {success_count}，失敗 {len(failed_files)}")
             messagebox.showwarning(
@@ -1504,6 +1714,8 @@ class AutoReframeGUI:
     def _finish_with_error(self, error):
         self.running = False
         self._set_footer_buttons("normal")
+        if not self.video_progress_states:
+            self.progress_summary_var.set("無法建立影片任務")
         if self.update_info is not None and self.update_info.available:
             allowed, _reason = can_self_update(SCRIPT_DIR)
             if allowed and not self.update_busy:

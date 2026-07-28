@@ -28,7 +28,7 @@ from auto_reframe_core.video_utils import (
     # 共用常數
     h264, h265,
     # 執行工具
-    tqdm_write, run_ffmpeg_with_progress,
+    emit_video_progress, tqdm_write, run_ffmpeg_with_progress,
 )
 from auto_reframe_core.target_specs import normalize_reframe_target
 from auto_reframe_core.text_layout import (
@@ -107,8 +107,9 @@ class ReframeConfig:
     bottom_text_override: Optional[str] = None
 
 class VideoReframer:
-    def __init__(self, config: ReframeConfig):
+    def __init__(self, config: ReframeConfig, progress_callback=None):
         self.config = config
+        self.progress_callback = progress_callback
         self.script_dir = Path(__file__).resolve().parents[1]
         self._validate_config()
         self.load_texts()
@@ -303,16 +304,26 @@ class VideoReframer:
         for t in self.config.targets:
             ratio_groups.setdefault(t['ratio'], []).append(t)
 
+        ratio_items = list(ratio_groups.items())
+        group_total = len(ratio_items)
         all_success = True
-        for (rt_w, rt_h), targets in ratio_groups.items():
+        for group_index, ((rt_w, rt_h), targets) in enumerate(ratio_items, 1):
             if cancellation is not None and cancellation.cancelled:
                 return False
+            phase = f"比例 {rt_w}:{rt_h}（{group_index}/{group_total}）"
             dims = self.calculate_dimensions(info["width"], info["height"], (rt_w, rt_h))
             plan = build_reframe_output_plan(
                 self.config, out_dir, file_path, info, dims, rt_w, rt_h, targets
             )
 
             if not plan.has_work:
+                emit_video_progress(
+                    getattr(self, "progress_callback", None),
+                    task_info,
+                    kind="progress",
+                    progress=100,
+                    phase=f"{phase}－無需處理",
+                )
                 continue
 
             debug_log_path = None
@@ -328,11 +339,44 @@ class VideoReframer:
                     return False
                 desc = f"({idx}/{total}) {file_path.stem[:12]} [{rt_w}:{rt_h}]"
                 if attempt_index > 1:
-                    tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
+                    emit_video_progress(
+                        getattr(self, "progress_callback", None),
+                        task_info,
+                        kind="retry",
+                        progress=0,
+                        phase=phase,
+                        attempt=attempt_index,
+                        message=attempt_label,
+                    )
+                    if getattr(self, "progress_callback", None) is None:
+                        tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
                     desc += f" [重試 {attempt_index}]"
 
+                progress_callback = getattr(self, "progress_callback", None)
+                ffmpeg_progress = None
+                if progress_callback is not None:
+                    def ffmpeg_progress(
+                        percent,
+                        current_attempt=attempt_index,
+                        current_label=attempt_label,
+                        current_phase=phase,
+                    ):
+                        emit_video_progress(
+                            progress_callback,
+                            task_info,
+                            kind="progress",
+                            progress=percent,
+                            phase=current_phase,
+                            attempt=current_attempt,
+                            message=current_label,
+                        )
                 returncode, stderr_log = run_ffmpeg_with_progress(
-                    cmd, info, desc, position_q, debug_log_path
+                    cmd,
+                    info,
+                    desc,
+                    position_q,
+                    debug_log_path,
+                    progress_callback=ffmpeg_progress,
                 )
                 if cancellation is not None and cancellation.cancelled:
                     cleanup_temp_outputs(plan.tmps)
@@ -342,19 +386,26 @@ class VideoReframer:
                 cleanup_temp_outputs(plan.tmps)
 
             if returncode != 0:
-                tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}]")
+                if getattr(self, "progress_callback", None) is None:
+                    tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}]")
                 print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
                 print(f"指令輸出結尾：\n{''.join(stderr_log)}")
                 all_success = False
                 continue
 
-            tqdm_write(f"({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}] 完成!")
+            if getattr(self, "progress_callback", None) is None:
+                tqdm_write(f"({idx}/{total}) {file_path.name} [{rt_w}:{rt_h}] 完成!")
             promote_temp_outputs(plan.tmps, plan.finals)
 
         return all_success
 
     def run(self):
-        return run_video_batch(self.config, self.process_single_video, "轉換")
+        return run_video_batch(
+            self.config,
+            self.process_single_video,
+            "轉換",
+            progress_callback=getattr(self, "progress_callback", None),
+        )
 
 
 def main():
