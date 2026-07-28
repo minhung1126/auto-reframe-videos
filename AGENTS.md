@@ -221,15 +221,21 @@ Release 建置必須維持：
 
 - `scripts/build_release.py` 的明確 allowlist；不得改為「打包整個 repository」；
 - Release 不含測試、workflows、Agent 指示、個人浮水印、輸入輸出、設定或秘密；
-- 版本參數必須與 `VERSION` 完全一致；
+- Release 版本只能從 `auto_reframe_core.version.__version__` 取得，不得在 workflow
+  手動輸入；tag 必須與該版本完全一致；
 - ZIP 內含逐檔 manifest、固定檔案模式與可重現時間戳；
 - 根目錄 `LICENSE`、`THIRD_PARTY_NOTICES.md`、`fonts/LICENSE` 與官方字型一併保留；
 - `scripts/verify_release.py` 必須透過與 GUI 相同的 staging 路徑驗證成品；
-- `.github/workflows/release.yml` 只能由 default branch 手動觸發，先通過 Windows、
-  macOS、Linux 測試，再以最小 `contents: write` 權限發布。
+- `.github/workflows/release.yml` 只能由指向 default branch commit 的 `vX.Y.Z` tag
+  push 觸發，先驗證 tag 與程式版本一致，再通過 Windows、macOS、Linux 測試，
+  最後以最小 `contents: write` 權限發布。
 
-發布前更新 `VERSION`，並依 `docs/PUBLIC_RELEASE_CHECKLIST.md` 完成隱私、Release
-immutability 與 repository hardening 檢查。
+使用者提到 `release` 時，即視為要求執行完整發布流程：先依使用者指定提升
+`VERSION`；未指定版本層級時預設提升 patch 版號。完成必要驗證後，只提交並推送
+本次發布範圍的變更到 default branch，再建立並推送完全相符的 `vX.Y.Z` tag，
+由 tag push 自動觸發 Release workflow；不得要求使用者到 Actions 手動輸入版本。
+發布前並須依 `docs/PUBLIC_RELEASE_CHECKLIST.md` 完成隱私、Release immutability 與
+repository hardening 檢查。
 
 ## 隱私、授權與第三方檔案
 
@@ -305,8 +311,8 @@ git diff --check
 - 修改 Release／updater／version 時另執行：
 
 ```bash
-python scripts/build_release.py --version X.Y.Z
-python -m scripts.verify_release --version X.Y.Z
+python scripts/build_release.py
+python -m scripts.verify_release
 ```
 
 - 修改真實 FFmpeg 版面或 graph 時，在取得使用者允許且有非敏感測試影片後執行：

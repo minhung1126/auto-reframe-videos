@@ -297,17 +297,18 @@ git diff --check
 
 ## 建立 Release
 
-`.github/workflows/release.yml` 提供手動 `workflow_dispatch`：
+`.github/workflows/release.yml` 由 `vX.Y.Z` tag push 自動觸發：
 
 1. 更新 `auto_reframe_core/version.py` 的 `VERSION`。
 2. 確認根目錄的 `LICENSE` 保留所有權利聲明仍符合發佈意圖。
 3. 將通過測試的版本推送到 `main`。
-4. 在 GitHub **Actions → Release → Run workflow** 選擇 `main`。
-5. 輸入不含 `v` 的 `MAJOR.MINOR.PATCH`，例如 `2.4.0`。
+4. 在相同 commit 建立並推送對應 tag，例如 `v3.0.7`。
 
-Workflow 會先在 Windows、macOS、Linux 跑完整測試，再建立含逐檔 manifest 的
-ZIP、SHA-256 checksum 與 GitHub Release。Action dependency 固定至完整 commit
-SHA，Release job 只有最小的 `contents: write` 權限。
+Workflow 會直接從 `auto_reframe_core.version.__version__` 取得版本，確認 tag
+完全一致且指向 `main` 上的 commit，再於 Windows、macOS、Linux 跑完整測試，
+最後建立含逐檔 manifest 的 ZIP、SHA-256 checksum 與 GitHub Release。Action
+dependency 固定至完整 commit SHA，Release job 只有最小的 `contents: write`
+權限。
 
 公開與首次發佈前，請完成
 [`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md)，特別是啟用

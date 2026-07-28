@@ -85,11 +85,12 @@ Repository hardening still to confirm:
 1. Update `VERSION` in `auto_reframe_core/version.py`.
 2. Commit and push the release-ready code to `main`.
 3. Confirm CI passes on Windows, macOS, and Linux.
-4. Open **Actions → Release → Run workflow** on `main`.
-5. Enter the same `MAJOR.MINOR.PATCH` version without a `v` prefix.
-6. Confirm that the resulting Release is marked **Immutable** and contains:
+4. Create and push the matching `vMAJOR.MINOR.PATCH` tag on that commit. The
+   tag push starts the Release workflow, which reads the version directly from
+   `auto_reframe_core.version`.
+5. Confirm that the resulting Release is marked **Immutable** and contains:
    - `auto-reframe-videos-vX.Y.Z.zip`
    - `SHA256SUMS-vX.Y.Z.txt`
-7. From an extracted older Release ZIP, use **關於／更新** to test the update
+6. From an extracted older Release ZIP, use **關於／更新** to test the update
    and restart path. Automatic install intentionally stays disabled inside Git
    checkouts.

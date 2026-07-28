@@ -57,6 +57,23 @@ class ReleaseBuilderTests(unittest.TestCase):
         self.assertIn("2017-2024 Adobe", notices)
         self.assertIn("SIL Open Font License 1.1", notices)
 
+    def test_release_workflow_uses_matching_tag_and_core_version(self):
+        root = Path(__file__).resolve().parents[1]
+        workflow = (root / ".github" / "workflows" / "release.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('      - "v*.*.*"', workflow)
+        self.assertNotIn("workflow_dispatch", workflow)
+        self.assertNotIn("inputs.version", workflow)
+        self.assertIn(
+            "from auto_reframe_core.version import __version__",
+            workflow,
+        )
+        self.assertIn('refs/tags/$expected_tag', workflow)
+        self.assertIn("python scripts/build_release.py", workflow)
+        self.assertIn("python -m scripts.verify_release", workflow)
+        self.assertNotIn('--version "$RELEASE_VERSION"', workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
