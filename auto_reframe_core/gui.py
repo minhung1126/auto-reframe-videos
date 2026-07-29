@@ -1522,7 +1522,7 @@ class AutoReframeGUI:
             "確認開始處理",
             build_job_confirmation_message(mode, config, conflict_action),
             parent=self.root,
-            default=messagebox.NO,
+            default=messagebox.YES,
         ):
             self.status_var.set("已取消開始處理")
             return

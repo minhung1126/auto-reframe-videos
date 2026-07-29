@@ -3,18 +3,55 @@
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from auto_reframe_core.compress import CompressConfig
 from auto_reframe_core.gui import (
+    AutoReframeGUI,
     OUTPUT_CONFLICT_DELETE,
     build_job_confirmation_message,
     build_output_conflict_message,
+    messagebox,
 )
 from auto_reframe_core.reframe import ReframeConfig
 from auto_reframe_core.video_utils import h264, h265
 
 
 class JobConfirmationMessageTests(unittest.TestCase):
+    def test_start_confirmation_defaults_to_yes_on_windows_and_macos(self):
+        class StatusVariable:
+            value = None
+
+            def set(self, value):
+                self.value = value
+
+        for platform_name in ("win32", "darwin"):
+            with self.subTest(platform=platform_name):
+                app = AutoReframeGUI.__new__(AutoReframeGUI)
+                app.running = False
+                app.root = object()
+                app.status_var = StatusVariable()
+                app._build_config = lambda: ("compress", CompressConfig())
+
+                with (
+                    patch("auto_reframe_core.gui.sys.platform", platform_name),
+                    patch(
+                        "auto_reframe_core.gui.find_target_output_conflicts",
+                        return_value=[],
+                    ),
+                    patch(
+                        "auto_reframe_core.gui.messagebox.askyesno",
+                        return_value=False,
+                    ) as confirmation,
+                ):
+                    app.start_job()
+
+                self.assertEqual(
+                    confirmation.call_args.kwargs["default"],
+                    messagebox.YES,
+                )
+                self.assertEqual(app.status_var.value, "已取消開始處理")
+
     def test_output_conflict_message_explains_scope_and_all_actions(self):
         message = build_output_conflict_message(
             [
