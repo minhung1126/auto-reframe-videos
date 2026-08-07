@@ -22,6 +22,7 @@ from auto_reframe_core.config_store import clear_config, load_config, save_confi
 from auto_reframe_core.gui import (
     CONFIG_EXAMPLE_PATH,
     CREDIT_SYMBOL,
+    choose_cjk_editor_font_family,
     copy_text_to_clipboard,
     ensure_runtime_directories,
     normalize_target_sets,
@@ -107,6 +108,22 @@ class PlatformProfileTests(unittest.TestCase):
 
             self.assertEqual(result, (1, []))
             processor.assert_called_once()
+
+
+class GuiTextFontTests(unittest.TestCase):
+    def test_cjk_editor_font_prefers_installed_traditional_chinese_family(self):
+        self.assertEqual(
+            choose_cjk_editor_font_family(
+                ["TkTextFont", "Microsoft JhengHei UI", "Arial"]
+            ),
+            "Microsoft JhengHei UI",
+        )
+
+    def test_cjk_editor_font_falls_back_to_tk_text_font(self):
+        self.assertEqual(
+            choose_cjk_editor_font_family(["Arial", "Helvetica"]),
+            "TkTextFont",
+        )
 
 
 class EncoderProfileTests(unittest.TestCase):

@@ -13,7 +13,7 @@ from pathlib import Path
 
 try:
     import tkinter as tk
-    from tkinter import filedialog, messagebox, scrolledtext, ttk
+    from tkinter import filedialog, font as tkfont, messagebox, scrolledtext, ttk
 except ImportError as exc:  # pragma: no cover - depends on the Python distribution
     raise SystemExit(
         "此 Python 未包含 Tkinter。Windows 請重新安裝含 Tcl/Tk 的 Python；"
@@ -67,6 +67,15 @@ CREDIT_SYMBOL = "©"
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"
 }
+CJK_EDITOR_FONT_CANDIDATES = (
+    "Microsoft JhengHei UI",
+    "Microsoft JhengHei",
+    "PingFang TC",
+    "Noto Sans CJK TC",
+    "Noto Sans TC",
+    "Source Han Sans TC",
+    "Arial Unicode MS",
+)
 
 MODE_LABELS = {
     "reframe": "比例裁切／直式重製",
@@ -361,6 +370,29 @@ def copy_text_to_clipboard(root, text: str) -> None:
     root.update_idletasks()
 
 
+def choose_cjk_editor_font_family(available_families) -> str:
+    """Choose a readable installed CJK family for the GUI text editors."""
+
+    installed = {}
+    for family in available_families:
+        value = str(family)
+        installed.setdefault(value.casefold(), value)
+    for candidate in CJK_EDITOR_FONT_CANDIDATES:
+        if candidate.casefold() in installed:
+            return installed[candidate.casefold()]
+    return "TkTextFont"
+
+
+def build_cjk_editor_font(root):
+    """Return an independent Tk text font with a CJK-capable family when available."""
+
+    editor_font = tkfont.nametofont("TkTextFont", root).copy()
+    family = choose_cjk_editor_font_family(tkfont.families(root))
+    if family != "TkTextFont":
+        editor_font.configure(family=family)
+    return editor_font
+
+
 class ScrollableTab(ttk.Frame):
     """A notebook tab whose content remains reachable in short windows."""
 
@@ -404,6 +436,7 @@ class AutoReframeGUI:
         self.root.geometry(f"{window_width}x{window_height}")
         self.root.minsize(min_width, min_height)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.editor_font = build_cjk_editor_font(self.root)
 
         self.event_queue = queue.Queue()
         self.worker = None
@@ -816,13 +849,23 @@ class AutoReframeGUI:
         ttk.Label(content, text="上方文字（可多行）").grid(
             row=2, column=0, sticky="w"
         )
-        self.top_text = scrolledtext.ScrolledText(content, height=5, wrap="word")
+        self.top_text = scrolledtext.ScrolledText(
+            content,
+            height=5,
+            wrap="word",
+            font=self.editor_font,
+        )
         self.top_text.grid(row=3, column=0, sticky="nsew", pady=(4, 10))
 
         ttk.Label(content, text="下方文字（可多行）").grid(
             row=4, column=0, sticky="w"
         )
-        self.bottom_text = scrolledtext.ScrolledText(content, height=4, wrap="word")
+        self.bottom_text = scrolledtext.ScrolledText(
+            content,
+            height=4,
+            wrap="word",
+            font=self.editor_font,
+        )
         self.bottom_text.grid(row=5, column=0, sticky="nsew", pady=(4, 0))
         content.rowconfigure(3, weight=1)
         content.rowconfigure(5, weight=1)
