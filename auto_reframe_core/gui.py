@@ -53,6 +53,7 @@ from auto_reframe_core.output_plans import (
     delete_target_output_conflicts,
     find_target_output_conflicts,
 )
+from auto_reframe_core.platform_profile import open_directory
 from auto_reframe_core.video_utils import VideoProgressEvent, h264, h265
 
 
@@ -692,7 +693,14 @@ class AutoReframeGUI:
             anchor="w",
             padding=(5, 3),
         ).grid(
-            row=0, column=1, columnspan=2, sticky="ew", pady=4
+            row=0, column=1, sticky="ew", pady=4
+        )
+        ttk.Button(
+            job,
+            text="開啟資料夾",
+            command=lambda directory=INPUT_DIR: self._open_directory(directory),
+        ).grid(
+            row=0, column=2, padx=(8, 0), pady=4
         )
 
         ttk.Label(job, text="輸出資料夾").grid(
@@ -705,7 +713,14 @@ class AutoReframeGUI:
             anchor="w",
             padding=(5, 3),
         ).grid(
-            row=1, column=1, columnspan=2, sticky="ew", pady=4
+            row=1, column=1, sticky="ew", pady=4
+        )
+        ttk.Button(
+            job,
+            text="開啟資料夾",
+            command=lambda directory=OUTPUT_DIR: self._open_directory(directory),
+        ).grid(
+            row=1, column=2, padx=(8, 0), pady=4
         )
 
         targets = ttk.LabelFrame(parent, text="輸出目標（可加入多個組合）", padding=10)
@@ -1048,6 +1063,17 @@ class AutoReframeGUI:
         selected = filedialog.askopenfilename(title="選擇執行檔")
         if selected:
             target_var.set(selected)
+
+    def _open_directory(self, directory: Path):
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            open_directory(directory)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror(
+                "無法開啟資料夾",
+                f"{directory}\n{exc}",
+                parent=self.root,
+            )
 
     def _set_release_notes(self, value):
         self.release_notes.configure(state="normal")

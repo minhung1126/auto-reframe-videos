@@ -36,6 +36,7 @@ from auto_reframe_core.output_plans import (
 from auto_reframe_core.platform_profile import (
     PlatformProfile,
     hidden_subprocess_kwargs,
+    open_directory,
     resolve_workers,
 )
 from auto_reframe_core.reframe_geometry import calculate_reframe_dimensions
@@ -70,6 +71,19 @@ class PlatformProfileTests(unittest.TestCase):
             hidden_subprocess_kwargs(PlatformProfile("linux", "posix", 4)),
             {},
         )
+
+    def test_open_directory_uses_the_native_file_manager(self):
+        with patch("auto_reframe_core.platform_profile.os.startfile", create=True) as startfile:
+            open_directory(Path("input"), PlatformProfile("win32", "nt", 4))
+        startfile.assert_called_once_with("input")
+
+        with patch("auto_reframe_core.platform_profile.subprocess.Popen") as popen:
+            open_directory(Path("output"), PlatformProfile("darwin", "posix", 4))
+        popen.assert_called_once_with(["open", "output"])
+
+        with patch("auto_reframe_core.platform_profile.subprocess.Popen") as popen:
+            open_directory(Path("output"), PlatformProfile("linux", "posix", 4))
+        popen.assert_called_once_with(["xdg-open", "output"])
 
     def test_batch_runner_creates_fixed_input_and_output_directories(self):
         with tempfile.TemporaryDirectory() as tmp:

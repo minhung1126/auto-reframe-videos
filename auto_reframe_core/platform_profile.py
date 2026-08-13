@@ -55,6 +55,20 @@ def pause_for_windows_shell(profile: Optional[PlatformProfile] = None) -> None:
         os.system("pause")
 
 
+def open_directory(path, profile: Optional[PlatformProfile] = None) -> None:
+    """Open a directory in the platform's native file manager."""
+
+    directory = os.fspath(path)
+    p = profile or current_platform()
+    if p.is_windows:
+        # ``startfile`` delegates to Explorer without creating a console window.
+        os.startfile(directory)  # type: ignore[attr-defined]
+        return
+
+    command = ["open", directory] if p.is_macos else ["xdg-open", directory]
+    subprocess.Popen(command, **hidden_subprocess_kwargs(p))
+
+
 def hidden_subprocess_kwargs(
     profile: Optional[PlatformProfile] = None,
 ) -> Dict[str, int]:
