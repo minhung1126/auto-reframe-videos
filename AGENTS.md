@@ -94,6 +94,10 @@ GUI 設定檔則使用版本化文件，且把兩種模式分開：
     "targets": {
       "reframe": [],
       "compress": []
+    },
+    "watermarks": {
+      "reframe": {},
+      "compress": {}
     }
   }
 }
@@ -128,14 +132,12 @@ GUI 設定檔則使用版本化文件，且把兩種模式分開：
 
 - GUI 只掃描專案小寫 `watermark/` 內的 `.png`／`.PNG`，排序後顯示。
 - 使用者浮水印屬本機資料，不得加入 Git 或 Release。
-- 啟用浮水印時必須有可讀檔案；位置、寬度比例、透明度與邊距都要驗證。
+- 啟用浮水印時必須有可讀檔案；位置、寬度比例與邊距都要驗證；不另外套用透明度調整濾鏡，直接使用 PNG 原始 RGBA 透明通道。
 - 浮水印在每個輸出解析度完成縮放與文字處理後套用，再依 codec 分支，避免重複工作。
 - 單張 PNG 必須以 `eof_action=repeat:shortest=0:repeatlast=1` 覆蓋完整影片。
-- 預設浮水印必須重現 Lightroom「等比例 7、垂直插入 3」，不可改回固定輸出寬度
-  百分比，也不可針對特定成品用誤差補償常數微調。
-- `watermark_width_ratio=0.07` 表示 Lightroom 等比例值 7。若輸出畫布為
-  `Wo × Ho`、PNG 完整畫布為 `Wm × Hm`，縮放倍率固定使用
-  `s = 0.07 × sqrt((Wo × Ho) / (Wm × Hm))`；輸出 PNG 寬高分別為
+- 浮水印等比例與垂直插入延續 Lightroom 幾何模型：裁切重製預設 `watermark_width_ratio=0.15`（Lightroom 15），影片壓縮預設 `watermark_width_ratio=0.10`（Lightroom 10），垂直插入預設 `watermark_margin=3`。
+- 若輸出畫布為 `Wo × Ho`、PNG 完整畫布為 `Wm × Hm`，縮放倍率固定使用
+  `s = ratio × sqrt((Wo × Ho) / (Wm × Hm))`；輸出 PNG 寬高分別為
   `Wm × s`、`Hm × s`，FFmpeg 以 `iw`／`ih` 與 `-2` 保持原始比例。
 - `watermark_margin=3` 表示 Lightroom 垂直插入值 3。下方 PNG 畫布邊距固定使用
   `round(0.03 × sqrt(Wo × Ho))`；PNG 自帶透明留白屬畫布的一部分，必須自然縮放，

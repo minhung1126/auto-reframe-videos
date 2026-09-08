@@ -30,9 +30,13 @@ from auto_reframe_core.gui_options import (
     RESOLUTION_KEYS_BY_LABEL,
     RESOLUTION_LABELS,
     RESOLUTION_OPTIONS,
+    WATERMARK_POSITION_KEYS_BY_LABEL,
+    WATERMARK_POSITION_LABELS,
+    WATERMARK_POSITION_OPTIONS,
     list_watermark_pngs,
     parse_ratio,
 )
+from auto_reframe_core.watermark import WATERMARK_POSITIONS
 from auto_reframe_core.config_store import (
     ConfigStoreError,
     clear_config,
@@ -290,6 +294,17 @@ def load_effective_settings():
     effective = deepcopy(defaults)
     saved = load_config(CONFIG_PATH)
     if saved:
+        if "watermarks" not in saved and any(
+            k in saved
+            for k in (
+                "watermark_enabled",
+                "watermark_file",
+                "watermark_position",
+                "watermark_width_ratio",
+                "watermark_margin",
+            )
+        ):
+            effective.pop("watermarks", None)
         effective.update(saved)
     return defaults, effective
 
@@ -332,6 +347,97 @@ def normalize_target_sets(settings: dict) -> dict:
                 target["ratio"] = ratio
             if target not in normalized[mode]:
                 normalized[mode].append(target)
+    return normalized
+
+
+DEFAULT_WATERMARK_WIDTH_RATIOS = {
+    "reframe": 0.15,
+    "compress": 0.10,
+}
+DEFAULT_WATERMARK_POSITION = "bottom-center"
+DEFAULT_WATERMARK_MARGIN = 3
+
+
+def normalize_watermark_settings(settings: dict) -> dict:
+    """Validate and normalize per-mode watermark settings from JSON or GUI."""
+    raw_watermarks = settings.get("watermarks")
+    normalized = {}
+
+    for mode in ("reframe", "compress"):
+        default_width_ratio = DEFAULT_WATERMARK_WIDTH_RATIOS[mode]
+        mode_entry = None
+        if isinstance(raw_watermarks, dict) and mode in raw_watermarks:
+            mode_entry = raw_watermarks.get(mode)
+            if not isinstance(mode_entry, dict):
+                raise ConfigStoreError(f"設定檔的 watermarks.{mode} 必須是物件。")
+        elif (
+            "watermark_enabled" in settings
+            or "watermark_position" in settings
+            or "watermark_width_ratio" in settings
+            or "watermark_margin" in settings
+        ):
+            legacy_ratio = settings.get("watermark_width_ratio")
+            width_ratio_val = (
+                float(legacy_ratio)
+                if legacy_ratio is not None
+                else default_width_ratio
+            )
+            mode_entry = {
+                "enabled": bool(settings.get("watermark_enabled", False)),
+                "file": str(settings.get("watermark_file", "")),
+                "position": str(
+                    settings.get("watermark_position", DEFAULT_WATERMARK_POSITION)
+                ),
+                "width_ratio": width_ratio_val,
+                "margin": int(
+                    settings.get("watermark_margin", DEFAULT_WATERMARK_MARGIN)
+                ),
+            }
+        else:
+            mode_entry = {}
+
+        enabled = bool(mode_entry.get("enabled", False))
+        file_val = str(mode_entry.get("file", "")).strip()
+
+        position = str(
+            mode_entry.get("position", DEFAULT_WATERMARK_POSITION)
+        ).strip().lower()
+        if position not in WATERMARK_POSITIONS:
+            allowed = ", ".join(sorted(WATERMARK_POSITIONS))
+            raise ConfigStoreError(
+                f"watermarks.{mode}.position 無效: {position!r}。可用值: {allowed}"
+            )
+
+        try:
+            width_ratio = float(mode_entry.get("width_ratio", default_width_ratio))
+        except (TypeError, ValueError) as exc:
+            raise ConfigStoreError(
+                f"watermarks.{mode}.width_ratio 必須是數字。"
+            ) from exc
+        if not 0.01 <= width_ratio <= 1.0:
+            raise ConfigStoreError(
+                f"watermarks.{mode}.width_ratio 必須介於 0.01 與 1.0。"
+            )
+
+        try:
+            margin = int(mode_entry.get("margin", DEFAULT_WATERMARK_MARGIN))
+        except (TypeError, ValueError) as exc:
+            raise ConfigStoreError(
+                f"watermarks.{mode}.margin 必須是整數。"
+            ) from exc
+        if not 0 <= margin <= 100:
+            raise ConfigStoreError(
+                f"watermarks.{mode}.margin 必須介於 0 與 100。"
+            )
+
+        normalized[mode] = {
+            "enabled": enabled,
+            "file": file_val,
+            "position": position,
+            "width_ratio": width_ratio,
+            "margin": margin,
+        }
+
     return normalized
 
 
@@ -451,14 +557,16 @@ class AutoReframeGUI:
         ensure_runtime_directories()
         self.default_settings, self.settings = load_effective_settings()
         self.targets = normalize_target_sets(self.settings)
+        self.watermark_settings = normalize_watermark_settings(self.settings)
 
         self._create_variables(self.settings)
         self._build_ui()
         self._load_initial_text()
         self.refresh_watermarks()
-        preferred_watermark = str(self.settings.get("watermark_file", ""))
-        if preferred_watermark in self.watermark_paths:
-            self.watermark_var.set(preferred_watermark)
+        for mode in MODE_LABELS:
+            preferred_watermark = str(self.watermark_settings[mode]["file"])
+            if preferred_watermark in self.watermark_paths:
+                self.watermark_file_vars[mode].set(preferred_watermark)
         self._switch_mode()
         self.root.after(80, self._drain_events)
         self.root.after(250, self._show_pending_update_error)
@@ -483,10 +591,37 @@ class AutoReframeGUI:
             for target_mode in MODE_LABELS
         }
 
-        self.watermark_enabled_var = tk.BooleanVar(
-            value=bool(settings.get("watermark_enabled"))
-        )
-        self.watermark_var = tk.StringVar(value="")
+        self.watermark_enabled_vars = {
+            mode: tk.BooleanVar(
+                value=bool(self.watermark_settings[mode]["enabled"])
+            )
+            for mode in MODE_LABELS
+        }
+        self.watermark_file_vars = {
+            mode: tk.StringVar(value=str(self.watermark_settings[mode]["file"]))
+            for mode in MODE_LABELS
+        }
+        self.watermark_position_vars = {
+            mode: tk.StringVar(
+                value=WATERMARK_POSITION_LABELS.get(
+                    self.watermark_settings[mode]["position"],
+                    WATERMARK_POSITION_LABELS["bottom-center"],
+                )
+            )
+            for mode in MODE_LABELS
+        }
+        self.watermark_width_ratio_vars = {
+            mode: tk.StringVar(
+                value=f"{float(self.watermark_settings[mode]['width_ratio']):g}"
+            )
+            for mode in MODE_LABELS
+        }
+        self.watermark_margin_vars = {
+            mode: tk.StringVar(
+                value=str(int(self.watermark_settings[mode]["margin"]))
+            )
+            for mode in MODE_LABELS
+        }
 
         font_path = Path(str(settings["font_path"]))
         if not font_path.is_absolute():
@@ -810,11 +945,11 @@ class AutoReframeGUI:
         ttk.Checkbutton(
             watermark,
             text="蓋浮水印",
-            variable=self.watermark_enabled_var,
+            variable=self.watermark_enabled_vars[mode],
         ).grid(row=0, column=0, sticky="w", padx=(0, 12))
         watermark_combo = ttk.Combobox(
             watermark,
-            textvariable=self.watermark_var,
+            textvariable=self.watermark_file_vars[mode],
             state="readonly",
         )
         self.watermark_combos[mode] = watermark_combo
@@ -822,11 +957,39 @@ class AutoReframeGUI:
         ttk.Button(watermark, text="重新整理", command=self.refresh_watermarks).grid(
             row=0, column=2, padx=(8, 0)
         )
+
+        params = ttk.Frame(watermark)
+        params.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+
+        ttk.Label(params, text="位置").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        ttk.Combobox(
+            params,
+            textvariable=self.watermark_position_vars[mode],
+            values=tuple(label for _, label in WATERMARK_POSITION_OPTIONS),
+            state="readonly",
+            width=14,
+        ).grid(row=0, column=1, sticky="w", padx=(0, 16))
+
+        ttk.Label(params, text="等比例").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        ttk.Entry(
+            params,
+            textvariable=self.watermark_width_ratio_vars[mode],
+            width=8,
+        ).grid(row=0, column=3, sticky="w", padx=(0, 16))
+
+        ttk.Label(params, text="邊距").grid(row=0, column=4, sticky="w", padx=(0, 6))
+        ttk.Entry(
+            params,
+            textvariable=self.watermark_margin_vars[mode],
+            width=8,
+        ).grid(row=0, column=5, sticky="w")
+
+        hint_ratio = "0.15（裁切重製）" if mode == "reframe" else "0.10（影片壓縮）"
         ttk.Label(
             watermark,
-            text="來源：watermark/*.png；預設下方中央，大小比照 Lightroom 等比例 7、垂直插入 3。",
+            text=f"來源：watermark/*.png；預設下方中央、等比例 {hint_ratio}、垂直插入 3。",
             foreground="#555555",
-        ).grid(row=1, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
     def _build_context_tab(self):
         content = self.context_tab.content
@@ -1199,8 +1362,10 @@ class AutoReframeGUI:
         try:
             settings = self._collect_settings()
             normalize_target_sets(settings)
+            normalize_watermark_settings(settings)
             save_config(CONFIG_PATH, settings)
             self.settings = deepcopy(settings)
+            self.watermark_settings = normalize_watermark_settings(self.settings)
         except (ConfigStoreError, OSError, ValueError) as exc:
             messagebox.showerror(
                 "無法在更新前儲存設定",
@@ -1372,14 +1537,14 @@ class AutoReframeGUI:
         files = list_watermark_pngs(WATERMARK_DIR)
         self.watermark_paths = {item.name: item for item in files}
         names = tuple(self.watermark_paths)
-        current = self.watermark_var.get()
-        for watermark_combo in self.watermark_combos.values():
+        for mode, watermark_combo in self.watermark_combos.items():
             watermark_combo.configure(
                 values=names,
                 state="readonly" if names else "disabled",
             )
-        if current not in self.watermark_paths:
-            self.watermark_var.set(names[0] if names else "")
+            current = self.watermark_file_vars[mode].get()
+            if current not in self.watermark_paths:
+                self.watermark_file_vars[mode].set(names[0] if names else "")
         if not names:
             self.status_var.set("watermark/ 尚無 PNG；需要浮水印時請先放入圖片")
 
@@ -1402,10 +1567,30 @@ class AutoReframeGUI:
         if workers < 0:
             raise ValueError("平行工作數不可小於 0。")
 
-        watermark_enabled = self.watermark_enabled_var.get()
-        watermark_path = self.watermark_paths.get(self.watermark_var.get())
+        watermark_enabled = self.watermark_enabled_vars[mode].get()
+        watermark_file = self.watermark_file_vars[mode].get().strip()
+        watermark_path = self.watermark_paths.get(watermark_file)
         if watermark_enabled and watermark_path is None:
             raise ValueError("已啟用浮水印，但 watermark/ 中沒有可用的 PNG。")
+
+        pos_label = self.watermark_position_vars[mode].get().strip()
+        pos_key = WATERMARK_POSITION_KEYS_BY_LABEL.get(pos_label, pos_label)
+        if pos_key not in WATERMARK_POSITIONS:
+            raise ValueError(f"浮水印位置無效: {pos_label!r}。")
+
+        try:
+            width_ratio = float(self.watermark_width_ratio_vars[mode].get().strip())
+        except ValueError as exc:
+            raise ValueError("浮水印等比例必須是數字。") from exc
+        if not 0.01 <= width_ratio <= 1.0:
+            raise ValueError("浮水印等比例必須介於 0.01 與 1.0。")
+
+        try:
+            margin = int(self.watermark_margin_vars[mode].get().strip())
+        except ValueError as exc:
+            raise ValueError("浮水印邊距必須是整數。") from exc
+        if not 0 <= margin <= 100:
+            raise ValueError("浮水印邊距必須介於 0 與 100。")
 
         common = dict(
             input_dir=str(input_dir),
@@ -1418,10 +1603,9 @@ class AutoReframeGUI:
             debug=self.debug_var.get(),
             watermark_enabled=watermark_enabled,
             watermark_file=str(watermark_path) if watermark_path else "",
-            watermark_position=str(self.settings["watermark_position"]),
-            watermark_width_ratio=float(self.settings["watermark_width_ratio"]),
-            watermark_opacity=float(self.settings["watermark_opacity"]),
-            watermark_margin=int(self.settings["watermark_margin"]),
+            watermark_position=pos_key,
+            watermark_width_ratio=width_ratio,
+            watermark_margin=margin,
         )
         if mode == "compress":
             return mode, CompressConfig(**common)
@@ -1452,16 +1636,46 @@ class AutoReframeGUI:
         except ValueError:
             font_value = str(font_path.resolve())
 
+        watermarks = {}
+        for mode in ("reframe", "compress"):
+            mode_title = "【裁切重製】" if mode == "reframe" else "【影片壓縮】"
+            enabled = bool(self.watermark_enabled_vars[mode].get())
+            watermark_file = self.watermark_file_vars[mode].get().strip()
+
+            pos_label = self.watermark_position_vars[mode].get().strip()
+            pos_key = WATERMARK_POSITION_KEYS_BY_LABEL.get(pos_label, pos_label)
+            if pos_key not in WATERMARK_POSITIONS:
+                raise ValueError(f"{mode_title}浮水印位置無效: {pos_label!r}。")
+
+            ratio_raw = self.watermark_width_ratio_vars[mode].get().strip()
+            try:
+                width_ratio = float(ratio_raw)
+            except ValueError as exc:
+                raise ValueError(f"{mode_title}浮水印等比例必須是數字。") from exc
+            if not 0.01 <= width_ratio <= 1.0:
+                raise ValueError(f"{mode_title}浮水印等比例必須介於 0.01 與 1.0。")
+
+            margin_raw = self.watermark_margin_vars[mode].get().strip()
+            try:
+                margin = int(margin_raw)
+            except ValueError as exc:
+                raise ValueError(f"{mode_title}浮水印邊距必須是整數。") from exc
+            if not 0 <= margin <= 100:
+                raise ValueError(f"{mode_title}浮水印邊距必須介於 0 與 100。")
+
+            watermarks[mode] = {
+                "enabled": enabled,
+                "file": watermark_file,
+                "position": pos_key,
+                "width_ratio": width_ratio,
+                "margin": margin,
+            }
+
         return {
             "mode": self._mode_key(),
             "targets": deepcopy(self.targets),
             "final_ratio": list(self.settings["final_ratio"]),
-            "watermark_enabled": bool(self.watermark_enabled_var.get()),
-            "watermark_file": self.watermark_var.get(),
-            "watermark_position": str(self.settings["watermark_position"]),
-            "watermark_width_ratio": float(self.settings["watermark_width_ratio"]),
-            "watermark_opacity": float(self.settings["watermark_opacity"]),
-            "watermark_margin": int(self.settings["watermark_margin"]),
+            "watermarks": watermarks,
             "top_text": self.top_text.get("1.0", "end-1c"),
             "bottom_text": self.bottom_text.get("1.0", "end-1c"),
             "font_path": font_value,
@@ -1482,11 +1696,13 @@ class AutoReframeGUI:
         try:
             settings = self._collect_settings()
             normalize_target_sets(settings)
+            normalize_watermark_settings(settings)
             save_config(CONFIG_PATH, settings)
         except (ConfigStoreError, OSError, ValueError) as exc:
             messagebox.showerror("無法儲存設定", str(exc), parent=self.root)
             return
         self.settings = deepcopy(settings)
+        self.watermark_settings = normalize_watermark_settings(self.settings)
         self.status_var.set(f"設定已儲存：{CONFIG_PATH.name}")
         messagebox.showinfo(
             "設定已儲存",
@@ -1503,6 +1719,7 @@ class AutoReframeGUI:
 
         self.settings = deepcopy(self.default_settings)
         self.targets = normalize_target_sets(self.settings)
+        self.watermark_settings = normalize_watermark_settings(self.settings)
         self._apply_settings_to_widgets(self.settings)
         self.status_var.set("已還原 config.json.example 的預設設定")
 
@@ -1517,12 +1734,26 @@ class AutoReframeGUI:
             self.codec_vars[target_mode].set(CODEC_LABELS[first_target["vcodec"]])
         first_ratio = self.targets["reframe"][0]["ratio"]
         self.ratio_var.set(f"{first_ratio[0]}:{first_ratio[1]}")
-        self.watermark_enabled_var.set(bool(settings["watermark_enabled"]))
-        preferred = str(settings.get("watermark_file", ""))
-        self.watermark_var.set(
-            preferred if preferred in self.watermark_paths
-            else next(iter(self.watermark_paths), "")
-        )
+
+        for target_mode in MODE_LABELS:
+            wm = self.watermark_settings[target_mode]
+            self.watermark_enabled_vars[target_mode].set(bool(wm["enabled"]))
+            preferred = str(wm.get("file", ""))
+            self.watermark_file_vars[target_mode].set(
+                preferred
+                if preferred in self.watermark_paths
+                else (next(iter(self.watermark_paths), "") if self.watermark_paths else "")
+            )
+            self.watermark_position_vars[target_mode].set(
+                WATERMARK_POSITION_LABELS.get(
+                    wm["position"],
+                    WATERMARK_POSITION_LABELS["bottom-center"],
+                )
+            )
+            self.watermark_width_ratio_vars[target_mode].set(
+                f"{float(wm['width_ratio']):g}"
+            )
+            self.watermark_margin_vars[target_mode].set(str(int(wm["margin"])))
 
         font_path = Path(str(settings["font_path"]))
         if not font_path.is_absolute():

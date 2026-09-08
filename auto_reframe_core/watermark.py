@@ -25,7 +25,6 @@ class WatermarkConfig:
     path: Optional[Path] = None
     position: str = "bottom-center"
     width_ratio: float = 0.07
-    opacity: float = 0.85
     margin: int = 3
 
 
@@ -35,7 +34,6 @@ def build_watermark_config(
     watermark_file: str,
     position: str,
     width_ratio: float,
-    opacity: float,
     margin: int,
     base_dir: Path,
 ) -> WatermarkConfig:
@@ -48,10 +46,6 @@ def build_watermark_config(
     normalized_width = float(width_ratio)
     if not 0.01 <= normalized_width <= 1.0:
         raise ValueError("watermark_width_ratio 必須介於 0.01 與 1.0。")
-
-    normalized_opacity = float(opacity)
-    if not 0.0 <= normalized_opacity <= 1.0:
-        raise ValueError("watermark_opacity 必須介於 0.0 與 1.0。")
 
     normalized_margin = int(margin)
     if not 0 <= normalized_margin <= 100:
@@ -75,7 +69,6 @@ def build_watermark_config(
         path=resolved_path,
         position=normalized_position,
         width_ratio=normalized_width,
-        opacity=normalized_opacity,
         margin=normalized_margin,
     )
 
@@ -152,10 +145,7 @@ def append_watermark_source_filter(
     if branch_count <= 0:
         raise ValueError("浮水印分支數必須大於 0。")
 
-    source = (
-        f"[{input_index}:v]format=rgba,"
-        f"colorchannelmixer=aa={config.opacity:g}"
-    )
+    source = f"[{input_index}:v]format=rgba"
     labels = [f"[wm_src_{index}]" for index in range(branch_count)]
     if branch_count == 1:
         filters.append(f"{source}{labels[0]}")

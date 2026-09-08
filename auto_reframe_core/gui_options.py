@@ -22,10 +22,23 @@ CODEC_OPTIONS = (
 
 RATIO_OPTIONS = ("4:5", "1:1", "4:3", "16:9")
 
+WATERMARK_POSITION_OPTIONS = (
+    ("bottom-center", "下方中央（預設）"),
+    ("bottom-left", "左下角"),
+    ("bottom-right", "右下角"),
+    ("center", "正中央"),
+    ("top-left", "左上角"),
+    ("top-right", "右上角"),
+)
+
 RESOLUTION_LABELS = dict(RESOLUTION_OPTIONS)
 CODEC_LABELS = dict(CODEC_OPTIONS)
+WATERMARK_POSITION_LABELS = dict(WATERMARK_POSITION_OPTIONS)
 RESOLUTION_KEYS_BY_LABEL = {label: key for key, label in RESOLUTION_OPTIONS}
 CODEC_KEYS_BY_LABEL = {label: key for key, label in CODEC_OPTIONS}
+WATERMARK_POSITION_KEYS_BY_LABEL = {
+    label: key for key, label in WATERMARK_POSITION_OPTIONS
+}
 
 
 def parse_ratio(value: str) -> Tuple[int, int]:

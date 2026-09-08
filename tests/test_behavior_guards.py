@@ -566,7 +566,6 @@ class CompressCommandGuardTests(unittest.TestCase):
             path=Path("C:/含 空白/logo.png"),
             position="bottom-center",
             width_ratio=0.07,
-            opacity=0.75,
             margin=3,
         )
 
@@ -581,6 +580,8 @@ class CompressCommandGuardTests(unittest.TestCase):
         self.assertEqual(cmd.count("-i"), 2)
         self.assertIn(str(compressor.watermark.path), cmd)
         self.assertNotIn(str(compressor.watermark.path), filter_complex)
+        self.assertIn("[1:v]format=rgba", filter_complex)
+        self.assertNotIn("colorchannelmixer", filter_complex)
         self.assertEqual(filter_complex.count("overlay="), 1)
         self.assertIn("scale=1920:1080", filter_complex)
         self.assertIn(
@@ -711,7 +712,6 @@ class WatermarkAndGuiOptionTests(unittest.TestCase):
                     watermark_file="watermark/missing.png",
                     position="bottom-center",
                     width_ratio=0.07,
-                    opacity=0.75,
                     margin=3,
                     base_dir=base_dir,
                 )
@@ -735,10 +735,15 @@ class WatermarkAndGuiOptionTests(unittest.TestCase):
         settings = load_config(CONFIG_EXAMPLE_PATH)
 
         self.assertIsNotNone(settings)
-        self.assertEqual(settings["watermark_file"], "")
-        self.assertEqual(settings["watermark_position"], "bottom-center")
-        self.assertEqual(settings["watermark_width_ratio"], 0.07)
-        self.assertEqual(settings["watermark_margin"], 3)
+        watermarks = settings["watermarks"]
+        self.assertEqual(watermarks["reframe"]["file"], "")
+        self.assertEqual(watermarks["reframe"]["position"], "bottom-center")
+        self.assertEqual(watermarks["reframe"]["width_ratio"], 0.15)
+        self.assertEqual(watermarks["reframe"]["margin"], 3)
+        self.assertEqual(watermarks["compress"]["file"], "")
+        self.assertEqual(watermarks["compress"]["position"], "bottom-center")
+        self.assertEqual(watermarks["compress"]["width_ratio"], 0.10)
+        self.assertEqual(watermarks["compress"]["margin"], 3)
         self.assertEqual(
             normalize_target_sets(settings)["reframe"][0]["ratio"],
             (4, 5),
@@ -808,7 +813,6 @@ class WatermarkFFmpegIntegrationTests(unittest.TestCase):
                 path=watermark_file,
                 position="bottom-center",
                 width_ratio=0.07,
-                opacity=0.75,
                 margin=3,
             )
             info = get_video_info("ffprobe", input_file)
