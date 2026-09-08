@@ -126,7 +126,81 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
             with self.assertRaises(ConfigStoreError):
                 normalize_watermark_settings({"watermarks": {"compress": {"margin": 105}}})
 
+    def test_load_effective_settings_migrates_legacy_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            example_file = tmp_path / "config.json.example"
+            config_file = tmp_path / "config.json"
 
+            example_settings = {
+                "version": 1,
+                "settings": {
+                    "mode": "reframe",
+                    "watermarks": {
+                        "reframe": {
+                            "enabled": False,
+                            "file": "",
+                            "position": "bottom-center",
+                            "width_ratio": 0.15,
+                            "margin": 3,
+                        },
+                        "compress": {
+                            "enabled": False,
+                            "file": "",
+                            "position": "bottom-center",
+                            "width_ratio": 0.10,
+                            "margin": 3,
+                        },
+                    },
+                },
+            }
+            example_file.write_text(json.dumps(example_settings), encoding="utf-8")
+
+            legacy_saved = {
+                "version": 1,
+                "settings": {
+                    "mode": "compress",
+                    "watermark_enabled": True,
+                    "watermark_file": "my_logo.png",
+                    "watermark_position": "top-right",
+                    "watermark_width_ratio": 0.08,
+                    "watermark_opacity": 0.75,
+                    "watermark_margin": 6,
+                },
+            }
+            config_file.write_text(json.dumps(legacy_saved), encoding="utf-8")
+
+            with (
+                patch("auto_reframe_core.gui.CONFIG_EXAMPLE_PATH", example_file),
+                patch("auto_reframe_core.gui.CONFIG_PATH", config_file),
+            ):
+                from auto_reframe_core.gui import load_effective_settings
+                defaults, effective = load_effective_settings()
+                normalized = normalize_watermark_settings(effective)
+
+                for mode in ("reframe", "compress"):
+                    self.assertTrue(normalized[mode]["enabled"])
+                    self.assertEqual(normalized[mode]["file"], "my_logo.png")
+                    self.assertEqual(normalized[mode]["position"], "top-right")
+                    self.assertEqual(normalized[mode]["width_ratio"], 0.08)
+                    self.assertEqual(normalized[mode]["margin"], 6)
+                    self.assertNotIn("opacity", normalized[mode])
+
+
+def _can_create_tk_root() -> bool:
+    try:
+        import tkinter as tk
+        root = tk.Tk()
+        root.destroy()
+        return True
+    except Exception:
+        return False
+
+
+HAS_DISPLAY = _can_create_tk_root()
+
+
+@unittest.skipUnless(HAS_DISPLAY, "Tkinter GUI display environment is required")
 class WatermarkGUISavingBehaviorTests(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
