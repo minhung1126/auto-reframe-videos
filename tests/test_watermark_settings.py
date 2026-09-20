@@ -278,9 +278,11 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                     app.watermark_position_vars["compress"].get(),
                     WATERMARK_POSITION_LABELS["bottom-center"],
                 )
-                # Verify 3x3 radio buttons exist
+                # Verify 3x3 radio buttons exist and use Compact.TRadiobutton style
                 for mode in ("reframe", "compress"):
                     self.assertEqual(len(app.watermark_position_radios[mode]), 9)
+                    for rb in app.watermark_position_radios[mode].values():
+                        self.assertEqual(rb.cget("style"), "Compact.TRadiobutton")
             finally:
                 root.destroy()
 

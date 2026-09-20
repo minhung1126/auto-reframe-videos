@@ -687,6 +687,21 @@ class AutoReframeGUI:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
+        self.style = ttk.Style()
+        try:
+            self.style.layout(
+                "Compact.TRadiobutton",
+                [("Radiobutton.indicator", {"sticky": ""})],
+            )
+            self.style.configure("Compact.TRadiobutton", padding=0)
+        except tk.TclError:
+            pass
+        self.style.configure(
+            "AnchorGrid.TFrame",
+            relief="solid",
+            borderwidth=1,
+        )
+
         self.notebook = ttk.Notebook(self.root)
         self.notebook.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 6))
 
@@ -1013,7 +1028,7 @@ class AutoReframeGUI:
             textvariable=self.watermark_position_vars[mode],
         ).pack(side="left")
 
-        grid_frame = ttk.Frame(pos_box)
+        grid_frame = ttk.Frame(pos_box, style="AnchorGrid.TFrame", padding=3)
         grid_frame.grid(row=1, column=0, sticky="w")
 
         self.watermark_position_radios[mode] = {}
@@ -1025,9 +1040,10 @@ class AutoReframeGUI:
                     text="",
                     value=pos_label,
                     variable=self.watermark_position_vars[mode],
+                    style="Compact.TRadiobutton",
                     cursor="hand2",
                 )
-                rb.grid(row=r, column=c, padx=2, pady=2)
+                rb.grid(row=r, column=c, padx=0, pady=2)
                 self.watermark_position_radios[mode][pos_key] = rb
 
         inputs_box = ttk.Frame(params)
