@@ -79,6 +79,7 @@ class CompressConfig:
     watermark_file: str = ""
     watermark_position: str = "bottom-center"
     watermark_width_ratio: float = 0.10
+    watermark_opacity: float = 0.8
     watermark_margin: int = 3
 
 
@@ -103,6 +104,7 @@ class VideoCompressor:
             watermark_file=self.config.watermark_file,
             position=self.config.watermark_position,
             width_ratio=self.config.watermark_width_ratio,
+            opacity=self.config.watermark_opacity,
             margin=self.config.watermark_margin,
             base_dir=self.script_dir,
         )

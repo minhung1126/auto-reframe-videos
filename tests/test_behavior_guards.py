@@ -579,9 +579,7 @@ class CompressCommandGuardTests(unittest.TestCase):
 
         self.assertEqual(cmd.count("-i"), 2)
         self.assertIn(str(compressor.watermark.path), cmd)
-        self.assertNotIn(str(compressor.watermark.path), filter_complex)
-        self.assertIn("[1:v]format=rgba", filter_complex)
-        self.assertNotIn("colorchannelmixer", filter_complex)
+        self.assertIn("[1:v]format=rgba,colorchannelmixer=aa=0.8", filter_complex)
         self.assertEqual(filter_complex.count("overlay="), 1)
         self.assertIn("scale=1920:1080", filter_complex)
         self.assertIn(
@@ -739,10 +737,12 @@ class WatermarkAndGuiOptionTests(unittest.TestCase):
         self.assertEqual(watermarks["reframe"]["file"], "")
         self.assertEqual(watermarks["reframe"]["position"], "bottom-center")
         self.assertEqual(watermarks["reframe"]["width_ratio"], 0.15)
+        self.assertEqual(watermarks["reframe"]["opacity"], 0.8)
         self.assertEqual(watermarks["reframe"]["margin"], 3)
         self.assertEqual(watermarks["compress"]["file"], "")
         self.assertEqual(watermarks["compress"]["position"], "bottom-center")
         self.assertEqual(watermarks["compress"]["width_ratio"], 0.10)
+        self.assertEqual(watermarks["compress"]["opacity"], 0.8)
         self.assertEqual(watermarks["compress"]["margin"], 3)
         self.assertEqual(
             normalize_target_sets(settings)["reframe"][0]["ratio"],

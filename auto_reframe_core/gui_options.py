@@ -22,13 +22,22 @@ CODEC_OPTIONS = (
 
 RATIO_OPTIONS = ("4:5", "1:1", "4:3", "16:9")
 
+POSITION_GRID_3X3 = (
+    ("top-left", "top-center", "top-right"),
+    ("center-left", "center", "center-right"),
+    ("bottom-left", "bottom-center", "bottom-right"),
+)
+
 WATERMARK_POSITION_OPTIONS = (
-    ("bottom-center", "下方中央（預設）"),
-    ("bottom-left", "左下角"),
-    ("bottom-right", "右下角"),
-    ("center", "正中央"),
     ("top-left", "左上角"),
+    ("top-center", "上方中央"),
     ("top-right", "右上角"),
+    ("center-left", "左側中央"),
+    ("center", "正中央"),
+    ("center-right", "右側中央"),
+    ("bottom-left", "左下角"),
+    ("bottom-center", "下方中央（預設）"),
+    ("bottom-right", "右下角"),
 )
 
 RESOLUTION_LABELS = dict(RESOLUTION_OPTIONS)

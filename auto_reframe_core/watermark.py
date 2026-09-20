@@ -9,12 +9,50 @@ from typing import Optional, Tuple
 
 WATERMARK_POSITIONS = {
     "top-left",
+    "top-center",
     "top-right",
+    "center-left",
+    "center",
+    "center-right",
     "bottom-left",
     "bottom-center",
     "bottom-right",
-    "center",
 }
+
+POSITION_ALIASES = {
+    "left-center": "center-left",
+    "right-center": "center-right",
+    "middle-left": "center-left",
+    "middle-right": "center-right",
+    "middle-center": "center",
+}
+
+
+def parse_watermark_opacity(value: object) -> float:
+    """Parse opacity supporting floats (0.0-1.0), percentages (0%-100%), and integer percentages (0-100)."""
+    if isinstance(value, (int, float)):
+        val = float(value)
+        if 0.0 <= val <= 1.0:
+            return round(val, 4)
+        if val.is_integer() and 0 <= val <= 100:
+            return round(val / 100.0, 4)
+        raise ValueError("watermark_opacity 必須介於 0.0 與 1.0（或 0% 與 100%）。")
+
+    text = str(value).strip()
+    if not text:
+        raise ValueError("浮水印透明度不可為空。")
+    if text.endswith("%"):
+        val = float(text[:-1].strip()) / 100.0
+        if not (0.0 <= val <= 1.0):
+            raise ValueError("watermark_opacity 必須介於 0% 與 100%。")
+        return round(val, 4)
+
+    val = float(text)
+    if 0.0 <= val <= 1.0:
+        return round(val, 4)
+    if val.is_integer() and 0 <= val <= 100:
+        return round(val / 100.0, 4)
+    raise ValueError("watermark_opacity 必須介於 0.0 與 1.0（或 0% 與 100%）。")
 
 
 @dataclass(frozen=True)
@@ -25,6 +63,7 @@ class WatermarkConfig:
     path: Optional[Path] = None
     position: str = "bottom-center"
     width_ratio: float = 0.07
+    opacity: float = 0.8
     margin: int = 3
 
 
@@ -34,11 +73,13 @@ def build_watermark_config(
     watermark_file: str,
     position: str,
     width_ratio: float,
+    opacity: float = 0.8,
     margin: int,
     base_dir: Path,
 ) -> WatermarkConfig:
     """Validate user-facing values and resolve the watermark path."""
-    normalized_position = str(position).strip().lower()
+    raw_pos = str(position).strip().lower()
+    normalized_position = POSITION_ALIASES.get(raw_pos, raw_pos)
     if normalized_position not in WATERMARK_POSITIONS:
         allowed = ", ".join(sorted(WATERMARK_POSITIONS))
         raise ValueError(f"watermark_position 無效: {position!r}。可用值: {allowed}")
@@ -46,6 +87,8 @@ def build_watermark_config(
     normalized_width = float(width_ratio)
     if not 0.01 <= normalized_width <= 1.0:
         raise ValueError("watermark_width_ratio 必須介於 0.01 與 1.0。")
+
+    normalized_opacity = parse_watermark_opacity(opacity)
 
     normalized_margin = int(margin)
     if not 0 <= normalized_margin <= 100:
@@ -69,15 +112,21 @@ def build_watermark_config(
         path=resolved_path,
         position=normalized_position,
         width_ratio=normalized_width,
+        opacity=normalized_opacity,
         margin=normalized_margin,
     )
 
 
 def watermark_overlay_xy(position: str, margin: int) -> Tuple[str, str]:
     """Return overlay x/y expressions for the selected anchor."""
+    normalized_pos = POSITION_ALIASES.get(position, position)
     positions = {
         "top-left": (str(margin), str(margin)),
+        "top-center": ("(main_w-overlay_w)/2", str(margin)),
         "top-right": (f"main_w-overlay_w-{margin}", str(margin)),
+        "center-left": (str(margin), "(main_h-overlay_h)/2"),
+        "center": ("(main_w-overlay_w)/2", "(main_h-overlay_h)/2"),
+        "center-right": (f"main_w-overlay_w-{margin}", "(main_h-overlay_h)/2"),
         "bottom-left": (str(margin), f"main_h-overlay_h-{margin}"),
         "bottom-center": (
             "(main_w-overlay_w)/2",
@@ -87,10 +136,9 @@ def watermark_overlay_xy(position: str, margin: int) -> Tuple[str, str]:
             f"main_w-overlay_w-{margin}",
             f"main_h-overlay_h-{margin}",
         ),
-        "center": ("(main_w-overlay_w)/2", "(main_h-overlay_h)/2"),
     }
     try:
-        return positions[position]
+        return positions[normalized_pos]
     except KeyError as exc:
         raise ValueError(f"不支援的浮水印位置: {position!r}") from exc
 
@@ -145,7 +193,13 @@ def append_watermark_source_filter(
     if branch_count <= 0:
         raise ValueError("浮水印分支數必須大於 0。")
 
-    source = f"[{input_index}:v]format=rgba"
+    if config.opacity < 1.0:
+        source = (
+            f"[{input_index}:v]format=rgba,"
+            f"colorchannelmixer=aa={config.opacity:g}"
+        )
+    else:
+        source = f"[{input_index}:v]format=rgba"
     labels = [f"[wm_src_{index}]" for index in range(branch_count)]
     if branch_count == 1:
         filters.append(f"{source}{labels[0]}")

@@ -29,6 +29,7 @@
         "file": "",
         "position": "bottom-center",
         "width_ratio": 0.15,
+        "opacity": 0.8,
         "margin": 3
       },
       "compress": {
@@ -36,6 +37,7 @@
         "file": "",
         "position": "bottom-center",
         "width_ratio": 0.10,
+        "opacity": 0.8,
         "margin": 3
       }
     },

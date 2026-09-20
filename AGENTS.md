@@ -132,7 +132,7 @@ GUI 設定檔則使用版本化文件，且把兩種模式分開：
 
 - GUI 只掃描專案小寫 `watermark/` 內的 `.png`／`.PNG`，排序後顯示。
 - 使用者浮水印屬本機資料，不得加入 Git 或 Release。
-- 啟用浮水印時必須有可讀檔案；位置、寬度比例與邊距都要驗證；不另外套用透明度調整濾鏡，直接使用 PNG 原始 RGBA 透明通道。
+- 啟用浮水印時必須有可讀檔案；位置（支援 3×3 錨點九宮格選擇圈圈）、寬度比例、透明度（預設 80% / 0.8，opacity < 1.0 時以 `colorchannelmixer=aa={opacity}` 處理）與邊距都要驗證。
 - 浮水印在每個輸出解析度完成縮放與文字處理後套用，再依 codec 分支，避免重複工作。
 - 單張 PNG 必須以 `eof_action=repeat:shortest=0:repeatlast=1` 覆蓋完整影片。
 - 浮水印等比例與垂直插入延續 Lightroom 幾何模型：裁切重製預設 `watermark_width_ratio=0.15`（Lightroom 15），影片壓縮預設 `watermark_width_ratio=0.10`（Lightroom 10），垂直插入預設 `watermark_margin=3`。

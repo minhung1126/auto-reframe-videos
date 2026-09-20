@@ -28,15 +28,15 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized["reframe"]["file"], "")
         self.assertEqual(normalized["reframe"]["position"], "bottom-center")
         self.assertEqual(normalized["reframe"]["width_ratio"], 0.15)
+        self.assertEqual(normalized["reframe"]["opacity"], 0.8)
         self.assertEqual(normalized["reframe"]["margin"], 3)
-        self.assertNotIn("opacity", normalized["reframe"])
 
         self.assertFalse(normalized["compress"]["enabled"])
         self.assertEqual(normalized["compress"]["file"], "")
         self.assertEqual(normalized["compress"]["position"], "bottom-center")
         self.assertEqual(normalized["compress"]["width_ratio"], 0.10)
+        self.assertEqual(normalized["compress"]["opacity"], 0.8)
         self.assertEqual(normalized["compress"]["margin"], 3)
-        self.assertNotIn("opacity", normalized["compress"])
 
     def test_legacy_flat_config_migrates_to_both_modes(self):
         legacy_settings = {
@@ -44,7 +44,7 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
             "watermark_file": "my_logo.png",
             "watermark_position": "top-right",
             "watermark_width_ratio": 0.08,
-            "watermark_opacity": 0.5,  # Should be ignored/dropped
+            "watermark_opacity": 0.5,
             "watermark_margin": 5,
         }
         normalized = normalize_watermark_settings(legacy_settings)
@@ -54,8 +54,8 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
             self.assertEqual(normalized[mode]["file"], "my_logo.png")
             self.assertEqual(normalized[mode]["position"], "top-right")
             self.assertEqual(normalized[mode]["width_ratio"], 0.08)
+            self.assertEqual(normalized[mode]["opacity"], 0.5)
             self.assertEqual(normalized[mode]["margin"], 5)
-            self.assertNotIn("opacity", normalized[mode])
 
     def test_legacy_flat_config_without_ratio_uses_mode_defaults(self):
         legacy_settings = {
@@ -126,6 +126,41 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
             with self.assertRaises(ConfigStoreError):
                 normalize_watermark_settings({"watermarks": {"compress": {"margin": 105}}})
 
+    def test_invalid_opacity_raises_config_store_error(self):
+        with self.subTest(case="negative"):
+            with self.assertRaises(ConfigStoreError):
+                normalize_watermark_settings({"watermarks": {"reframe": {"opacity": -0.1}}})
+        with self.subTest(case="too_large"):
+            with self.assertRaises(ConfigStoreError):
+                normalize_watermark_settings({"watermarks": {"reframe": {"opacity": 1.5}}})
+        with self.subTest(case="string_not_number"):
+            with self.assertRaises(ConfigStoreError):
+                normalize_watermark_settings({"watermarks": {"reframe": {"opacity": "abc"}}})
+
+    def test_opacity_supports_floats_percentages_and_numbers(self):
+        cases = [
+            (0.8, 0.8),
+            ("0.8", 0.8),
+            ("80%", 0.8),
+            (80, 0.8),
+            ("100%", 1.0),
+            (1.0, 1.0),
+            ("0%", 0.0),
+            (0, 0.0),
+        ]
+        for val, expected in cases:
+            normalized = normalize_watermark_settings({"watermarks": {"reframe": {"opacity": val}}})
+            self.assertEqual(normalized["reframe"]["opacity"], expected)
+
+    def test_3x3_watermark_positions_supported(self):
+        from auto_reframe_core.gui_options import POSITION_GRID_3X3
+        self.assertEqual(len(POSITION_GRID_3X3), 3)
+        self.assertEqual(len(POSITION_GRID_3X3[0]), 3)
+        for row in POSITION_GRID_3X3:
+            for pos in row:
+                normalized = normalize_watermark_settings({"watermarks": {"reframe": {"position": pos}}})
+                self.assertEqual(normalized["reframe"]["position"], pos)
+
     def test_load_effective_settings_migrates_legacy_config(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
@@ -183,8 +218,8 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
                     self.assertEqual(normalized[mode]["file"], "my_logo.png")
                     self.assertEqual(normalized[mode]["position"], "top-right")
                     self.assertEqual(normalized[mode]["width_ratio"], 0.08)
+                    self.assertEqual(normalized[mode]["opacity"], 0.75)
                     self.assertEqual(normalized[mode]["margin"], 6)
-                    self.assertNotIn("opacity", normalized[mode])
 
 
 def _can_create_tk_root() -> bool:
@@ -228,6 +263,9 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 self.assertEqual(app.watermark_width_ratio_vars["reframe"].get(), "0.15")
                 # Verify compress default ratio is 0.10
                 self.assertEqual(app.watermark_width_ratio_vars["compress"].get(), "0.1")
+                # Verify opacity default is 0.8
+                self.assertEqual(app.watermark_opacity_vars["reframe"].get(), "0.8")
+                self.assertEqual(app.watermark_opacity_vars["compress"].get(), "0.8")
                 # Verify margins
                 self.assertEqual(app.watermark_margin_vars["reframe"].get(), "3")
                 self.assertEqual(app.watermark_margin_vars["compress"].get(), "3")
@@ -240,6 +278,9 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                     app.watermark_position_vars["compress"].get(),
                     WATERMARK_POSITION_LABELS["bottom-center"],
                 )
+                # Verify 3x3 radio buttons exist
+                for mode in ("reframe", "compress"):
+                    self.assertEqual(len(app.watermark_position_radios[mode]), 9)
             finally:
                 root.destroy()
 
@@ -306,7 +347,7 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
             finally:
                 root.destroy()
 
-    def test_save_settings_writes_per_mode_watermarks_without_opacity(self):
+    def test_save_settings_writes_per_mode_watermarks_with_opacity(self):
         config_file = self.root_path / "config.json"
         with (
             patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path),
@@ -321,11 +362,13 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 app.watermark_enabled_vars["reframe"].set(True)
                 app.watermark_file_vars["reframe"].set("logo1.png")
                 app.watermark_width_ratio_vars["reframe"].set("0.18")
+                app.watermark_opacity_vars["reframe"].set("0.85")
                 app.watermark_margin_vars["reframe"].set("4")
 
                 app.watermark_enabled_vars["compress"].set(False)
                 app.watermark_file_vars["compress"].set("logo2.png")
                 app.watermark_width_ratio_vars["compress"].set("0.09")
+                app.watermark_opacity_vars["compress"].set("60%")
                 app.watermark_margin_vars["compress"].set("2")
 
                 app.save_settings()
@@ -341,15 +384,15 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 self.assertTrue(wm_rf["enabled"])
                 self.assertEqual(wm_rf["file"], "logo1.png")
                 self.assertEqual(wm_rf["width_ratio"], 0.18)
+                self.assertEqual(wm_rf["opacity"], 0.85)
                 self.assertEqual(wm_rf["margin"], 4)
-                self.assertNotIn("opacity", wm_rf)
 
                 wm_cp = settings["watermarks"]["compress"]
                 self.assertFalse(wm_cp["enabled"])
                 self.assertEqual(wm_cp["file"], "logo2.png")
                 self.assertEqual(wm_cp["width_ratio"], 0.09)
+                self.assertEqual(wm_cp["opacity"], 0.6)
                 self.assertEqual(wm_cp["margin"], 2)
-                self.assertNotIn("opacity", wm_cp)
             finally:
                 root.destroy()
 
@@ -369,7 +412,9 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 # Mutate both tabs
                 app.watermark_enabled_vars["reframe"].set(True)
                 app.watermark_width_ratio_vars["reframe"].set("0.25")
+                app.watermark_opacity_vars["reframe"].set("0.5")
                 app.watermark_width_ratio_vars["compress"].set("0.05")
+                app.watermark_opacity_vars["compress"].set("0.9")
 
                 app.save_settings()
                 self.assertTrue(config_file.exists())
@@ -380,7 +425,9 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 # Verified restored
                 self.assertFalse(app.watermark_enabled_vars["reframe"].get())
                 self.assertEqual(app.watermark_width_ratio_vars["reframe"].get(), "0.15")
+                self.assertEqual(app.watermark_opacity_vars["reframe"].get(), "0.8")
                 self.assertEqual(app.watermark_width_ratio_vars["compress"].get(), "0.1")
+                self.assertEqual(app.watermark_opacity_vars["compress"].get(), "0.8")
             finally:
                 root.destroy()
 
@@ -437,9 +484,10 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                         WATERMARK_POSITION_LABELS["top-left"],
                     )
                     self.assertEqual(app.watermark_width_ratio_vars[mode].get(), "0.08")
+                    self.assertEqual(app.watermark_opacity_vars[mode].get(), "0.75")
                     self.assertEqual(app.watermark_margin_vars[mode].get(), "6")
 
-                # Saving should convert to new format without opacity
+                # Saving should convert to new format with opacity
                 app.save_settings()
 
                 saved_data = json.loads(config_file.read_text(encoding="utf-8"))
@@ -449,6 +497,7 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 self.assertNotIn("watermark_enabled", saved_settings)
                 self.assertEqual(saved_settings["watermarks"]["reframe"]["position"], "top-left")
                 self.assertEqual(saved_settings["watermarks"]["reframe"]["width_ratio"], 0.08)
+                self.assertEqual(saved_settings["watermarks"]["reframe"]["opacity"], 0.75)
             finally:
                 root.destroy()
 

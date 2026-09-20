@@ -26,6 +26,7 @@ from auto_reframe_core.gui_options import (
     CODEC_KEYS_BY_LABEL,
     CODEC_LABELS,
     CODEC_OPTIONS,
+    POSITION_GRID_3X3,
     RATIO_OPTIONS,
     RESOLUTION_KEYS_BY_LABEL,
     RESOLUTION_LABELS,
@@ -36,7 +37,10 @@ from auto_reframe_core.gui_options import (
     list_watermark_pngs,
     parse_ratio,
 )
-from auto_reframe_core.watermark import WATERMARK_POSITIONS
+from auto_reframe_core.watermark import (
+    WATERMARK_POSITIONS,
+    parse_watermark_opacity,
+)
 from auto_reframe_core.config_store import (
     ConfigStoreError,
     clear_config,
@@ -301,6 +305,7 @@ def load_effective_settings():
                 "watermark_file",
                 "watermark_position",
                 "watermark_width_ratio",
+                "watermark_opacity",
                 "watermark_margin",
             )
         ):
@@ -355,6 +360,7 @@ DEFAULT_WATERMARK_WIDTH_RATIOS = {
     "compress": 0.10,
 }
 DEFAULT_WATERMARK_POSITION = "bottom-center"
+DEFAULT_WATERMARK_OPACITY = 0.8
 DEFAULT_WATERMARK_MARGIN = 3
 
 
@@ -374,6 +380,7 @@ def normalize_watermark_settings(settings: dict) -> dict:
             "watermark_enabled" in settings
             or "watermark_position" in settings
             or "watermark_width_ratio" in settings
+            or "watermark_opacity" in settings
             or "watermark_margin" in settings
         ):
             legacy_ratio = settings.get("watermark_width_ratio")
@@ -382,6 +389,12 @@ def normalize_watermark_settings(settings: dict) -> dict:
                 if legacy_ratio is not None
                 else default_width_ratio
             )
+            legacy_opacity = settings.get("watermark_opacity")
+            opacity_val = (
+                parse_watermark_opacity(legacy_opacity)
+                if legacy_opacity is not None
+                else DEFAULT_WATERMARK_OPACITY
+            )
             mode_entry = {
                 "enabled": bool(settings.get("watermark_enabled", False)),
                 "file": str(settings.get("watermark_file", "")),
@@ -389,6 +402,7 @@ def normalize_watermark_settings(settings: dict) -> dict:
                     settings.get("watermark_position", DEFAULT_WATERMARK_POSITION)
                 ),
                 "width_ratio": width_ratio_val,
+                "opacity": opacity_val,
                 "margin": int(
                     settings.get("watermark_margin", DEFAULT_WATERMARK_MARGIN)
                 ),
@@ -420,6 +434,15 @@ def normalize_watermark_settings(settings: dict) -> dict:
             )
 
         try:
+            opacity = parse_watermark_opacity(
+                mode_entry.get("opacity", DEFAULT_WATERMARK_OPACITY)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ConfigStoreError(
+                f"watermarks.{mode}.opacity 必須介於 0.0 與 1.0（或 0% 與 100%）。"
+            ) from exc
+
+        try:
             margin = int(mode_entry.get("margin", DEFAULT_WATERMARK_MARGIN))
         except (TypeError, ValueError) as exc:
             raise ConfigStoreError(
@@ -435,6 +458,7 @@ def normalize_watermark_settings(settings: dict) -> dict:
             "file": file_val,
             "position": position,
             "width_ratio": width_ratio,
+            "opacity": opacity,
             "margin": margin,
         }
 
@@ -616,12 +640,23 @@ class AutoReframeGUI:
             )
             for mode in MODE_LABELS
         }
+        self.watermark_opacity_vars = {
+            mode: tk.StringVar(
+                value=f"{float(self.watermark_settings[mode].get('opacity', DEFAULT_WATERMARK_OPACITY)):g}"
+            )
+            for mode in MODE_LABELS
+        }
         self.watermark_margin_vars = {
             mode: tk.StringVar(
                 value=str(int(self.watermark_settings[mode]["margin"]))
             )
             for mode in MODE_LABELS
         }
+        for mode in MODE_LABELS:
+            self.watermark_position_vars[mode].trace_add(
+                "write",
+                lambda *_, m=mode: self._sync_watermark_position_var(m),
+            )
 
         font_path = Path(str(settings["font_path"]))
         if not font_path.is_absolute():
@@ -642,6 +677,11 @@ class AutoReframeGUI:
         self.status_var = tk.StringVar(value="準備就緒")
         self.progress_summary_var = tk.StringVar(value="尚未開始處理")
         self.update_status_var = tk.StringVar(value="尚未檢查更新")
+
+    def _sync_watermark_position_var(self, mode: str) -> None:
+        val = self.watermark_position_vars[mode].get()
+        if val in WATERMARK_POSITION_LABELS:
+            self.watermark_position_vars[mode].set(WATERMARK_POSITION_LABELS[val])
 
     def _build_ui(self):
         self.root.columnconfigure(0, weight=1)
@@ -667,6 +707,7 @@ class AutoReframeGUI:
 
         self.target_trees = {}
         self.watermark_combos = {}
+        self.watermark_position_radios = {}
         self._build_reframe_tab()
         self._build_compress_tab()
         self._build_advanced_tab()
@@ -961,33 +1002,62 @@ class AutoReframeGUI:
         params = ttk.Frame(watermark)
         params.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
 
-        ttk.Label(params, text="位置").grid(row=0, column=0, sticky="w", padx=(0, 6))
-        ttk.Combobox(
-            params,
-            textvariable=self.watermark_position_vars[mode],
-            values=tuple(label for _, label in WATERMARK_POSITION_OPTIONS),
-            state="readonly",
-            width=14,
-        ).grid(row=0, column=1, sticky="w", padx=(0, 16))
+        pos_box = ttk.Frame(params)
+        pos_box.grid(row=0, column=0, rowspan=3, sticky="nw", padx=(0, 24))
 
-        ttk.Label(params, text="等比例").grid(row=0, column=2, sticky="w", padx=(0, 6))
+        pos_header = ttk.Frame(pos_box)
+        pos_header.grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(pos_header, text="位置：").pack(side="left")
+        ttk.Label(
+            pos_header,
+            textvariable=self.watermark_position_vars[mode],
+        ).pack(side="left")
+
+        grid_frame = ttk.Frame(pos_box)
+        grid_frame.grid(row=1, column=0, sticky="w")
+
+        self.watermark_position_radios[mode] = {}
+        for r, row in enumerate(POSITION_GRID_3X3):
+            for c, pos_key in enumerate(row):
+                pos_label = WATERMARK_POSITION_LABELS[pos_key]
+                rb = ttk.Radiobutton(
+                    grid_frame,
+                    text="",
+                    value=pos_label,
+                    variable=self.watermark_position_vars[mode],
+                    cursor="hand2",
+                )
+                rb.grid(row=r, column=c, padx=2, pady=2)
+                self.watermark_position_radios[mode][pos_key] = rb
+
+        inputs_box = ttk.Frame(params)
+        inputs_box.grid(row=0, column=1, sticky="w")
+
+        ttk.Label(inputs_box, text="等比例").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(
-            params,
+            inputs_box,
             textvariable=self.watermark_width_ratio_vars[mode],
             width=8,
-        ).grid(row=0, column=3, sticky="w", padx=(0, 16))
+        ).grid(row=0, column=1, sticky="w", pady=2)
 
-        ttk.Label(params, text="邊距").grid(row=0, column=4, sticky="w", padx=(0, 6))
+        ttk.Label(inputs_box, text="透明度").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=2)
         ttk.Entry(
-            params,
+            inputs_box,
+            textvariable=self.watermark_opacity_vars[mode],
+            width=8,
+        ).grid(row=1, column=1, sticky="w", pady=2)
+
+        ttk.Label(inputs_box, text="邊距").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=2)
+        ttk.Entry(
+            inputs_box,
             textvariable=self.watermark_margin_vars[mode],
             width=8,
-        ).grid(row=0, column=5, sticky="w")
+        ).grid(row=2, column=1, sticky="w", pady=2)
 
         hint_ratio = "0.15（裁切重製）" if mode == "reframe" else "0.10（影片壓縮）"
         ttk.Label(
             watermark,
-            text=f"來源：watermark/*.png；預設下方中央、等比例 {hint_ratio}、垂直插入 3。",
+            text=f"來源：watermark/*.png；預設下方中央、等比例 {hint_ratio}、透明度 0.8（80%）、垂直插入 3。",
             foreground="#555555",
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
@@ -1586,6 +1656,13 @@ class AutoReframeGUI:
             raise ValueError("浮水印等比例必須介於 0.01 與 1.0。")
 
         try:
+            opacity = parse_watermark_opacity(
+                self.watermark_opacity_vars[mode].get().strip()
+            )
+        except ValueError as exc:
+            raise ValueError(f"浮水印透明度無效: {exc}") from exc
+
+        try:
             margin = int(self.watermark_margin_vars[mode].get().strip())
         except ValueError as exc:
             raise ValueError("浮水印邊距必須是整數。") from exc
@@ -1605,6 +1682,7 @@ class AutoReframeGUI:
             watermark_file=str(watermark_path) if watermark_path else "",
             watermark_position=pos_key,
             watermark_width_ratio=width_ratio,
+            watermark_opacity=opacity,
             watermark_margin=margin,
         )
         if mode == "compress":
@@ -1655,6 +1733,15 @@ class AutoReframeGUI:
             if not 0.01 <= width_ratio <= 1.0:
                 raise ValueError(f"{mode_title}浮水印等比例必須介於 0.01 與 1.0。")
 
+            opacity_raw = self.watermark_opacity_vars[mode].get().strip()
+            try:
+                opacity = parse_watermark_opacity(opacity_raw)
+            except ValueError as exc:
+                raise ValueError(
+                    f"{mode_title}浮水印透明度「{opacity_raw}」無效，"
+                    "必須介於 0.0 與 1.0（或 0% 到 100%）。"
+                ) from exc
+
             margin_raw = self.watermark_margin_vars[mode].get().strip()
             try:
                 margin = int(margin_raw)
@@ -1668,6 +1755,7 @@ class AutoReframeGUI:
                 "file": watermark_file,
                 "position": pos_key,
                 "width_ratio": width_ratio,
+                "opacity": opacity,
                 "margin": margin,
             }
 
@@ -1752,6 +1840,9 @@ class AutoReframeGUI:
             )
             self.watermark_width_ratio_vars[target_mode].set(
                 f"{float(wm['width_ratio']):g}"
+            )
+            self.watermark_opacity_vars[target_mode].set(
+                f"{float(wm.get('opacity', DEFAULT_WATERMARK_OPACITY)):g}"
             )
             self.watermark_margin_vars[target_mode].set(str(int(wm["margin"])))
 
