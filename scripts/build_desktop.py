@@ -120,9 +120,11 @@ def main():
             'dirty': bool(run('git', 'status', '--porcelain', capture_output=True, text=True).stdout.strip()),
             'minimum_os': 'macOS 13.0 (candidate; hardware qualification required)' if args.target.startswith('macos') else 'Windows 10 22H2; Windows 11 preferred'}
     (staging / 'build-info.json').write_text(json.dumps(info, indent=2) + '\n', encoding='utf-8')
-    env = dict(os.environ, ARV_VENDOR_DIR=str(vendor), ARV_TARGET=args.target)
+    env = dict(os.environ, ARV_VENDOR_DIR=str(vendor), ARV_TARGET=args.target, ARV_METADATA_DIR=str(staging))
     env.pop('APPLE_SIGN_IDENTITY', None)
-    run(sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean', '--distpath', str(ROOT / 'build' / 'frozen'), str(ROOT / 'packaging' / 'desktop.spec'), env=env)
+    run(sys.executable, '-m', 'PyInstaller', '--noconfirm', '--clean',
+        '--workpath', str(ROOT / 'build' / 'pyinstaller-work'),
+        '--distpath', str(ROOT / 'build' / 'frozen'), str(ROOT / 'packaging' / 'desktop.spec'), env=env)
     app = ROOT / 'build' / 'frozen' / 'Auto Reframe Videos'
     if args.target.startswith('macos'):
         app = app.with_suffix('.app')

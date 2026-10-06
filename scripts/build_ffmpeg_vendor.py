@@ -43,7 +43,7 @@ def prepare_source(name, entry, cache, destination):
                        m.name == archive_root + '/LICENSE.txt']
         if sum(m.size for m in members) > 512 * 1024 * 1024:
             raise RuntimeError('Source archive exceeds limit')
-        bundle.extractall(destination, filter='data')
+        bundle.extractall(destination, members=members, filter='data')
     roots = list(destination.iterdir())
     if len(roots) != 1 or not roots[0].is_dir():
         raise RuntimeError('Invalid source archive layout')

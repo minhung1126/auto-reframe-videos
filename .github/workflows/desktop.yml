@@ -63,7 +63,15 @@ jobs:
         run: |
           python -m compileall -q auto_reframe_core tests scripts
           python -m unittest discover -s tests
+      - name: Restore compiled FFmpeg
+        if: env.VENDOR_MANIFEST == ''
+        id: ffmpeg-cache
+        uses: actions/cache/restore@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: build/vendor
+          key: ffmpeg-${{ matrix.target }}-${{ hashFiles('packaging/ffmpeg-sources.json', 'packaging/runtime-licenses.json', 'packaging/requirements-build.txt', 'scripts/build_ffmpeg_vendor.py') }}
       - name: Prepare pinned FFmpeg tools
+        if: env.VENDOR_MANIFEST != '' || steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           python - <<'PY'
@@ -78,6 +86,12 @@ jobs:
                      '--destination', 'build/vendor']
           subprocess.run(cmd, check=True)
           PY
+      - name: Save compiled FFmpeg
+        if: env.VENDOR_MANIFEST == '' && steps.ffmpeg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
+        with:
+          path: build/vendor
+          key: ${{ steps.ffmpeg-cache.outputs.cache-primary-key }}
       - name: Build, audit, transcode and package unsigned installers
         shell: bash
         run: |
