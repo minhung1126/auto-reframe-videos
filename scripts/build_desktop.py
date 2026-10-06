@@ -21,6 +21,65 @@ def run(*command, **kwargs):
     return subprocess.run(command, check=True, cwd=ROOT, **kwargs)
 
 
+WINDOWS_RUNTIME_DLLS = {'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'}
+WINDOWS_SYSTEM_DLLS = {'kernel32.dll', 'msvcrt.dll', 'ucrtbase.dll', 'user32.dll', 'gdi32.dll',
+    'advapi32.dll', 'shell32.dll', 'ole32.dll', 'oleaut32.dll', 'ws2_32.dll', 'bcrypt.dll',
+    'secur32.dll', 'crypt32.dll', 'winmm.dll', 'version.dll', 'psapi.dll', 'shlwapi.dll',
+    'imm32.dll', 'setupapi.dll', 'd3d11.dll', 'dxgi.dll', 'dxva2.dll', 'dwmapi.dll',
+    'mf.dll', 'mfplat.dll', 'mfuuid.dll', 'strmiids.dll', 'cfgmgr32.dll', 'avrt.dll', 'ntdll.dll',
+    'normaliz.dll', 'comdlg32.dll', 'comctl32.dll'}
+
+
+def windows_imports(path):
+    import pefile
+    pe = pefile.PE(str(path))
+    try:
+        return [entry.dll.decode('ascii').lower() for entry in
+                getattr(pe, 'DIRECTORY_ENTRY_IMPORT', []) + getattr(pe, 'DIRECTORY_ENTRY_DELAY_IMPORT', [])]
+    finally:
+        pe.close()
+
+
+def system_dll(name):
+    return name in WINDOWS_SYSTEM_DLLS or name.startswith(('api-ms-win-', 'ext-ms-win-'))
+
+
+def bundle_windows_runtime(vendor, toolchain):
+    """Copy only approved, actually imported MinGW runtimes beside the tools."""
+    vendor, toolchain = Path(vendor), Path(toolchain)
+    provenance_path = vendor / 'provenance.json'
+    provenance = json.loads(provenance_path.read_text(encoding='utf-8'))
+    pending, visited = ['ffmpeg.exe', 'ffprobe.exe'], set()
+    runtime = {}
+    while pending:
+        name = pending.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        for dependency in windows_imports(vendor / 'bin' / name):
+            if system_dll(dependency):
+                continue
+            if dependency not in WINDOWS_RUNTIME_DLLS:
+                raise ValueError('Unapproved FFmpeg runtime dependency: ' + dependency)
+            path = vendor / 'bin' / dependency
+            if not path.exists():
+                shutil.copy2(toolchain / 'mingw64' / 'bin' / dependency, path)
+            elif dependency not in provenance['binaries']:
+                raise ValueError('Existing runtime DLL has no provenance hash')
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            previous = provenance['binaries'].get(dependency)
+            if previous and previous != digest:
+                raise ValueError('Runtime DLL checksum mismatch')
+            provenance['binaries'][dependency] = digest
+            runtime[dependency] = digest
+            pending.append(dependency)
+    if runtime:
+        compiler = run(str(toolchain / 'mingw64/bin/gcc.exe'), '-dumpfullversion', capture_output=True, text=True).stdout.strip()
+        provenance['windows_runtime'] = {'gcc_version': compiler, 'binaries': runtime,
+                                        'origin': 'Native MSYS2 MinGW64 toolchain; licenses/runtime contains its notices'}
+        provenance_path.write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
+
+
 def validate_vendor(vendor, target):
     """Require audited static FFmpeg tools, codecs, filters and redistribution records."""
     vendor = Path(vendor).resolve()
@@ -44,8 +103,10 @@ def validate_vendor(vendor, target):
     hashes = provenance.get('binaries', {})
     actual = {p.name for p in (vendor / 'bin').iterdir()}
     suffix = '.exe' if target == 'windows-x64' else ''
-    if actual != {'ffmpeg' + suffix, 'ffprobe' + suffix} or set(hashes) != actual:
-        raise ValueError('Vendor bin/ must contain only the two self-contained tools')
+    tools = {'ffmpeg' + suffix, 'ffprobe' + suffix}
+    allowed = tools | (WINDOWS_RUNTIME_DLLS if target == 'windows-x64' else set())
+    if not tools <= actual or not actual <= allowed or set(hashes) != actual:
+        raise ValueError('Vendor bin/ must contain the tools and only approved runtime DLLs')
     for name in sorted(actual):
         path = vendor / 'bin' / name
         if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != hashes[name]:
@@ -62,14 +123,9 @@ def validate_vendor(vendor, target):
             pe = pefile.PE(str(path))
             if pe.FILE_HEADER.Machine != 0x8664:
                 raise ValueError('FFmpeg must be Windows x64')
-            system_dlls = {'kernel32.dll', 'msvcrt.dll', 'ucrtbase.dll', 'user32.dll', 'gdi32.dll',
-                'advapi32.dll', 'shell32.dll', 'ole32.dll', 'oleaut32.dll', 'ws2_32.dll', 'bcrypt.dll',
-                'secur32.dll', 'crypt32.dll', 'winmm.dll', 'version.dll', 'psapi.dll', 'shlwapi.dll',
-                'imm32.dll', 'setupapi.dll', 'd3d11.dll', 'dxgi.dll', 'dxva2.dll', 'dwmapi.dll',
-                'mf.dll', 'mfplat.dll', 'mfuuid.dll', 'strmiids.dll', 'cfgmgr32.dll', 'avrt.dll', 'ntdll.dll', 'normaliz.dll', 'comdlg32.dll', 'comctl32.dll'}
             for entry in getattr(pe, 'DIRECTORY_ENTRY_IMPORT', []) + getattr(pe, 'DIRECTORY_ENTRY_DELAY_IMPORT', []):
                 dll = entry.dll.decode('ascii').lower()
-                if dll not in system_dlls and not dll.startswith(('api-ms-win-', 'ext-ms-win-')):
+                if not system_dll(dll) and dll not in actual & WINDOWS_RUNTIME_DLLS:
                     raise ValueError(f'Non-system FFmpeg dependency: {dll}')
     ffmpeg = str(vendor / 'bin' / ('ffmpeg' + suffix))
     configuration = run(ffmpeg, '-buildconf', capture_output=True, text=True)
@@ -86,7 +142,7 @@ def validate_vendor(vendor, target):
     filters = run(ffmpeg, '-filters', capture_output=True, text=True).stdout
     if any(not re.search(r'\b' + name + r'\b', filters) for name in ('drawtext', 'scale', 'crop', 'pad', 'overlay', 'split', 'colorchannelmixer')):
         raise ValueError('FFmpeg lacks a required filter')
-    for name in actual:
+    for name in tools:
         run(str(vendor / 'bin' / name), '-version', capture_output=True)
     return provenance
 
@@ -101,6 +157,8 @@ def main():
     if desktop_target() != args.target:
         parser.error('Build on the native target OS and CPU')
     vendor = args.vendor_dir.resolve()
+    if args.target == 'windows-x64':
+        bundle_windows_runtime(vendor, Path(os.environ.get('ARV_MSYS_ROOT', 'C:/msys64')))
     provenance = validate_vendor(vendor, args.target)
     staging = ROOT / 'build' / 'desktop'
     write_icons(staging)

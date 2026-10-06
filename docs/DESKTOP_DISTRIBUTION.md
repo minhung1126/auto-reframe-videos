@@ -59,6 +59,7 @@ An optional reviewed **self-contained** vendor ZIP can replace this input. Its r
 ```text
 bin/ffmpeg                 # Windows: ffmpeg.exe
 bin/ffprobe                # Windows: ffprobe.exe
+bin/libgcc_s_seh-1.dll      # Windows only, if actually imported; likewise libstdc++/winpthread
 licenses/FFmpeg.txt
 licenses/x264.txt
 licenses/x265.txt
@@ -70,7 +71,9 @@ provenance.json
 ```
 
 macOS tools may link only `/usr/lib` and `/System/Library` dependencies. Windows tools must
-be x64 PE files importing only audited system DLLs. The build rejects external dynamic libraries,
+be x64 PE files importing only audited system DLLs or hash-recorded MinGW runtime DLLs
+shipped beside the tools. Their transitive imports are audited, and runtime license texts are
+included. The build rejects unbundled or unapproved dynamic libraries,
 incorrect architectures, altered binary hashes, `--enable-nonfree`, missing GPL configuration,
 missing libx264/libx265/AAC, missing platform hardware encoders, and missing filters used by the app.
 An encoder's presence is not proof that a particular machine has usable hardware.

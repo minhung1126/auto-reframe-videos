@@ -14,9 +14,41 @@ from scripts.prepare_desktop_vendor import unpack_vendor
 from scripts.build_ffmpeg_vendor import prepare_source
 from scripts.verify_desktop_set import verify_set, TARGETS
 from scripts.verify_desktop import macho_minimum_versions
+from scripts.build_desktop import bundle_windows_runtime
 
 
 class DesktopBuildTests(unittest.TestCase):
+    def test_windows_runtime_is_bundled_transitively_and_rejects_foreign_or_altered_dll(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            vendor, toolchain = root / 'vendor', root / 'toolchain'
+            (vendor / 'bin').mkdir(parents=True)
+            (toolchain / 'mingw64/bin').mkdir(parents=True)
+            hashes = {}
+            for name in ('ffmpeg.exe', 'ffprobe.exe'):
+                (vendor / 'bin' / name).write_bytes(name.encode())
+                hashes[name] = hashlib.sha256(name.encode()).hexdigest()
+            (vendor / 'provenance.json').write_text(json.dumps({'binaries': hashes}))
+            for name in ('libgcc_s_seh-1.dll', 'libwinpthread-1.dll'):
+                (toolchain / 'mingw64/bin' / name).write_bytes(name.encode())
+            imports = {'ffmpeg.exe': ['libgcc_s_seh-1.dll'], 'ffprobe.exe': [],
+                       'libgcc_s_seh-1.dll': ['libwinpthread-1.dll'],
+                       'libwinpthread-1.dll': ['kernel32.dll']}
+            with patch('scripts.build_desktop.windows_imports', side_effect=lambda p: imports[p.name]), \
+                 patch('scripts.build_desktop.run') as run:
+                run.return_value.stdout = '15.2.0\n'
+                bundle_windows_runtime(vendor, toolchain)
+                provenance = json.loads((vendor / 'provenance.json').read_text())
+                self.assertEqual(set(provenance['binaries']), set(hashes) | {'libgcc_s_seh-1.dll', 'libwinpthread-1.dll'})
+                for name, digest in provenance['binaries'].items():
+                    self.assertEqual(hashlib.sha256((vendor / 'bin' / name).read_bytes()).hexdigest(), digest)
+                (vendor / 'bin/libgcc_s_seh-1.dll').write_bytes(b'altered')
+                with self.assertRaisesRegex(ValueError, 'checksum mismatch'):
+                    bundle_windows_runtime(vendor, toolchain)
+            with patch('scripts.build_desktop.windows_imports', return_value=['private.dll']):
+                with self.assertRaisesRegex(ValueError, 'Unapproved'):
+                    bundle_windows_runtime(vendor, toolchain)
+
     def test_macos_floor_uses_minos_and_excludes_linker_tool_version(self):
         modern = 'cmd LC_BUILD_VERSION\ncmdsize 32\nplatform 1\nminos 11.0\nsdk 15.5\nntools 1\ntool LD\nversion 1167.5\n'
         legacy = 'cmd LC_VERSION_MIN_MACOSX\nversion 10.13\nsdk 12.1\n'

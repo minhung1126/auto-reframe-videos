@@ -37,4 +37,7 @@ and BSD notices; AMD AMF and oneVPL retain their upstream license texts.
 The source build recipe is `scripts/build_ffmpeg_vendor.py`.
 Windows statically linked GCC support libraries use GPLv3 with the GCC Runtime
 Library Exception; both the GPLv3 text and exception are included in the bundle.
+When MinGW runtime DLLs are required, they are shipped beside FFmpeg/FFprobe and
+recorded by SHA-256 in provenance. Their native package notices, including MinGW CRT
+and winpthreads notices, are copied into `licenses/runtime`.
 See `docs/DESKTOP_DISTRIBUTION.md` for the mandatory redistribution checklist.
