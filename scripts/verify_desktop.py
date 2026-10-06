@@ -84,7 +84,7 @@ def smoke_bundle(app, target, report):
                        check=True, timeout=240, cwd=report.parent, env=env)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         if report.is_file():
-            print(report.read_text(encoding='utf-8'), flush=True)
+            print(json.dumps(json.loads(report.read_text(encoding='utf-8')), ensure_ascii=True), flush=True)
         raise
     if not report.is_file() or json.loads(report.read_text(encoding='utf-8')).get('status') != 'passed':
         raise RuntimeError('Frozen smoke test did not pass')
