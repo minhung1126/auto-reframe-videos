@@ -39,7 +39,11 @@ class DesktopBuildTests(unittest.TestCase):
                 archive, destination = Path(directory) / 'vendor.zip', Path(directory) / 'vendor'
                 with zipfile.ZipFile(archive, 'w') as bundle:
                     for name in names:
-                        bundle.writestr(name, b'data')
+                        # ZipInfo otherwise rewrites backslashes on Windows before
+                        # the malicious path ever reaches our validation code.
+                        entry = zipfile.ZipInfo()
+                        entry.filename = name
+                        bundle.writestr(entry, b'data')
                 with self.assertRaises(ValueError):
                     unpack_vendor(archive, destination)
                 self.assertFalse(destination.exists())

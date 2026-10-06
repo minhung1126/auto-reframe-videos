@@ -26,7 +26,7 @@ class RuntimePathsTests(unittest.TestCase):
             (root / 'bin' / ('ffmpeg' + suffix)).touch()
             with patch('sys.frozen', True, create=True), patch('sys._MEIPASS', str(root), create=True):
                 self.assertEqual(resource_root(), root.resolve())
-                self.assertEqual(tool_path('ffmpeg', '/old/ffmpeg'), str(root / 'bin' / ('ffmpeg' + suffix)))
+                self.assertEqual(tool_path('ffmpeg', '/old/ffmpeg'), str(root.resolve() / 'bin' / ('ffmpeg' + suffix)))
                 with self.assertRaises(ConfigStoreError):
                     tool_path('ffprobe')
                 with self.assertRaises(ConfigStoreError):
@@ -41,7 +41,7 @@ class RuntimePathsTests(unittest.TestCase):
                 (data / 'config.json').unlink()
                 with patch('auto_reframe_core.runtime_paths.resource_root', return_value=Path('/new/app')):
                     workspace = load_workspace(data)
-            self.assertEqual(workspace.root, videos)
+            self.assertEqual(workspace.root, videos.resolve())
             self.assertTrue(all(p.is_dir() for p in (workspace.input, workspace.output, workspace.watermark)))
 
     def test_first_launch_cancellation_does_not_create_data(self):
