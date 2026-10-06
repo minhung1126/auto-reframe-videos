@@ -31,7 +31,7 @@ class DesktopBuildTests(unittest.TestCase):
             (vendor / 'provenance.json').write_text(json.dumps({'binaries': hashes}))
             for name in ('libgcc_s_seh-1.dll', 'libwinpthread-1.dll'):
                 (toolchain / 'mingw64/bin' / name).write_bytes(name.encode())
-            imports = {'ffmpeg.exe': ['libgcc_s_seh-1.dll'], 'ffprobe.exe': [],
+            imports = {'ffmpeg.exe': ['libgcc_s_seh-1.dll'], 'ffprobe.exe': ['avicap32.dll', 'avifil32.dll'],
                        'libgcc_s_seh-1.dll': ['libwinpthread-1.dll'],
                        'libwinpthread-1.dll': ['kernel32.dll']}
             with patch('scripts.build_desktop.windows_imports', side_effect=lambda p: imports[p.name]), \

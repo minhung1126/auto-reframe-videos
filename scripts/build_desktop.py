@@ -27,7 +27,7 @@ WINDOWS_SYSTEM_DLLS = {'kernel32.dll', 'msvcrt.dll', 'ucrtbase.dll', 'user32.dll
     'secur32.dll', 'crypt32.dll', 'winmm.dll', 'version.dll', 'psapi.dll', 'shlwapi.dll',
     'imm32.dll', 'setupapi.dll', 'd3d11.dll', 'dxgi.dll', 'dxva2.dll', 'dwmapi.dll',
     'mf.dll', 'mfplat.dll', 'mfuuid.dll', 'strmiids.dll', 'cfgmgr32.dll', 'avrt.dll', 'ntdll.dll',
-    'normaliz.dll', 'comdlg32.dll', 'comctl32.dll'}
+    'normaliz.dll', 'comdlg32.dll', 'comctl32.dll', 'avicap32.dll', 'avifil32.dll'}
 
 
 def windows_imports(path):
@@ -56,7 +56,12 @@ def bundle_windows_runtime(vendor, toolchain):
         if name in visited:
             continue
         visited.add(name)
-        for dependency in windows_imports(vendor / 'bin' / name):
+        dependencies = windows_imports(vendor / 'bin' / name)
+        unapproved = sorted({dll for dll in dependencies
+                             if not system_dll(dll) and dll not in WINDOWS_RUNTIME_DLLS})
+        if unapproved:
+            raise ValueError('Unapproved FFmpeg runtime dependencies: ' + ', '.join(unapproved))
+        for dependency in dependencies:
             if system_dll(dependency):
                 continue
             if dependency not in WINDOWS_RUNTIME_DLLS:
