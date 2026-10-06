@@ -129,6 +129,15 @@ def build_vendor(target, destination):
     if windows:
         run('make', 'PREFIX=' + prefix.as_posix(), 'install', cwd=sources['nvcodec'])
         shutil.copytree(sources['amf'] / 'amf' / 'public' / 'include', prefix / 'include' / 'AMF', dirs_exist_ok=True)
+        # MinGW supplies the secure wide-string functions. The upstream legacy
+        # MSVC fallback must not replace them while Windows headers are parsed.
+        definitions = sources['vpl'] / 'libvpl/src/windows/mfx_dispatcher_defs.h'
+        original = definitions.read_text()
+        old = '#if _MSC_VER < 1400'
+        new = '#if defined(_MSC_VER) && _MSC_VER < 1400'
+        if old not in original and new not in original:
+            raise RuntimeError('Unexpected oneVPL secure-string compatibility guard')
+        definitions.write_text(original.replace(old, new))
         cmake('vpl', '-DBUILD_SHARED_LIBS=OFF', '-DBUILD_DEV=OFF', '-DBUILD_TOOLS=OFF', '-DBUILD_TESTS=OFF', '-DINSTALL_EXAMPLE_CODE=OFF')
         hardware = ['--enable-ffnvcodec', '--enable-cuda', '--enable-cuvid', '--enable-nvdec',
                     '--enable-nvenc', '--enable-amf', '--enable-libvpl', '--enable-d3d11va', '--enable-dxva2']
@@ -183,6 +192,8 @@ def build_vendor(target, destination):
         'build_recipe_url': f'https://github.com/minhung1126/auto-reframe-videos/blob/{revision}/scripts/build_ffmpeg_vendor.py',
         'corresponding_sources': {name: entries[name]['url'] for name in names},
         'components': {name: entries[name] for name in names}, 'runtime_license_sources': runtime_sources}
+    if windows:
+        provenance['patches'] = {'vpl': 'Restrict legacy wcscpy_s/wcscat_s fallback to old MSVC; MinGW provides these functions.'}
     (destination / 'provenance.json').write_text(json.dumps(provenance, indent=2) + '\n', encoding='utf-8')
     print('Native FFmpeg vendor bundle:', destination)
 

@@ -33,7 +33,7 @@ def macho_minimum_versions(commands):
     for line in commands.splitlines():
         if line.strip().startswith('cmd '):
             field = {'cmd LC_BUILD_VERSION': 'minos',
-                     'cmd LC_VERSION_MIN_MACOS': 'version'}.get(line.strip())
+                     'cmd LC_VERSION_MIN_MACOSX': 'version'}.get(line.strip())
         if field:
             match = re.match(r'\s*' + field + r'\s+(\d+\.\d+(?:\.\d+)?)', line)
             if match:

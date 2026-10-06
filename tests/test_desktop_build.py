@@ -19,7 +19,7 @@ from scripts.verify_desktop import macho_minimum_versions
 class DesktopBuildTests(unittest.TestCase):
     def test_macos_floor_uses_minos_and_excludes_linker_tool_version(self):
         modern = 'cmd LC_BUILD_VERSION\ncmdsize 32\nplatform 1\nminos 11.0\nsdk 15.5\nntools 1\ntool LD\nversion 1167.5\n'
-        legacy = 'cmd LC_VERSION_MIN_MACOS\nversion 10.13\nsdk 12.1\n'
+        legacy = 'cmd LC_VERSION_MIN_MACOSX\nversion 10.13\nsdk 12.1\n'
         self.assertEqual(macho_minimum_versions(modern + legacy), ['11.0', '10.13'])
 
     def test_source_download_checksum_and_archive_escape_are_rejected(self):
