@@ -34,6 +34,13 @@ def prepare_source(name, entry, cache, destination):
     destination.mkdir(parents=True)
     with tarfile.open(archive) as bundle:
         members = bundle.getmembers()
+        if name == 'amf':
+            # AMF's source archive also contains large prebuilt samples. Only
+            # public headers and the upstream license are build inputs.
+            archive_root = members[0].name.rstrip('/')
+            members = [m for m in members if
+                       m.name.startswith(archive_root + '/amf/public/include/') or
+                       m.name == archive_root + '/LICENSE.txt']
         if sum(m.size for m in members) > 512 * 1024 * 1024:
             raise RuntimeError('Source archive exceeds limit')
         bundle.extractall(destination, filter='data')
