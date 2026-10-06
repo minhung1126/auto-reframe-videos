@@ -80,6 +80,9 @@ def validate_vendor(vendor, target):
     required = ['libx264', 'libx265', 'aac'] + (['h264_videotoolbox', 'hevc_videotoolbox'] if target.startswith('macos') else ['h264_nvenc', 'hevc_nvenc', 'h264_amf', 'hevc_amf', 'h264_qsv', 'hevc_qsv'])
     if any(not re.search(r'\b' + name + r'\b', encoders) for name in required):
         raise ValueError('FFmpeg lacks a required encoder')
+    decoders = run(ffmpeg, '-decoders', capture_output=True, text=True).stdout
+    if not re.search(r'\bpng\b', decoders):
+        raise ValueError('FFmpeg lacks the PNG watermark decoder')
     filters = run(ffmpeg, '-filters', capture_output=True, text=True).stdout
     if any(not re.search(r'\b' + name + r'\b', filters) for name in ('drawtext', 'scale', 'crop', 'pad', 'overlay', 'split', 'colorchannelmixer')):
         raise ValueError('FFmpeg lacks a required filter')

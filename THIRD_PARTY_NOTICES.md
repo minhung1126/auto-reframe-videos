@@ -27,7 +27,8 @@ The application's All Rights Reserved notice does not replace any third-party li
 FFmpeg with libx264 and libx265 is a GPL distribution. `--enable-nonfree` builds are rejected.
 Each reviewed vendor bundle must contain `provenance.json` with exact versions, build recipe,
 SHA-256 hashes, corresponding source downloads and license records for all components.
-The default build uses FFmpeg 8.0.1, x264, x265, FreeType 2.13.3 and HarfBuzz 12.1.0.
+The default build uses FFmpeg 8.0.1, x264, x265, FreeType 2.13.3, HarfBuzz 12.1.0
+and zlib 1.3.1 (zlib license, used for PNG watermarks).
 Windows additionally uses oneVPL 2.13.0, NVIDIA codec headers and AMD AMF headers.
 Exact upstream commits, source archive URLs and SHA-256 hashes are recorded in
 `packaging/ffmpeg-sources.json` and each installer's provenance. FreeType uses its FTL

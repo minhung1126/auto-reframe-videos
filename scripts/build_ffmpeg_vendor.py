@@ -54,10 +54,12 @@ def build_vendor(target, destination):
     cache.mkdir(parents=True, exist_ok=True)
     prefix.mkdir(parents=True, exist_ok=True)
     entries = json.loads((ROOT / 'packaging' / 'ffmpeg-sources.json').read_text())
-    names = ['ffmpeg', 'x264', 'x265', 'freetype', 'harfbuzz']
+    names = ['ffmpeg', 'x264', 'x265', 'freetype', 'harfbuzz', 'zlib']
     if windows:
         names += ['nvcodec', 'amf', 'vpl']
     sources = {name: prepare_source(name, entries[name], cache, workspace / ('src-' + name)) for name in names}
+    # Archive snapshots must not inherit this application's parent Git version.
+    (sources['ffmpeg'] / 'VERSION').write_text(entries['ffmpeg']['version'] + '\n')
     jobs = str(min(8, os.cpu_count() or 2))
     env = dict(os.environ)
     env['PKG_CONFIG_PATH'] = str(prefix / 'lib' / 'pkgconfig')
@@ -67,7 +69,7 @@ def build_vendor(target, destination):
     def run(*args, cwd=None):
         print('Building:', args[0], flush=True)
         subprocess.run([str(a) for a in args], cwd=cwd or workspace, env=env, check=True)
-    def cmake(name, *options, source=None):
+    def cmake(name, *options, source=None, install=True):
         directory = workspace / ('cmake-' + name)
         command = ['cmake', '-S', str(source or sources[name]), '-B', str(directory), '-G', 'Ninja',
                    '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_INSTALL_PREFIX=' + prefix.as_posix(),
@@ -79,7 +81,16 @@ def build_vendor(target, destination):
             command += ['-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0', '-DCMAKE_OSX_ARCHITECTURES=' + ('arm64' if target.endswith('arm64') else 'x86_64')]
         run(*command, *options)
         run('cmake', '--build', directory, '--parallel', jobs)
-        run('cmake', '--install', directory)
+        if install:
+            run('cmake', '--install', directory)
+        return directory
+    zlib_build = cmake('zlib', '-DZLIB_BUILD_EXAMPLES=OFF', install=False)
+    static_zlib = zlib_build / ('libzlibstatic.a' if windows else 'libz.a')
+    (prefix / 'lib').mkdir(exist_ok=True)
+    (prefix / 'include').mkdir(exist_ok=True)
+    shutil.copyfile(static_zlib, prefix / 'lib' / 'libz.a')
+    shutil.copyfile(sources['zlib'] / 'zlib.h', prefix / 'include' / 'zlib.h')
+    shutil.copyfile(zlib_build / 'zconf.h', prefix / 'include' / 'zconf.h')
     cmake('freetype', '-DFT_DISABLE_ZLIB=ON', '-DFT_DISABLE_BZIP2=ON', '-DFT_DISABLE_PNG=ON',
           '-DFT_DISABLE_HARFBUZZ=ON', '-DFT_DISABLE_BROTLI=ON')
     cmake('harfbuzz', '-DHB_BUILD_UTILS=OFF', '-DHB_BUILD_SUBSET=OFF', '-DHB_BUILD_TESTS=OFF',
@@ -108,7 +119,7 @@ def build_vendor(target, destination):
                     '--enable-nvenc', '--enable-amf', '--enable-libvpl', '--enable-d3d11va', '--enable-dxva2']
     configure = ['sh', './configure', '--prefix=' + prefix.as_posix(), '--enable-static', '--disable-shared',
                  '--disable-debug', '--disable-doc', '--disable-ffplay', '--disable-autodetect',
-                 '--enable-gpl', '--enable-libx264', '--enable-libx265', '--enable-libfreetype',
+                 '--enable-gpl', '--enable-zlib', '--enable-libx264', '--enable-libx265', '--enable-libfreetype',
                  '--enable-libharfbuzz', '--pkg-config-flags=--static', '--extra-cflags=-I' + (prefix / 'include').as_posix(),
                  '--extra-ldflags=-L' + (prefix / 'lib').as_posix()] + hardware
     if macos:
@@ -133,7 +144,7 @@ def build_vendor(target, destination):
         'freetype': ['docs/FTL.TXT'], 'harfbuzz': ['COPYING'],
         'nvcodec': ['include/ffnvcodec/' + h for h in ('dynlink_cuda.h', 'dynlink_cuviddec.h',
                     'dynlink_loader.h', 'dynlink_nvcuvid.h', 'nvEncodeAPI.h')],
-        'amf': ['LICENSE.txt', 'LICENSE'], 'vpl': ['LICENSE'],
+        'amf': ['LICENSE.txt', 'LICENSE'], 'vpl': ['LICENSE'], 'zlib': ['LICENSE'],
     }
     for name in names:
         files = [sources[name] / p for p in license_patterns[name] if (sources[name] / p).is_file()]

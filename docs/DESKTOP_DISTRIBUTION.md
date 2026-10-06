@@ -40,7 +40,7 @@ Mac app or uninstalling Windows leaves settings and the external workspace intac
 
 ## Reviewed FFmpeg inputs
 
-The default native CI build compiles FFmpeg 8.0.1, x264, x265, FreeType and HarfBuzz
+The default native CI build compiles FFmpeg 8.0.1, x264, x265, FreeType, HarfBuzz and zlib
 from the exact commits and SHA-256 archives in `packaging/ffmpeg-sources.json`.
 Windows also compiles oneVPL and includes pinned NVIDIA codec and AMD AMF headers.
 `scripts/build_ffmpeg_vendor.py` builds static dependencies, copies their license texts,
