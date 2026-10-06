@@ -79,8 +79,13 @@ def smoke_bundle(app, target, report):
     for key in ('PYTHONPATH', 'PYTHONHOME', 'TCL_LIBRARY', 'TK_LIBRARY'):
         env.pop(key, None)
     # macOS Finder supplies a different cwd; use a directory outside the bundle.
-    subprocess.run([str(executable.resolve()), '--desktop-smoke', str(report)],
-                   check=True, timeout=240, cwd=report.parent, env=env)
+    try:
+        subprocess.run([str(executable.resolve()), '--desktop-smoke', str(report)],
+                       check=True, timeout=240, cwd=report.parent, env=env)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        if report.is_file():
+            print(report.read_text(encoding='utf-8'), flush=True)
+        raise
     if not report.is_file() or json.loads(report.read_text(encoding='utf-8')).get('status') != 'passed':
         raise RuntimeError('Frozen smoke test did not pass')
 

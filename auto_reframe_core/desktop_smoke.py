@@ -16,6 +16,9 @@ def run_desktop_smoke(report, *, verify_tk=True):
     from auto_reframe_core.reframe import ReframeConfig, VideoReframer
     from auto_reframe_core.video_utils import get_video_info
 
+    def progress(stage):
+        Path(report).write_text(json.dumps({'status': 'running', 'stage': stage}), encoding='utf-8')
+    progress('Tk initialization')
     tk_version = None
     if verify_tk:
         root = tk.Tk()
@@ -23,6 +26,7 @@ def run_desktop_smoke(report, *, verify_tk=True):
         root.update()
         tk_version = root.tk.call('info', 'patchlevel')
         root.destroy()
+    progress('Generate source media')
     ffmpeg, ffprobe = tool_path('ffmpeg'), tool_path('ffprobe')
     with tempfile.TemporaryDirectory(prefix='arv-中文 空白-') as temp:
         workspace = Path(temp)
@@ -39,15 +43,18 @@ def run_desktop_smoke(report, *, verify_tk=True):
                       ffmpeg_path=ffmpeg, ffprobe_path=ffprobe, max_workers=1,
                       watermark_enabled=True, watermark_file=str(watermark),
                       watermark_width_ratio=0.15, skip_existing=False)
+        progress('Initialize Reframe encoders')
         reframe = VideoReframer(ReframeConfig(**common,
             font_path=str(resource_root() / 'fonts' / 'NotoSerifTC.ttf'),
             top_text_override='中文 100%\n上方文字', bottom_text_override='下方文字',
             targets=[{'ratio': (4, 5), 'resolution': 'source', 'vcodec': 'h264'},
                      {'ratio': (4, 5), 'resolution': 'source', 'vcodec': 'h265'}]))
+        progress('Initialize Compress encoders')
         compress = VideoCompressor(CompressConfig(**common,
             targets=[{'resolution': 'source', 'vcodec': 'h264'},
                      {'resolution': 'source', 'vcodec': 'h265'}]))
         for processor in (reframe, compress):
+            progress('Transcode ' + type(processor).__name__)
             processor.h264_encoder, processor.h264_hwaccel = 'libx264', None
             processor.h265_encoder, processor.h265_hwaccel = 'libx265', None
             successes, failures = processor.run()

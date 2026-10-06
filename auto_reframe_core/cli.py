@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     from auto_reframe_core.runtime_paths import is_frozen, logs_root
     if is_frozen():
+        if sys.platform == "win32":
+            import ctypes
+            # Child FFmpeg processes inherit this mode; loader failures must
+            # return errors instead of blocking unattended jobs in OS dialogs.
+            ctypes.windll.kernel32.SetErrorMode(0x0001 | 0x0002 | 0x8000)
         # Windowed PyInstaller builds have no standard streams.
         for name in ("stdout", "stderr"):
             if getattr(sys, name) is None:
@@ -51,7 +56,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.desktop_smoke:
         from auto_reframe_core.desktop_smoke import run_desktop_smoke
-        return run_desktop_smoke(args.desktop_smoke)
+        try:
+            return run_desktop_smoke(args.desktop_smoke)
+        except Exception:
+            import json
+            import traceback
+            from pathlib import Path
+            Path(args.desktop_smoke).write_text(json.dumps(
+                {"status": "failed", "error": traceback.format_exc()},
+                ensure_ascii=False, indent=2), encoding="utf-8")
+            return 1
 
     if is_frozen():
         from auto_reframe_core.platform_profile import register_installer_mutex
