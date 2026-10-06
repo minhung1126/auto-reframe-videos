@@ -25,6 +25,10 @@ def unpack_vendor(archive, destination):
             raise ValueError('Vendor ZIP exceeds limits')
         seen = set()
         for entry in entries:
+            # Windows ZipInfo normalizes separators while reading. Inspect the
+            # original archive name before that transformation or NUL truncation.
+            if entry.orig_filename != entry.filename or '\\' in entry.orig_filename:
+                raise ValueError('Non-canonical vendor ZIP path')
             path = PurePosixPath(entry.filename)
             if any(part in ('', '.', '..') for part in entry.filename.rstrip('/').split('/')):
                 raise ValueError('Non-canonical vendor ZIP path')
