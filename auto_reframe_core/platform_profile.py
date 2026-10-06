@@ -3,6 +3,7 @@
 
 from dataclasses import dataclass
 import os
+import platform
 import subprocess
 import sys
 from typing import Dict, Optional
@@ -76,3 +77,40 @@ def hidden_subprocess_kwargs(
     if not (profile or current_platform()).is_windows:
         return {}
     return {"creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
+def desktop_target(system=None, machine=None):
+    """Select by running process architecture, including an Intel app under Rosetta."""
+    system = system or sys.platform
+    machine = (machine or platform.machine()).lower()
+    cpu = {"amd64": "x64", "x86_64": "x64", "arm64": "arm64", "aarch64": "arm64"}.get(machine)
+    if system == "darwin" and cpu in ("arm64", "x64"):
+        return f"macos-{cpu}"
+    if system == "win32" and cpu == "x64":
+        return "windows-x64"
+    raise ValueError(f"不支援的桌面平台／架構：{system}/{machine}")
+
+
+def desktop_asset_name(version, target=None):
+    target = target or desktop_target()
+    if target not in ("macos-arm64", "macos-x64", "windows-x64"):
+        raise ValueError(f"不支援的桌面成品：{target}")
+    extension = "-Setup.exe" if target == "windows-x64" else ".dmg"
+    return f"auto-reframe-videos-v{version}-{target}{extension}"
+
+
+_installer_mutex = None
+
+
+def register_installer_mutex():
+    """Expose a process-lifetime mutex so Inno Setup refuses a live application."""
+    global _installer_mutex
+    if current_platform().is_windows:
+        import ctypes
+        from ctypes import wintypes
+        create = ctypes.windll.kernel32.CreateMutexW
+        create.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
+        create.restype = wintypes.HANDLE
+        _installer_mutex = create(None, False, "AutoReframeVideosDesktop")
+        if not _installer_mutex:
+            raise OSError("Unable to create installer mutex")

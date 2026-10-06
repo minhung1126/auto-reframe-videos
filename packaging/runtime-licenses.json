@@ -1,0 +1,18 @@
+{
+  "Python": {
+    "url": "https://raw.githubusercontent.com/python/cpython/0fb18b02c8ad56299d6a2910be0bab8ad601ef24/LICENSE",
+    "sha256": "3b2f81fe21d181c499c59a256c8e1968455d6689d269aa85373bfb6af41da3bf"
+  },
+  "Tcl": {
+    "url": "https://raw.githubusercontent.com/tcltk/tcl/874e4fe4264a40c00c4db5115afba9600f9f368d/license.terms",
+    "sha256": "c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16"
+  },
+  "Tk": {
+    "url": "https://raw.githubusercontent.com/tcltk/tk/9ce7ed45cf35f91e8d77a0d295069f4e9af297f4/license.terms",
+    "sha256": "2cde822b93ca16ae535c954b7dfe658b4ad10df2a193628d1b358f1765e8b198"
+  },
+  "GCC-runtime-exception": {
+    "url": "https://raw.githubusercontent.com/gcc-mirror/gcc/5115c7e447fc07457443df874bf57840e8316d5f/COPYING.RUNTIME",
+    "sha256": "9d6b43ce4d8de0c878bf16b54d8e7a10d9bd42b75178153e3af6a815bdc90f74"
+  }
+}

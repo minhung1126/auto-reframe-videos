@@ -29,7 +29,7 @@ python -m auto_reframe_core --help
 - Windows：`run.bat`
 - macOS：`run.command`
 
-GUI 的輸入與輸出路徑固定為專案內的 `input/` 與 `output/`，不可編輯。程式每次啟動都會自動建立缺少的 `input/`、`output/` 與 `watermark/`。
+GUI 的輸入、輸出與浮水印固定使用同一個影片工作區下的 `input/`、`output/`、`watermark/`。桌面版首次啟動選擇工作區；原始碼版預設沿用原專案資料夾。可在「關於／更新」更換工作區，儲存後重新啟動；原影片留在原位置。
 
 開始處理前，GUI 只檢查本次輸出 targets 可能使用的同名子資料夾；不相關的
 `output/` 內容不會阻擋工作。若匹配的資料夾已有內容，可選擇略過既有同名檔、
@@ -55,15 +55,17 @@ GUI 以主頁簽區分功能：
 ### GUI 設定檔
 
 - `config.json.example`：會加入 Git 的完整預設設定，也是 GUI 的預設值來源。
-- `config.json`：按下 GUI 的「儲存設定」後產生，啟動時會自動載入。
-- `config.json` 已加入 `.gitignore`，不會提交個人的工作設定。
+- `config.json`：儲存在 macOS `~/Library/Application Support/Auto Reframe Videos` 或 Windows `%LOCALAPPDATA%\Auto Reframe Videos`；按下「儲存設定」後產生並自動載入。原始碼版也使用使用者資料目錄。
+- 舊版專案的 `config.json` 可由「關於／更新 → 匯入舊版設定與工作區」複製匯入，原檔不變；原始碼版第一次啟動也會在尚無新設定時匯入舊設定。
 - 按下「還原預設」會刪除 `config.json`，重新使用 `config.json.example`。
 
-輸入／輸出路徑刻意不放進設定檔，永遠固定為專案內的 `input/` 與 `output/`。
+工作區根目錄獨立儲存在 `workspace.json`；輸入／輸出子資料夾固定為 `input/` 與 `output/`，還原程式預設不會變更工作區。
 
 ### 軟體更新
 
-GUI 的「關於／更新」頁籤可手動檢查與安裝更新。更新程式只接受
+桌面版在「關於／更新」檢查版本後，只開啟對應 OS／CPU 的 `.dmg` 或 `Setup.exe` 下載入口；先關閉程式，再覆蓋安裝。設定與影片工作區不會刪除。
+
+原始碼版的「關於／更新」頁籤可手動檢查與安裝原始碼 ZIP 更新。更新程式只接受
 `minhung1126/auto-reframe-videos` 的最新正式 GitHub Release，並驗證 GitHub
 Releases API 提供的 SHA-256 digest 與 Release 內的逐檔 manifest。
 
@@ -97,6 +99,12 @@ Releases API 提供的 SHA-256 digest 與 Release 內的逐檔 manifest。
 輸出會依裁切比例與解析度分類存放至 `output/` 資料夾。
 
 ---
+
+## 桌面安裝版建置
+
+使用 PyInstaller 共用核心，分別在 macOS arm64、macOS x64、Windows x64 原生建置。安裝版包含 Python、Tcl/Tk、FFmpeg／FFprobe、字型與 HTTPS CA 憑證；Windows 不開啟終端機視窗。
+
+桌面版固定產生供自行使用的未簽署安裝檔，不需要 Apple Developer 或 Windows 簽署憑證。建置、FFmpeg 授權與乾淨環境／實機驗收請見 [桌面分發文件](docs/DESKTOP_DISTRIBUTION.md)。目前 macOS 最低版本候選為 13.0，仍須實機驗收；自動更新、Windows ARM64 與商店版另列第二階段。
 
 ## 專案結構
 
@@ -191,7 +199,7 @@ watermark/               # 固定 PNG 浮水印目錄（Git 忽略內容）
 | `video_extensions` | `{".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"}` | 腳本會掃描的影片副檔名集合 |
 | `skip_existing` | `True` | `True` 時若輸出檔案已存在則跳過，設為 `False` 可強制重新轉換 |
 | `max_workers` | `0` | 同時平行處理的影片數量。`0` 代表自動判斷；目前上限為 macOS=4、其他平台=8 |
-| `debug` | `False` | `True` 時會將 FFmpeg 的完整輸出記錄至腳本目錄下的 `ffmpeg_debug_<檔名>_<比例>.log` |
+| `debug` | `False` | `True` 時會將 FFmpeg 的完整輸出記錄至使用者資料目錄 `logs/` 下的 `ffmpeg_debug_<檔名>_<比例>.log` |
 
 ---
 
@@ -278,7 +286,7 @@ output/
 pip install tqdm
 ```
 
-> `tqdm` 為選擇性依賴，未安裝時會回退至傳統文字進度輸出。FFmpeg 與 FFprobe 需另行安裝並加入系統 PATH。
+> `tqdm` 為選擇性依賴，未安裝時會回退至傳統文字進度輸出。原始碼版的 FFmpeg 與 FFprobe 需另行安裝並加入系統 PATH；桌面安裝版使用隨附執行檔。
 
 Tkinter 通常隨 Windows 的 python.org 安裝程式提供。macOS 若使用精簡或 Homebrew Python 而無法 `import tkinter`，請安裝對應的 Tcl/Tk 套件，或改用包含 Tk 的 python.org 版本。
 

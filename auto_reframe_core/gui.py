@@ -56,6 +56,10 @@ from auto_reframe_core.updater import (
     launch_installer,
     prepare_update,
 )
+from auto_reframe_core.runtime_paths import (
+    resource_root, user_data_root, is_frozen, tool_path, load_workspace,
+    save_workspace, validate_workspace, import_legacy_settings, migrate_legacy_project,
+)
 from auto_reframe_core.version import __version__
 from auto_reframe_core.output_plans import (
     delete_target_output_conflicts,
@@ -65,13 +69,14 @@ from auto_reframe_core.platform_profile import open_directory
 from auto_reframe_core.video_utils import VideoProgressEvent, h264, h265
 
 
-SCRIPT_DIR = Path(__file__).resolve().parents[1]
-CONFIG_PATH = SCRIPT_DIR / "config.json"
+SCRIPT_DIR = resource_root()
+CONFIG_PATH = user_data_root() / "config.json"
 CONFIG_EXAMPLE_PATH = SCRIPT_DIR / "config.json.example"
 INPUT_DIR = SCRIPT_DIR / "input"
 OUTPUT_DIR = SCRIPT_DIR / "output"
 WATERMARK_DIR = SCRIPT_DIR / "watermark"
-UPDATE_ERROR_PATH = SCRIPT_DIR / "update-error.log"
+UPDATE_ERROR_PATH = (user_data_root() / "logs" / "update-error.log"
+                     if is_frozen() else SCRIPT_DIR / "update-error.log")
 CREDIT_SYMBOL = "©"
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"
@@ -669,8 +674,8 @@ class AutoReframeGUI:
         self.top_spacing_var = tk.StringVar(value=str(settings["top_spacing"]))
         self.bottom_spacing_var = tk.StringVar(value=str(settings["bottom_spacing"]))
 
-        self.ffmpeg_var = tk.StringVar(value=str(settings["ffmpeg"]))
-        self.ffprobe_var = tk.StringVar(value=str(settings["ffprobe"]))
+        self.ffmpeg_var = tk.StringVar(value=tool_path("ffmpeg", settings["ffmpeg"]))
+        self.ffprobe_var = tk.StringVar(value=tool_path("ffprobe", settings["ffprobe"]))
         self.workers_var = tk.StringVar(value=str(settings["workers"]))
         self.skip_existing_var = tk.BooleanVar(value=bool(settings["skip_existing"]))
         self.debug_var = tk.BooleanVar(value=bool(settings["debug"]))
@@ -1213,6 +1218,8 @@ class AutoReframeGUI:
             text=f"github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases",
         ).grid(row=1, column=1, sticky="w", pady=4)
 
+        ttk.Button(about, text="選擇影片工作區…", command=self.choose_workspace).grid(row=2, column=0, pady=8)
+        ttk.Button(about, text="匯入舊版設定與工作區…", command=self.import_old_settings).grid(row=2, column=1, sticky="w", pady=8)
         updater = ttk.LabelFrame(self.update_tab, text="軟體更新", padding=12)
         updater.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         updater.columnconfigure(0, weight=1)
@@ -1231,7 +1238,7 @@ class AutoReframeGUI:
         self.check_update_button.grid(row=1, column=0, sticky="w", pady=(10, 8))
         self.install_update_button = ttk.Button(
             updater,
-            text="下載並安裝",
+            text="下載安裝檔" if is_frozen() else "下載並安裝",
             command=self.install_update,
             state="disabled",
         )
@@ -1276,25 +1283,72 @@ class AutoReframeGUI:
         )
         updater.rowconfigure(4, weight=1)
 
+    def save_settings_for_upgrade(self):
+        settings = self._collect_settings()
+        normalize_target_sets(settings)
+        normalize_watermark_settings(settings)
+        save_config(CONFIG_PATH, settings)
+
+    def import_old_settings(self):
+        if self.running or self.update_busy:
+            messagebox.showinfo("請稍候", "請等影片處理與更新完成後再匯入。", parent=self.root)
+            return
+        selected = filedialog.askdirectory(title="選擇舊版專案資料夾", parent=self.root)
+        if not selected:
+            return
+        if CONFIG_PATH.exists() and not messagebox.askyesno("匯入設定", "以舊版設定取代目前已儲存的設定？原檔與影片會保留。", parent=self.root):
+            return
+        try:
+            workspace = validate_workspace(selected)
+            workspace.ensure()
+            def validate(settings):
+                defaults = load_config(CONFIG_EXAMPLE_PATH) or {}
+                defaults.update(settings)
+                normalize_target_sets(defaults)
+                normalize_watermark_settings(defaults)
+            migrate_legacy_project(selected, CONFIG_PATH.parent, validate)
+        except (ConfigStoreError, OSError, ValueError) as exc:
+            messagebox.showerror("無法匯入", str(exc), parent=self.root)
+            return
+        messagebox.showinfo("已匯入", "請重新啟動程式以使用舊設定與原影片工作區。", parent=self.root)
+        self.root.destroy()
+
+    def choose_workspace(self):
+        if self.running or self.update_busy:
+            messagebox.showinfo("請稍候", "請等影片處理與更新完成後再切換工作區。", parent=self.root)
+            return
+        selected = filedialog.askdirectory(title="選擇影片工作區", parent=self.root)
+        if not selected:
+            return
+        try:
+            self.save_settings_for_upgrade()
+            save_workspace(validate_workspace(selected))
+        except (ConfigStoreError, OSError, ValueError) as exc:
+            messagebox.showerror("無法儲存工作區", str(exc), parent=self.root)
+            return
+        messagebox.showinfo("已儲存工作區", "請重新啟動程式以使用新工作區。原影片會留在原資料夾。", parent=self.root)
+        self.root.destroy()
+
     def _advanced_path_row(self, label, variable, row):
         ttk.Label(self.advanced_tab, text=label).grid(
             row=row, column=0, sticky="w", padx=(0, 8), pady=5
         )
-        ttk.Entry(self.advanced_tab, textvariable=variable).grid(
+        ttk.Entry(self.advanced_tab, textvariable=variable, state="readonly" if is_frozen() else "normal").grid(
             row=row, column=1, sticky="ew", pady=5
         )
         ttk.Button(
             self.advanced_tab,
             text="選擇…",
             command=lambda target=variable: self._browse_executable(target),
+            state="disabled" if is_frozen() else "normal",
         ).grid(row=row, column=2, padx=(8, 0), pady=5)
 
     def _load_initial_text(self):
         top_text = self.settings.get(
-            "top_text", _read_optional_text(SCRIPT_DIR / "top_text.txt")
+            "top_text", _read_optional_text(INPUT_DIR.parent / "top_text.txt")
         )
         bottom_text = self.settings.get(
-            "bottom_text", _read_optional_text(SCRIPT_DIR / "bottom_text.txt")
+            "bottom_text", _read_optional_text(INPUT_DIR.parent / "bottom_text.txt")
         )
         self.top_text.insert("1.0", str(top_text))
         self.bottom_text.insert("1.0", str(bottom_text))
@@ -1382,7 +1436,7 @@ class AutoReframeGUI:
 
     def _run_update_check(self):
         try:
-            info = check_for_update()
+            info = check_for_update(desktop=is_frozen())
         except BaseException as exc:
             self.event_queue.put(("update_check_error", f"{type(exc).__name__}: {exc}"))
         else:
@@ -1399,7 +1453,7 @@ class AutoReframeGUI:
                 f"{immutable_text}）。"
             )
             allowed, _reason = can_self_update(SCRIPT_DIR)
-            if allowed and not self.running:
+            if (allowed or is_frozen()) and not self.running:
                 self.install_update_button.configure(state="normal")
             self.status_var.set(f"可更新至 v{info.latest_version}")
         else:
@@ -1422,6 +1476,18 @@ class AutoReframeGUI:
         messagebox.showerror("無法檢查更新", error, parent=self.root)
 
     def install_update(self):
+        if is_frozen():
+            if self.running or self.update_busy or not self.update_info or not self.update_info.available:
+                return
+            try:
+                self.save_settings_for_upgrade()
+                if not webbrowser.open(self.update_info.download_url):
+                    raise webbrowser.Error("無法啟動瀏覽器，請使用 Release 頁面的下載連結。")
+            except (ConfigStoreError, OSError, ValueError, webbrowser.Error) as exc:
+                messagebox.showerror("無法下載更新", str(exc), parent=self.root)
+                return
+            messagebox.showinfo("手動升級", "下載後請關閉程式，再安裝新版。設定與影片工作區會保留。", parent=self.root)
+            return
         if self.update_busy or self.update_info is None or not self.update_info.available:
             return
         if self.running:
@@ -1689,8 +1755,8 @@ class AutoReframeGUI:
             input_dir=str(input_dir),
             output_dir=str(output_dir),
             targets=[dict(target) for target in self.targets[mode]],
-            ffmpeg_path=self.ffmpeg_var.get().strip() or "ffmpeg",
-            ffprobe_path=self.ffprobe_var.get().strip() or "ffprobe",
+            ffmpeg_path=tool_path("ffmpeg", self.ffmpeg_var.get().strip()),
+            ffprobe_path=tool_path("ffprobe", self.ffprobe_var.get().strip()),
             skip_existing=self.skip_existing_var.get(),
             max_workers=workers,
             debug=self.debug_var.get(),
@@ -1725,10 +1791,15 @@ class AutoReframeGUI:
     def _collect_settings(self) -> dict:
         """Collect GUI state without mutable input/output directory settings."""
         font_path = Path(self.font_path_var.get()).expanduser()
-        try:
-            font_value = font_path.resolve().relative_to(SCRIPT_DIR).as_posix()
-        except ValueError:
-            font_value = str(font_path.resolve())
+        if font_path.resolve() == (SCRIPT_DIR / "fonts" / "NotoSerifTC.ttf").resolve():
+            # macOS bundles symlink data from Frameworks into Resources.
+            # Preserve the resource identity across moves and replacement installs.
+            font_value = "fonts/NotoSerifTC.ttf"
+        else:
+            try:
+                font_value = font_path.resolve().relative_to(SCRIPT_DIR).as_posix()
+            except ValueError:
+                font_value = str(font_path.resolve())
 
         watermarks = {}
         for mode in ("reframe", "compress"):
@@ -1789,8 +1860,8 @@ class AutoReframeGUI:
             "text_margin": int(self.text_margin_var.get()),
             "top_spacing": float(self.top_spacing_var.get()),
             "bottom_spacing": float(self.bottom_spacing_var.get()),
-            "ffmpeg": self.ffmpeg_var.get().strip() or "ffmpeg",
-            "ffprobe": self.ffprobe_var.get().strip() or "ffprobe",
+            "ffmpeg": "ffmpeg" if is_frozen() else self.ffmpeg_var.get().strip() or "ffmpeg",
+            "ffprobe": "ffprobe" if is_frozen() else self.ffprobe_var.get().strip() or "ffprobe",
             "workers": int(self.workers_var.get()),
             "skip_existing": bool(self.skip_existing_var.get()),
             "debug": bool(self.debug_var.get()),
@@ -1872,8 +1943,8 @@ class AutoReframeGUI:
         self.text_margin_var.set(str(settings["text_margin"]))
         self.top_spacing_var.set(str(settings["top_spacing"]))
         self.bottom_spacing_var.set(str(settings["bottom_spacing"]))
-        self.ffmpeg_var.set(str(settings["ffmpeg"]))
-        self.ffprobe_var.set(str(settings["ffprobe"]))
+        self.ffmpeg_var.set(tool_path("ffmpeg", settings["ffmpeg"]))
+        self.ffprobe_var.set(tool_path("ffprobe", settings["ffprobe"]))
         self.workers_var.set(str(settings["workers"]))
         self.skip_existing_var.set(bool(settings["skip_existing"]))
         self.debug_var.set(bool(settings["debug"]))
@@ -1881,7 +1952,7 @@ class AutoReframeGUI:
         self.top_text.delete("1.0", "end")
         self.top_text.insert(
             "1.0",
-            str(settings.get("top_text", _read_optional_text(SCRIPT_DIR / "top_text.txt"))),
+            str(settings.get("top_text", _read_optional_text(INPUT_DIR.parent / "top_text.txt"))),
         )
         self.bottom_text.delete("1.0", "end")
         self.bottom_text.insert(
@@ -1889,7 +1960,7 @@ class AutoReframeGUI:
             str(
                 settings.get(
                     "bottom_text",
-                    _read_optional_text(SCRIPT_DIR / "bottom_text.txt"),
+                    _read_optional_text(INPUT_DIR.parent / "bottom_text.txt"),
                 )
             ),
         )
@@ -2100,7 +2171,7 @@ class AutoReframeGUI:
         self._set_footer_buttons("normal")
         if self.update_info is not None and self.update_info.available:
             allowed, _reason = can_self_update(SCRIPT_DIR)
-            if allowed and not self.update_busy:
+            if (allowed or is_frozen()) and not self.update_busy:
                 self.install_update_button.configure(state="normal")
         success_count, failed_files = result
         if not self.video_progress_states:
@@ -2125,7 +2196,7 @@ class AutoReframeGUI:
             self.progress_summary_var.set("無法建立影片任務")
         if self.update_info is not None and self.update_info.available:
             allowed, _reason = can_self_update(SCRIPT_DIR)
-            if allowed and not self.update_busy:
+            if (allowed or is_frozen()) and not self.update_busy:
                 self.install_update_button.configure(state="normal")
         self.status_var.set("處理失敗")
         self._append_log(f"\n[錯誤] {error}\n")
@@ -2153,8 +2224,28 @@ class AutoReframeGUI:
 
 
 def main():
+    global INPUT_DIR, OUTPUT_DIR, WATERMARK_DIR
     root = tk.Tk()
     try:
+        workspace = load_workspace()
+        if workspace is None:
+            root.withdraw()
+            selected = filedialog.askdirectory(title="首次啟動：選擇影片工作區（可選原專案資料夾）", parent=root)
+            if not selected:
+                root.destroy()
+                return
+            workspace = validate_workspace(selected)
+            save_workspace(workspace)
+            root.deiconify()
+        workspace.ensure()
+        INPUT_DIR, OUTPUT_DIR, WATERMARK_DIR = workspace.input, workspace.output, workspace.watermark
+        if not is_frozen() and not CONFIG_PATH.exists() and (SCRIPT_DIR / "config.json").is_file():
+            def validate(settings):
+                defaults = load_config(CONFIG_EXAMPLE_PATH) or {}
+                defaults.update(settings)
+                normalize_target_sets(defaults)
+                normalize_watermark_settings(defaults)
+            import_legacy_settings(SCRIPT_DIR, CONFIG_PATH, validate)
         AutoReframeGUI(root)
     except (ConfigStoreError, OSError, ValueError) as exc:
         messagebox.showerror("無法啟動", str(exc), parent=root)

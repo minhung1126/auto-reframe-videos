@@ -252,6 +252,25 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
         self.patcher.stop()
         self.tmp_dir.cleanup()
 
+    @unittest.skipIf(__import__("os").name == "nt", "macOS bundle resource symlinks")
+    def test_bundled_font_identity_survives_resource_symlinks_and_app_moves(self):
+        resources = self.root_path / "Resources" / "fonts"
+        resources.mkdir(parents=True)
+        font = resources / "NotoSerifTC.ttf"
+        font.write_bytes(b"font fixture")
+        (self.root_path / "fonts").symlink_to(resources, target_is_directory=True)
+        import tkinter as tk
+        with patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path):
+            root = tk.Tk()
+            try:
+                root.withdraw()
+                app = AutoReframeGUI(root)
+                app.font_path_var.set(str(font.resolve()))
+                settings = app._collect_settings()
+                self.assertEqual(settings["font_path"], "fonts/NotoSerifTC.ttf")
+            finally:
+                root.destroy()
+
     def test_gui_initializes_separate_watermark_variables_with_mode_defaults(self):
         with patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path):
             import tkinter as tk

@@ -89,12 +89,24 @@ Repository hardening still to confirm:
 1. Update `VERSION` in `auto_reframe_core/version.py`.
 2. Commit and push the release-ready code to `main`.
 3. Confirm CI passes on Windows, macOS, and Linux.
+   CI must also produce all three unsigned native installers before tagging.
 4. Create and push the matching `vMAJOR.MINOR.PATCH` tag on that commit. The
    tag push starts the Release workflow, which reads the version directly from
    `auto_reframe_core.version`.
 5. Confirm that the resulting Release is marked **Immutable** and contains:
    - `auto-reframe-videos-vX.Y.Z.zip`
    - `SHA256SUMS-vX.Y.Z.txt`
+   - macOS arm64 and x64 `.dmg`, Windows x64 `Setup.exe`, each with checksum and build record.
 6. From an extracted older Release ZIP, use **關於／更新** to test the update
    and restart path. Automatic install intentionally stays disabled inside Git
    checkouts.
+
+
+## Desktop installer qualification
+
+- [ ] Complete the three-platform matrix in `docs/DESKTOP_DISTRIBUTION.md`.
+- [ ] Review pinned FFmpeg vendor hashes, corresponding sources and all component licenses.
+- [ ] Confirm personal-use installers are unsigned; no signing secrets or notarization are required.
+- [ ] Confirm all installers and source ZIP match the same version and commit.
+- [ ] Verify clean machines, physical hardware acceleration/cancellation and upgrade/data retention.
+- [ ] Confirm the three unsigned installer sidecars and checksums pass `scripts.verify_desktop_set`.

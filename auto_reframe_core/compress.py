@@ -7,6 +7,7 @@ Auto Compress Video (H.264 / H.265)
 
 import sys
 from pathlib import Path
+from auto_reframe_core.runtime_paths import resource_root, tool_path, logs_root, load_workspace
 from dataclasses import dataclass, field
 from typing import List, Tuple
 from queue import Queue
@@ -87,7 +88,9 @@ class VideoCompressor:
     def __init__(self, config: CompressConfig, progress_callback=None):
         self.config = config
         self.progress_callback = progress_callback
-        self.script_dir = Path(__file__).resolve().parents[1]
+        self.script_dir = resource_root()
+        self.config.ffmpeg_path = tool_path("ffmpeg", self.config.ffmpeg_path)
+        self.config.ffprobe_path = tool_path("ffprobe", self.config.ffprobe_path)
         self._validate_config()
         self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
         self.h264_encoder, self.h264_hwaccel = detect_h264_hw_encoder(self.config.ffmpeg_path)
@@ -197,7 +200,7 @@ class VideoCompressor:
 
         debug_log_path = None
         if self.config.debug:
-            debug_log_path = self.script_dir / f"ffmpeg_debug_{file_path.stem}_compress.log"
+            debug_log_path = logs_root() / f"ffmpeg_debug_{file_path.stem}_compress.log"
 
         attempts = self._ffmpeg_attempts(file_path, plan.active_maps, info)
         returncode = 1
@@ -281,7 +284,11 @@ def main():
     print("  Auto Compress Video - H.264 / H.265 自動解析度壓縮工具")
     print("=" * 60)
 
-    config = CompressConfig()
+    workspace = load_workspace()
+    if workspace is None:
+        raise ValueError("請先啟動 GUI 選擇影片工作區。")
+    workspace.ensure()
+    config = CompressConfig(input_dir=str(workspace.input), output_dir=str(workspace.output))
 
     # --- 確認目標參數 ---
     print("\n【目標參數】")

@@ -8,6 +8,7 @@ import os
 from pathlib import Path, PurePosixPath
 import shutil
 import stat
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,8 @@ from urllib.request import Request, urlopen
 import zipfile
 
 from auto_reframe_core.version import __version__
+from auto_reframe_core.runtime_paths import is_frozen, resource_root
+from auto_reframe_core.platform_profile import desktop_asset_name
 
 
 GITHUB_OWNER = "minhung1126"
@@ -146,10 +149,20 @@ def _request(url: str) -> Request:
     )
 
 
+def trusted_urlopen(request, timeout=15):
+    """Frozen Python cannot rely on build-host CA paths being installed."""
+    if is_frozen():
+        context = ssl.create_default_context(cafile=str(resource_root() / "certs" / "cacert.pem"))
+        return urlopen(request, timeout=timeout, context=context)
+    return urlopen(request, timeout=timeout)
+
+
 def check_for_update(
     current_version: str = __version__,
-    opener: Callable = urlopen,
+    opener: Callable = trusted_urlopen,
     timeout: int = 15,
+    *,
+    desktop: Optional[bool] = None,
 ) -> UpdateInfo:
     """Return validated metadata for GitHub's latest stable release."""
     parse_version(current_version)
@@ -177,7 +190,11 @@ def check_for_update(
 
     tag_name = str(release.get("tag_name", ""))
     latest_version = ".".join(str(part) for part in parse_version(tag_name))
-    expected_asset = f"auto-reframe-videos-v{latest_version}.zip"
+    desktop = is_frozen() if desktop is None else desktop
+    try:
+        expected_asset = desktop_asset_name(latest_version) if desktop else f"auto-reframe-videos-v{latest_version}.zip"
+    except ValueError as exc:
+        raise UpdateError(str(exc)) from exc
     assets = release.get("assets")
     if not isinstance(assets, list):
         raise UpdateError("Release 缺少更新檔清單。")
@@ -200,7 +217,7 @@ def check_for_update(
         size = int(asset.get("size", 0))
     except (TypeError, ValueError) as exc:
         raise UpdateError("Release 更新檔大小無效。") from exc
-    if size <= 0 or size > MAX_ARCHIVE_BYTES:
+    if size <= 0 or size > (1024 * 1024 * 1024 if desktop else MAX_ARCHIVE_BYTES):
         raise UpdateError("Release 更新檔大小超過安全限制。")
 
     return UpdateInfo(
@@ -233,7 +250,7 @@ def _validate_final_download_url(value: str) -> None:
 def download_update(
     info: UpdateInfo,
     destination_dir: Path,
-    opener: Callable = urlopen,
+    opener: Callable = trusted_urlopen,
     timeout: int = 30,
     progress: Optional[Callable[[int, int], None]] = None,
 ) -> Path:
@@ -454,6 +471,8 @@ def stage_update(
 
 def can_self_update(install_root: Path) -> Tuple[bool, str]:
     """Refuse automatic overwrite of developer checkouts or unwritable installs."""
+    if is_frozen():
+        return False, "桌面版請下載對應平台的安裝檔，關閉程式後手動升級；設定與工作區會保留。"
     root = Path(install_root).resolve()
     if (root / ".git").exists():
         return False, "偵測到 Git 工作目錄；請使用 git pull 更新開發版本。"

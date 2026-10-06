@@ -13,7 +13,8 @@
 - 經驗證的 GitHub Release 建置與安全自動更新。
 
 Windows 與 macOS 是主要使用平台；Linux 由 CI 驗證匯入、核心邏輯、Release 建置
-與測試。FFmpeg／FFprobe 是外部必要執行檔，Tkinter 是 GUI 與部分測試的必要元件。
+與測試。原始碼版使用外部 FFmpeg／FFprobe；桌面版隨附 Python、Tcl/Tk、FFmpeg／FFprobe 與字型。
+桌面版只提供 OS／CPU 對應安裝檔的手動升級；自動更新列入第二階段。
 
 ## 修改原則
 
@@ -130,7 +131,7 @@ GUI 設定檔則使用版本化文件，且把兩種模式分開：
 
 ## PNG 浮水印契約
 
-- GUI 只掃描專案小寫 `watermark/` 內的 `.png`／`.PNG`，排序後顯示。
+- GUI 只掃描所選工作區小寫 `watermark/` 內的 `.png`／`.PNG`，排序後顯示。
 - 使用者浮水印屬本機資料，不得加入 Git 或 Release。
 - 啟用浮水印時必須有可讀檔案；位置（支援 3×3 錨點九宮格選擇圈圈）、寬度比例、透明度（預設 80% / 0.8，opacity < 1.0 時以 `colorchannelmixer=aa={opacity}` 處理）與邊距都要驗證。
 - 浮水印在每個輸出解析度完成縮放與文字處理後套用，再依 codec 分支，避免重複工作。
@@ -187,10 +188,12 @@ auto_reframe_core/gui_options.py
   統一入口的 GUI mode。
 - 更新器可辨識舊版 `auto_reframe_gui.py`，僅用於讓既有 Release 升級並交易式
   移除舊檔；新 Release 不得再包含根目錄相容入口。
-- GUI 的 `input/`、`output/`、`watermark/` 是固定專案內路徑，不可改成任意外部路徑
-  而破壞既有資料與更新保護模型。
-- `config.json.example` 是已提交的完整預設值來源；`config.json` 是忽略且可刪除的
-  本機覆寫。不得把個人路徑或個人設定寫回 example。
+- GUI 的 `input/`、`output/`、`watermark/` 固定在同一個可選外部工作區；不得分別
+  任意改名。原始碼版未選工作區時使用原專案；桌面版首次啟動必須選擇安裝目錄之外
+  的工作區。唯讀資源、使用者設定／logs 與影片工作區由 `runtime_paths.py` 統一處理。
+- `config.json.example` 是已提交的完整預設值來源；`config.json` 儲存在使用者資料
+  目錄。`workspace.json` 獨立保存工作區，不因還原預設而刪除。舊專案設定只能複製
+  匯入，原檔與影片必須保留。不得把個人路徑或個人設定寫回 example。
 - 設定檔寫入必須維持版本驗證、UTF-8 與 temporary-file replace 的原子流程。
 - Tk widget 只能在主執行緒更新；背景處理、更新檢查與下載結果透過 queue／`after()`
   回到主執行緒。
@@ -214,7 +217,7 @@ auto_reframe_core/version.py
 - 驗證 `.release-manifest.json` 的版本、逐檔尺寸、mode 與 SHA-256；
 - 保護 `.git`、`.update-backups`、`config.json`、`input/`、`output/`、
   `top_text.txt`、`bottom_text.txt`、`watermark/`；
-- 拒絕在 Git working tree 中自動安裝，也不得覆寫使用者修改過的 managed files；
+- 拒絕在 Git working tree 或 frozen 桌面版中自動安裝原始碼，也不得覆寫使用者修改過的 managed files；
 - 先備份、交易式取代，失敗時回滾，最後才重新啟動；
 - 只清理由 updater 建立且位於系統暫存目錄的
   `auto-reframe-update-*` 工作目錄。
@@ -232,7 +235,7 @@ Release 建置必須維持：
   push 觸發，先驗證 tag 與程式版本一致，再通過 Windows、macOS、Linux 測試，
   最後以最小 `contents: write` 權限發布。
 
-使用者提到 `release` 時，即視為要求執行完整發布流程：先依使用者指定提升
+使用者明確要求「發布／執行 release」時，即視為要求執行完整發布流程（單純建置 Release 工具或編輯發布文件不觸發發布）：先依使用者指定提升
 `VERSION`；未指定版本層級時預設提升 patch 版號。完成必要驗證後，只提交並推送
 本次發布範圍的變更到 default branch，再建立並推送完全相符的 `vX.Y.Z` tag，
 由 tag push 自動觸發 Release workflow；不得要求使用者到 Actions 手動輸入版本。
@@ -267,6 +270,8 @@ auto_reframe_core/
   video_utils.py                FFprobe、bitrate、進度、平行化與取消
   batch_runner.py               掃描 input、清理 tmp、批次總結
   config_store.py               版本化 GUI 設定讀寫
+  runtime_paths.py              唯讀資源、使用者資料、工作區、舊設定遷移
+  desktop_smoke.py              成品 Tk／軟體轉碼自我測試
   encoder_profiles.py           硬體編碼探測與 encoder args
   ffmpeg_graphs.py              Reframe／Compress filter graph
   gui_options.py                GUI label/key、比例解析、PNG 掃描
@@ -279,7 +284,18 @@ auto_reframe_core/
   updater.py                    Release 查詢、下載、驗證與 staging
   version.py                    VERSION／__version__
   watermark.py                  浮水印驗證與 overlay helpers
+packaging/
+  desktop.spec                  PyInstaller 明確資源清單與 windowed 入口
+  windows.iss                   每使用者安裝、使用中升級阻擋、保留外部資料
+  ffmpeg-sources.json            FFmpeg 與靜態依賴確切來源 commit／SHA-256
+  runtime-licenses.json          Python／Tcl／Tk 授權文字固定來源與雜湊
 scripts/
+  build_desktop.py               原生三架構建置、授權與 FFmpeg 功能檢查
+  build_ffmpeg_vendor.py         三平台固定原始碼建置 FFmpeg、硬體 headers、授權與來源紀錄
+  prepare_desktop_vendor.py      雜湊固定與安全解壓 FFmpeg bundle
+  verify_desktop.py              資源、隱私、最低 OS、清空 PATH 的成品測試
+  verify_desktop_set.py          三份未簽署安裝檔的版本、commit、checksum gate
+  verify_frozen_local.py         Linux 實際打包及清空 PATH 的 Tk／轉碼驗證（非分發成品）
   build_release.py              Release allowlist、manifest、ZIP、checksum
   verify_release.py             用 updater staging 驗證 Release
 tests/
@@ -329,3 +345,18 @@ python tests/input_smoke.py path/to/video.mp4 --seconds 2
 - 沒有 staged 使用者變更；
 - 沒有新增 runtime data、個人識別或秘密；
 - 若無法執行某項測試，清楚說明原因與尚未驗證的風險。
+
+
+## 桌面安裝成品契約
+
+- 以 `docs/DESKTOP_DISTRIBUTION.md` 為建置與實機驗收規範。
+- 三個 native target：macos-arm64、macos-x64、windows-x64；不得在 Linux 宣稱已驗證 DMG／Setup.exe。
+- 預設由各 native runner 依 `packaging/ffmpeg-sources.json` 固定來源 commit／SHA-256 建置 FFmpeg。
+  替代 vendor bundle 必須固定 HTTPS URL 與 SHA-256，包含精確 source offer、build recipe、完整 licenses。
+- 不得使用 `--enable-nonfree`；libx264/libx265 的 GPL 再分發要求必須核對。
+- 使用者已明確決定永遠不做開發者簽署，僅供自行使用。所有桌面建置與 CI 固定產生未簽署安裝檔，
+  不要求 Apple Developer ID、Windows 憑證、notarization 或 stapling；不得重新加入簽署流程。
+  保留版本、commit、checksum、資源與轉碼驗證。macOS arm64 工具鏈必要的 ad-hoc 結構標記不使用憑證。
+- macOS 13.0 是目前建置上限候選值，必須核對所有 Mach-O load commands 並在實機驗收後才宣稱最低支援版本。
+- Windows 11 優先，Windows 10 22H2 必須實機驗證；Windows ARM64 不列入首版原生支援。
+- 沒有 reviewed vendor 或測試硬體時必須如實列出未完成驗收，不能用 CI smoke 取代硬體／安裝體驗。

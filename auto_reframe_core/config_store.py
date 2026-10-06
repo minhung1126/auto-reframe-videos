@@ -35,7 +35,7 @@ def load_config(path: Path) -> Optional[dict]:
 
 
 def save_config(path: Path, settings: dict) -> None:
-    """Atomically save settings beside the application."""
+    """Atomically save versioned settings in the selected user-data location."""
     config_path = Path(path)
     config_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = config_path.with_name(config_path.name + ".tmp")

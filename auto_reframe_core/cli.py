@@ -35,13 +35,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {__version__}",
     )
+    parser.add_argument("--desktop-smoke", metavar="REPORT", help=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    from auto_reframe_core.runtime_paths import is_frozen, logs_root
+    if is_frozen():
+        # Windowed PyInstaller builds have no standard streams.
+        for name in ("stdout", "stderr"):
+            if getattr(sys, name) is None:
+                setattr(sys, name, (logs_root() / "application.log").open("a", encoding="utf-8", buffering=1))
     configure_utf8_stdio()
     args = build_parser().parse_args(argv)
 
+    if args.desktop_smoke:
+        from auto_reframe_core.desktop_smoke import run_desktop_smoke
+        return run_desktop_smoke(args.desktop_smoke)
+
+    if is_frozen():
+        from auto_reframe_core.platform_profile import register_installer_mutex
+        register_installer_mutex()
     if args.mode == "gui":
         from auto_reframe_core.gui import main as run
     elif args.mode == "reframe":

@@ -86,7 +86,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install --yes python3-tk
+          sudo apt-get install --yes python3-tk xvfb xauth
 
       - name: Compile Python sources
         run: python -m compileall -q auto_reframe_core tests scripts
@@ -95,13 +95,24 @@ jobs:
         run: python -m auto_reframe_core --help
 
       - name: Run unit tests
-        run: python -m unittest discover -s tests
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a python -m unittest discover -s tests
+          else
+            python -m unittest discover -s tests
+          fi
+
+  desktop:
+    needs: [validate, test]
+    uses: ./.github/workflows/desktop.yml
 
   release:
     name: Publish GitHub Release
     needs:
       - validate
       - test
+      - desktop
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -117,6 +128,16 @@ jobs:
           python scripts/build_release.py
           python -m scripts.verify_release
 
+      - name: Download verified desktop installers
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: desktop-*
+          path: dist/desktop
+          merge-multiple: true
+
+      - name: Verify complete unsigned desktop set
+        run: python -m scripts.verify_desktop_set dist/desktop
+
       - name: Publish release
         shell: bash
         run: |
@@ -124,6 +145,7 @@ jobs:
           gh release create "v$RELEASE_VERSION" \
             "dist/auto-reframe-videos-v$RELEASE_VERSION.zip" \
             "dist/SHA256SUMS-v$RELEASE_VERSION.txt" \
+            dist/desktop/* \
             --verify-tag \
             --title "Auto Reframe Videos v$RELEASE_VERSION" \
             --generate-notes

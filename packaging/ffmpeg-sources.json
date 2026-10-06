@@ -1,0 +1,50 @@
+{
+  "ffmpeg": {
+    "url": "https://codeload.github.com/FFmpeg/FFmpeg/tar.gz/894da5ca7d742e4429ffb2af534fcda0103ef593",
+    "commit": "894da5ca7d742e4429ffb2af534fcda0103ef593",
+    "version": "8.0.1",
+    "sha256": "9dad3557314f1b7923b61aff15e30079e964c3b41276bbd43dd8bb15b8028b5f"
+  },
+  "x264": {
+    "url": "https://codeload.github.com/mirror/x264/tar.gz/c24e06c2e184345ceb33eb20a15d1024d9fd3497",
+    "commit": "c24e06c2e184345ceb33eb20a15d1024d9fd3497",
+    "version": "git-c24e06c",
+    "sha256": "090d730e867fc63631782a1287974635d1237d0fa7c6fd1d09fd543620a56689"
+  },
+  "x265": {
+    "url": "https://codeload.github.com/videolan/x265/tar.gz/419182243fb2e2dfbe91dfc45a51778cf704f849",
+    "commit": "419182243fb2e2dfbe91dfc45a51778cf704f849",
+    "version": "git-4191822",
+    "sha256": "d82fccba4c302b9873ba09d021f9e71bfb85996d90ff4d6a8ba69bcf13dd90b9"
+  },
+  "freetype": {
+    "url": "https://codeload.github.com/freetype/freetype/tar.gz/42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+    "commit": "42608f77f20749dd6ddc9e0536788eaad70ea4b5",
+    "version": "2.13.3",
+    "sha256": "68ce87bb59ea209eb7350f41a94a27519ce16b37011b475a1e62d4abee154b66"
+  },
+  "harfbuzz": {
+    "url": "https://codeload.github.com/harfbuzz/harfbuzz/tar.gz/a790c38b782f9d8e6f0299d2837229e5726fc669",
+    "commit": "a790c38b782f9d8e6f0299d2837229e5726fc669",
+    "version": "12.1.0",
+    "sha256": "05fd61718fea22bdfe5c5eaf6f051d377ff6fd483a75a5efc50efd1b5c7c4c78"
+  },
+  "nvcodec": {
+    "url": "https://codeload.github.com/FFmpeg/nv-codec-headers/tar.gz/e844e5b26f46bb77479f063029595293aa8f812d",
+    "commit": "e844e5b26f46bb77479f063029595293aa8f812d",
+    "version": "13.0.19.0",
+    "sha256": "42d72fbcca46e05a1c05a79f1cda1fedd68ba686b21adf917e05d908153645d9"
+  },
+  "amf": {
+    "url": "https://codeload.github.com/GPUOpen-LibrariesAndSDKs/AMF/tar.gz/8c648005e07d4309033282bfd9947df2c7e76104",
+    "commit": "8c648005e07d4309033282bfd9947df2c7e76104",
+    "version": "git-8c64800",
+    "sha256": "7ce42c97b2de101d91dd80be4338ee6e47bd73541a58d2ccef2425d1044647f0"
+  },
+  "vpl": {
+    "url": "https://codeload.github.com/intel/libvpl/tar.gz/5f6bd8a1e753c8f63a3fd8b36894d6968b808a6d",
+    "commit": "5f6bd8a1e753c8f63a3fd8b36894d6968b808a6d",
+    "version": "2.13.0",
+    "sha256": "ad4c5b0e46035568fa43371e99a6267cd00b1e8c58c78d606b9687930f7ca4b9"
+  }
+}

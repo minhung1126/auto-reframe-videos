@@ -7,6 +7,7 @@ Auto Reframe Video — 橫轉直影片工具 (v2.0 - H.265)
 
 import sys
 from pathlib import Path
+from auto_reframe_core.runtime_paths import resource_root, tool_path, logs_root, load_workspace
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from queue import Queue
@@ -110,7 +111,9 @@ class VideoReframer:
     def __init__(self, config: ReframeConfig, progress_callback=None):
         self.config = config
         self.progress_callback = progress_callback
-        self.script_dir = Path(__file__).resolve().parents[1]
+        self.script_dir = resource_root()
+        self.config.ffmpeg_path = tool_path("ffmpeg", self.config.ffmpeg_path)
+        self.config.ffprobe_path = tool_path("ffprobe", self.config.ffprobe_path)
         self._validate_config()
         self.load_texts()
         self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
@@ -164,7 +167,7 @@ class VideoReframer:
 
 
     def _load_text_from_file(self, filepath: str) -> Tuple[str, bool]:
-        text_path = self.script_dir / filepath
+        text_path = Path(self.config.input_dir).resolve().parent / filepath
         if not text_path.exists():
             text_path.write_text("", encoding="utf-8")
             return "", True
@@ -328,7 +331,7 @@ class VideoReframer:
 
             debug_log_path = None
             if self.config.debug:
-                debug_log_path = self.script_dir / f"ffmpeg_debug_{file_path.stem}_{rt_w}x{rt_h}.log"
+                debug_log_path = logs_root() / f"ffmpeg_debug_{file_path.stem}_{rt_w}x{rt_h}.log"
 
             attempts = self._ffmpeg_attempts(file_path, dims, plan.active_maps, info)
             returncode = 1
@@ -413,7 +416,11 @@ def main():
     print("  Auto Reframe Video v2.0 - H.265 高效能優化版")
     print("=" * 60)
 
-    config = ReframeConfig()
+    workspace = load_workspace()
+    if workspace is None:
+        raise ValueError("請先啟動 GUI 選擇影片工作區。")
+    workspace.ensure()
+    config = ReframeConfig(input_dir=str(workspace.input), output_dir=str(workspace.output))
     app = VideoReframer(config)
 
     # --- 確認目標參數與文字內容 ---
