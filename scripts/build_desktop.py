@@ -114,6 +114,16 @@ def main():
             raise RuntimeError('Missing build-runtime license: ' + package)
         for index, file in enumerate(licenses):
             shutil.copyfile(dist.locate_file(file), runtime_licenses / f'{package}-{index}.txt')
+    if args.target == 'windows-x64':
+        msys_root = Path(os.environ.get('ARV_MSYS_ROOT', 'C:/msys64'))
+        toolchain_licenses = msys_root / 'mingw64' / 'share' / 'licenses'
+        selected = [p for p in toolchain_licenses.rglob('*') if p.is_file() and
+                    any(word in str(p.relative_to(toolchain_licenses)).lower()
+                        for word in ('gcc', 'mingw', 'pthread', 'crt', 'headers'))]
+        if not selected:
+            raise RuntimeError('Missing MinGW static runtime licenses')
+        for index, path in enumerate(sorted(selected)):
+            shutil.copyfile(path, runtime_licenses / f'mingw-runtime-{index}.txt')
     revision = run('git', 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
     info = {'version': __version__, 'target': args.target, 'commit': revision,
             'python': sys.version, 'vendor': provenance,

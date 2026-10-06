@@ -27,6 +27,20 @@ def bundle_paths(app, target):
     return app / '_internal', app / ('Auto Reframe Videos' + suffix)
 
 
+def macho_minimum_versions(commands):
+    versions = []
+    field = None
+    for line in commands.splitlines():
+        if line.strip().startswith('cmd '):
+            field = {'cmd LC_BUILD_VERSION': 'minos',
+                     'cmd LC_VERSION_MIN_MACOS': 'version'}.get(line.strip())
+        if field:
+            match = re.match(r'\s*' + field + r'\s+(\d+\.\d+(?:\.\d+)?)', line)
+            if match:
+                versions.append(match.group(1))
+    return versions
+
+
 def verify_bundle(app, target):
     resources, executable = bundle_paths(app, target)
     if not executable.is_file():
@@ -51,15 +65,7 @@ def verify_bundle(app, target):
                 if ('arm64' if target.endswith('arm64') else 'x86_64') not in archs:
                     raise RuntimeError('Bundle architecture mismatch: ' + str(path))
                 commands = subprocess.run(['otool', '-l', str(path)], check=True, capture_output=True, text=True).stdout
-                versions = []
-                active = False
-                for line in commands.splitlines():
-                    if line.strip().startswith('cmd '):
-                        active = line.strip() in ('cmd LC_BUILD_VERSION', 'cmd LC_VERSION_MIN_MACOS')
-                    if active:
-                        match = re.match(r'\s*(?:minos|version)\s+(\d+\.\d+(?:\.\d+)?)', line)
-                        if match:
-                            versions.append(match.group(1))
+                versions = macho_minimum_versions(commands)
                 if not versions or any(tuple(map(int, v.split('.'))) > (13, 0, 0) for v in versions):
                     raise RuntimeError('Cannot establish macOS 13 compatibility: ' + str(path))
     return executable
