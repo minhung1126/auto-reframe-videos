@@ -39,7 +39,7 @@ jobs:
         run: python -m pip install -r packaging/requirements-build.txt
       - name: Install macOS native toolchain
         if: runner.os == 'macOS'
-        run: brew install cmake ninja nasm pkg-config
+        run: brew install ninja nasm pkg-config
       - name: Install Windows native toolchain
         if: runner.os == 'Windows'
         uses: msys2/setup-msys2@40677d36a502eb2cf0fb808cc9dec31bf6152638 # v2.28.0
@@ -50,7 +50,6 @@ jobs:
             make
             diffutils
             mingw-w64-x86_64-gcc
-            mingw-w64-x86_64-cmake
             mingw-w64-x86_64-ninja
             mingw-w64-x86_64-pkgconf
             mingw-w64-x86_64-nasm

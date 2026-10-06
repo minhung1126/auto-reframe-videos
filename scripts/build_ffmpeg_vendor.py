@@ -71,7 +71,7 @@ def build_vendor(target, destination):
         subprocess.run([str(a) for a in args], cwd=cwd or workspace, env=env, check=True)
     def cmake(name, *options, source=None, install=True):
         directory = workspace / ('cmake-' + name)
-        command = ['cmake', '-S', str(source or sources[name]), '-B', str(directory), '-G', 'Ninja',
+        command = [sys.executable, '-m', 'cmake', '-S', str(source or sources[name]), '-B', str(directory), '-G', 'Ninja',
                    '-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_INSTALL_PREFIX=' + prefix.as_posix(),
                    '-DCMAKE_INSTALL_LIBDIR=lib', '-DBUILD_SHARED_LIBS=OFF',
                    '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', '-DCMAKE_POLICY_VERSION_MINIMUM=3.5']
@@ -80,9 +80,9 @@ def build_vendor(target, destination):
         if macos:
             command += ['-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0', '-DCMAKE_OSX_ARCHITECTURES=' + ('arm64' if target.endswith('arm64') else 'x86_64')]
         run(*command, *options)
-        run('cmake', '--build', directory, '--parallel', jobs)
+        run(sys.executable, '-m', 'cmake', '--build', directory, '--parallel', jobs)
         if install:
-            run('cmake', '--install', directory)
+            run(sys.executable, '-m', 'cmake', '--install', directory)
         return directory
     zlib_build = cmake('zlib', '-DZLIB_BUILD_EXAMPLES=OFF', install=False)
     static_zlib = zlib_build / ('libzlibstatic.a' if windows else 'libz.a')
