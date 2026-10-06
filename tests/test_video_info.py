@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -26,6 +27,21 @@ def _ffprobe_result(video_stream: dict) -> subprocess.CompletedProcess:
 
 
 class VideoInfoRotationTests(unittest.TestCase):
+    def test_ffprobe_utf8_output_is_read_independently_of_windows_code_page(self):
+        data = {"streams": [{"codec_type": "video", "width": 320, "height": 180}],
+                "format": {"duration": "1", "filename": "來源 影片.mp4"}}
+        payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        actual_run = subprocess.run
+        def windows_code_page_run(command, **kwargs):
+            return actual_run([sys.executable, "-c", "import sys; sys.stdout.buffer.write(" + repr(payload) + ")"],
+                              capture_output=True, text=True,
+                              encoding=kwargs.get("encoding", "cp1252"),
+                              errors=kwargs.get("errors", "strict"), timeout=30)
+        with patch("auto_reframe_core.video_utils.subprocess.run", side_effect=windows_code_page_run):
+            info = get_video_info("ffprobe", Path("來源 影片.mp4"))
+        self.assertIsNotNone(info)
+        self.assertEqual((info["width"], info["height"]), (320, 180))
+
     @patch("auto_reframe_core.video_utils.subprocess.run")
     def test_unrotated_video_keeps_coded_dimensions(self, run):
         run.return_value = _ffprobe_result(

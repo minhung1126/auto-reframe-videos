@@ -175,7 +175,7 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
         res = subprocess.run(
             [ffprobe_path, "-v", "quiet", "-print_format", "json",
              "-show_streams", "-show_format", str(input_file)],
-            capture_output=True, text=True, timeout=30,
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
             **hidden_subprocess_kwargs(),
         )
         if res.returncode != 0 or not res.stdout.strip():

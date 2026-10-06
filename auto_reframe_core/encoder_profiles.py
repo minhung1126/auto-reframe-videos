@@ -79,7 +79,7 @@ def _detect_hw_encoder(
         res = subprocess.run(
             [ffmpeg_path, "-hide_banner", "-encoders"],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=10,
             **hidden_subprocess_kwargs(profile),
         )
@@ -100,7 +100,7 @@ def _detect_hw_encoder(
                 test = subprocess.run(
                     _encoder_probe_cmd(ffmpeg_path, enc),
                     capture_output=True,
-                    text=True,
+                    text=True, encoding="utf-8", errors="replace",
                     timeout=30,
                     **hidden_subprocess_kwargs(profile),
                 )
