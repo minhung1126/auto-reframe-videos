@@ -42,6 +42,7 @@ jobs:
         run: brew install ninja nasm pkg-config
       - name: Install Windows native toolchain
         if: runner.os == 'Windows'
+        id: msys2
         uses: msys2/setup-msys2@40677d36a502eb2cf0fb808cc9dec31bf6152638 # v2.28.0
         with:
           msystem: MINGW64
@@ -56,9 +57,12 @@ jobs:
       - name: Add Windows toolchain to PATH
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          ARV_MSYS_ROOT: ${{ steps.msys2.outputs.msys2-location }}
         run: |
-          "C:\msys64\mingw64\bin" >> $env:GITHUB_PATH
-          "C:\msys64\usr\bin" >> $env:GITHUB_PATH
+          (Join-Path $env:ARV_MSYS_ROOT 'mingw64\bin') >> $env:GITHUB_PATH
+          (Join-Path $env:ARV_MSYS_ROOT 'usr\bin') >> $env:GITHUB_PATH
+          "ARV_MSYS_ROOT=$env:ARV_MSYS_ROOT" >> $env:GITHUB_ENV
       - name: Verify sources
         run: |
           python -m compileall -q auto_reframe_core tests scripts

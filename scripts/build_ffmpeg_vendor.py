@@ -71,9 +71,16 @@ def build_vendor(target, destination):
     env = dict(os.environ)
     env['PKG_CONFIG_PATH'] = str(prefix / 'lib' / 'pkgconfig')
     env['CMAKE_PREFIX_PATH'] = str(prefix)
+    if windows:
+        msys_root = Path(env.get('ARV_MSYS_ROOT', 'C:/msys64'))
+        env['PATH'] = os.pathsep.join([str(msys_root / 'mingw64' / 'bin'),
+                                     str(msys_root / 'usr' / 'bin'), env['PATH']])
+        env['MSYSTEM'] = 'MINGW64'
     if macos:
         env['MACOSX_DEPLOYMENT_TARGET'] = '13.0'
     def run(*args, cwd=None):
+        if windows and args[0] in ('bash', 'sh', 'make'):
+            args = (msys_root / 'usr' / 'bin' / (args[0] + '.exe'), *args[1:])
         print('Building:', args[0], flush=True)
         subprocess.run([str(a) for a in args], cwd=cwd or workspace, env=env, check=True)
     def cmake(name, *options, source=None, install=True):
@@ -83,7 +90,8 @@ def build_vendor(target, destination):
                    '-DCMAKE_INSTALL_LIBDIR=lib', '-DBUILD_SHARED_LIBS=OFF',
                    '-DCMAKE_POSITION_INDEPENDENT_CODE=ON', '-DCMAKE_POLICY_VERSION_MINIMUM=3.5']
         if windows:
-            command += ['-DCMAKE_C_COMPILER=gcc', '-DCMAKE_CXX_COMPILER=g++']
+            command += ['-DCMAKE_C_COMPILER=' + (msys_root / 'mingw64/bin/gcc.exe').as_posix(),
+                        '-DCMAKE_CXX_COMPILER=' + (msys_root / 'mingw64/bin/g++.exe').as_posix()]
         if macos:
             command += ['-DCMAKE_OSX_DEPLOYMENT_TARGET=13.0', '-DCMAKE_OSX_ARCHITECTURES=' + ('arm64' if target.endswith('arm64') else 'x86_64')]
         run(*command, *options)
