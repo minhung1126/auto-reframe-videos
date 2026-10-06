@@ -56,14 +56,18 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.desktop_smoke:
         from auto_reframe_core.desktop_smoke import run_desktop_smoke
+        import io
+        from contextlib import redirect_stdout, redirect_stderr
+        transcript = io.StringIO()
         try:
-            return run_desktop_smoke(args.desktop_smoke)
+            with redirect_stdout(transcript), redirect_stderr(transcript):
+                return run_desktop_smoke(args.desktop_smoke)
         except Exception:
             import json
             import traceback
             from pathlib import Path
             Path(args.desktop_smoke).write_text(json.dumps(
-                {"status": "failed", "error": traceback.format_exc()},
+                {"status": "failed", "error": traceback.format_exc(), "transcript": transcript.getvalue()[-40000:]},
                 ensure_ascii=False, indent=2), encoding="utf-8")
             return 1
 
