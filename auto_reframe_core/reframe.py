@@ -7,7 +7,7 @@ Auto Reframe Video — 橫轉直影片工具 (v2.0 - H.265)
 
 import sys
 from pathlib import Path
-from auto_reframe_core.runtime_paths import resource_root, tool_path, logs_root, load_workspace
+from auto_reframe_core.runtime_paths import resource_root, tool_path, logs_root
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 from queue import Queue
@@ -15,6 +15,7 @@ from queue import Queue
 from auto_reframe_core.batch_runner import run_video_batch
 from auto_reframe_core.ffmpeg_graphs import build_reframe_split_command
 from auto_reframe_core.output_plans import (
+    output_root_for,
     build_reframe_output_plan,
     cleanup_temp_outputs,
     promote_temp_outputs,
@@ -56,6 +57,8 @@ class ReframeConfig:
     input_dir: str = "input"
     # 輸出影片的資料夾路徑
     output_dir: str = "output"
+    video_files: tuple | None = None
+    output_mode: str = "specified"
 
     # --- 裁切與輸出目標 (重要設定) ---
     # resolution: '4k', '2k', '1080p', 'fhd', '720p', 'hd', '480p', '360p', 'source'
@@ -300,7 +303,7 @@ class VideoReframer:
         if cancellation is not None and cancellation.cancelled:
             return False
 
-        out_dir = Path(self.config.output_dir)
+        out_dir = output_root_for(self.config, file_path)
         out_dir.mkdir(parents=True, exist_ok=True)
 
         ratio_groups = {}
@@ -411,16 +414,12 @@ class VideoReframer:
         )
 
 
-def main():
+def main(input_dir="input", output_dir="output"):
     print("=" * 60)
     print("  Auto Reframe Video v2.0 - H.265 高效能優化版")
     print("=" * 60)
 
-    workspace = load_workspace()
-    if workspace is None:
-        raise ValueError("請先啟動 GUI 選擇影片工作區。")
-    workspace.ensure()
-    config = ReframeConfig(input_dir=str(workspace.input), output_dir=str(workspace.output))
+    config = ReframeConfig(input_dir=input_dir, output_dir=output_dir)
     app = VideoReframer(config)
 
     # --- 確認目標參數與文字內容 ---

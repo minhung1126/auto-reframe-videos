@@ -36,6 +36,8 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"%(prog)s {__version__}",
     )
     parser.add_argument("--desktop-smoke", metavar="REPORT", help=argparse.SUPPRESS)
+    parser.add_argument("--input-dir", default="input")
+    parser.add_argument("--output-dir", default="output")
     return parser
 
 
@@ -81,5 +83,5 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         from auto_reframe_core.compress import main as run
 
-    result = run()
+    result = run() if args.mode == "gui" else run(args.input_dir, args.output_dir)
     return result if isinstance(result, int) else 0

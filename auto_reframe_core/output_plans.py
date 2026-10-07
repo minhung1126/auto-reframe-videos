@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import shutil
+import os
+import tempfile
+import sys
+import unicodedata
+from dataclasses import replace
 from typing import List
 
 from auto_reframe_core.video_utils import (
@@ -160,7 +165,7 @@ def promote_temp_outputs(tmps: List[Path], finals: List[Path]) -> None:
             tmp.rename(final)
 
 
-def build_compress_output_plan(config, out_dir: Path, file_path: Path, info: dict) -> OutputPlan:
+def build_compress_output_plan(config, out_dir: Path, file_path: Path, info: dict, *, prepare=True) -> OutputPlan:
     active_maps = []
     tmps = []
     finals = []
@@ -200,7 +205,8 @@ def build_compress_output_plan(config, out_dir: Path, file_path: Path, info: dic
         if config.skip_existing and target_file.exists():
             continue
 
-        sub_dir.mkdir(parents=True, exist_ok=True)
+        if prepare:
+            sub_dir.mkdir(parents=True, exist_ok=True)
         tmp_file = target_file.with_name(target_file.name + ".tmp")
         bitrate = get_youtube_bitrate(effective_short, info["fps"])
         active_maps.append((out_w, out_h, label, bitrate, tmp_file, vcodec))
@@ -219,6 +225,7 @@ def build_reframe_output_plan(
     ratio_width: int,
     ratio_height: int,
     targets: list,
+    *, prepare=True,
 ) -> OutputPlan:
     active_maps = []
     tmps = []
@@ -263,7 +270,8 @@ def build_reframe_output_plan(
         if config.skip_existing and target_file.exists():
             continue
 
-        sub_dir.mkdir(parents=True, exist_ok=True)
+        if prepare:
+            sub_dir.mkdir(parents=True, exist_ok=True)
         tmp_file = target_file.with_name(target_file.name + ".tmp")
         bitrate = get_youtube_bitrate(effective_short, info["fps"])
         active_maps.append((out_w, out_h, label, bitrate, tmp_file, vcodec))
@@ -271,3 +279,82 @@ def build_reframe_output_plan(
         finals.append(target_file)
 
     return OutputPlan(active_maps, tmps, finals)
+
+
+def output_root_for(config, file_path):
+    if getattr(config, "output_mode", "specified") == "source":
+        return Path(file_path).resolve().parent / "auto-reframe"
+    return Path(config.output_dir).expanduser().resolve()
+
+
+def _output_path_key(path):
+    value = str(Path(path).resolve())
+    # Reject ambiguous names conservatively on the usual case-insensitive native filesystems.
+    if sys.platform in {"win32", "darwin"}:
+        return unicodedata.normalize("NFC", value).casefold()
+    return os.path.normcase(value)
+
+
+def preflight_outputs(config, mode):
+    """Resolve all target identities before starting any worker or deleting output."""
+    from auto_reframe_core.video_utils import get_video_info
+    videos = tuple(Path(p).resolve() for p in config.video_files)
+    probe_config = replace(config, skip_existing=False)
+    source_paths = {_output_path_key(p) for p in videos}
+    seen = {}
+    seen_tmps = {}
+    destinations = set()
+    finals = []
+    if mode == "reframe":
+        from auto_reframe_core.reframe_geometry import calculate_reframe_dimensions
+    for video in videos:
+        info = get_video_info(config.ffprobe_path, video)
+        if not info:
+            raise ValueError(f"無法讀取影片資訊：{video}")
+        root = output_root_for(config, video)
+        destinations.add(root)
+        plans = []
+        if mode == "compress":
+            plans.append(build_compress_output_plan(probe_config, root, video, info, prepare=False))
+        else:
+            groups = {}
+            for target in config.targets:
+                groups.setdefault(target['ratio'], []).append(target)
+            for ratio, targets in groups.items():
+                dims = calculate_reframe_dimensions(info['width'], info['height'], ratio, config.final_ratio)
+                plans.append(build_reframe_output_plan(probe_config, root, video, info, dims,
+                                                       *ratio, targets, prepare=False))
+        for plan in plans:
+            for final in plan.finals:
+                key = _output_path_key(final)
+                tmp_key = _output_path_key(final.with_name(final.name + '.tmp'))
+                if key in source_paths or tmp_key in source_paths:
+                    raise ValueError(f"輸出不可覆寫原始影片：{final}")
+                if key in seen or key in seen_tmps or tmp_key in seen or tmp_key in seen_tmps:
+                    previous = seen.get(key) or seen_tmps.get(key) or seen.get(tmp_key) or seen_tmps.get(tmp_key)
+                    raise ValueError(f"輸出路徑碰撞：{previous} 與 {video} → {final}")
+                if final.is_symlink() or final.with_name(final.name + ".tmp").is_symlink():
+                    raise ValueError(f"輸出不可使用符號連結：{final}")
+                tmp = final.with_name(final.name + ".tmp")
+                if tmp.exists() and not tmp.is_file():
+                    raise ValueError(f"暫存檔名已被資料夾占用：{tmp}")
+                if final.exists() and not final.is_file():
+                    raise ValueError(f"輸出檔名已被資料夾占用：{final}")
+                seen[key] = video
+                seen_tmps[tmp_key] = video
+                finals.append(final)
+    # Test actual directory writes rather than only permission bits.
+    for directory in destinations | {p.parent for p in finals}:
+        directory.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(prefix='.arv-write-', dir=directory):
+            pass
+    return tuple(sorted(destinations)), tuple(finals)
+
+
+def delete_planned_conflicts(conflicts, finals):
+    allowed = {Path(p).resolve() for p in finals}
+    for path in conflicts:
+        path = Path(path)
+        if path.resolve() not in allowed or not path.is_file():
+            raise ValueError(f"拒絕刪除未規劃的輸出：{path}")
+        path.unlink()

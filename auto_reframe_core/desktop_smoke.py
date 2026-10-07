@@ -11,7 +11,7 @@ from auto_reframe_core.platform_profile import hidden_subprocess_kwargs
 
 
 def run_desktop_smoke(report, *, verify_tk=True):
-    import tkinter as tk
+    from tkinterdnd2 import TkinterDnD, DND_FILES
     from auto_reframe_core.compress import CompressConfig, VideoCompressor
     from auto_reframe_core.reframe import ReframeConfig, VideoReframer
     from auto_reframe_core.video_utils import get_video_info
@@ -20,11 +20,15 @@ def run_desktop_smoke(report, *, verify_tk=True):
         Path(report).write_text(json.dumps({'status': 'running', 'stage': stage}), encoding='utf-8')
     progress('Tk initialization')
     tk_version = None
+    tkdnd_version = None
     if verify_tk:
-        root = tk.Tk()
+        root = TkinterDnD.Tk()
+        root.drop_target_register(DND_FILES)
+        root.dnd_bind("<<Drop>>", lambda event: "copy")
         root.withdraw()
         root.update()
         tk_version = root.tk.call('info', 'patchlevel')
+        tkdnd_version = root.tk.call('package', 'require', 'tkdnd')
         root.destroy()
     progress('Generate source media')
     ffmpeg, ffprobe = tool_path('ffmpeg'), tool_path('ffprobe')
@@ -66,7 +70,7 @@ def run_desktop_smoke(report, *, verify_tk=True):
         info = [get_video_info(ffprobe, path) for path in outputs]
         if any(not entry or entry['duration'] < 0.8 or entry['width'] % 2 or entry['height'] % 2 for entry in info):
             raise RuntimeError('Invalid transcoded media')
-        payload = {'status': 'passed' if verify_tk else 'media-only', 'tk': tk_version, 'outputs': [p.name for p in outputs],
+        payload = {'status': 'passed' if verify_tk else 'media-only', 'tk': tk_version, 'tkdnd': tkdnd_version, 'outputs': [p.name for p in outputs],
                    'build': json.loads((resource_root() / 'build-info.json').read_text(encoding='utf-8')) if (resource_root() / 'build-info.json').is_file() else {'source': True}}
     Path(report).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return 0

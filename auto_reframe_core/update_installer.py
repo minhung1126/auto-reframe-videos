@@ -182,7 +182,6 @@ def apply_update(
         raise InstallError("Refusing to update a Git working tree.")
     entrypoints = (
         PurePosixPath("auto_reframe_core/__main__.py"),
-        PurePosixPath("auto_reframe_gui.py"),
     )
     if not any(_confined_path(root, path).is_file() for path in entrypoints):
         raise InstallError("Install root does not contain an application entry point.")

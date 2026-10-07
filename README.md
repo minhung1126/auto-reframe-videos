@@ -8,8 +8,8 @@
 
 ### 統一入口（建議）
 
-1. 將影片放入 `input/`。
-2. 如需浮水印，將一個或多個 PNG 放入小寫的 `watermark/`。
+1. 安裝原始碼 GUI 依賴：`python -m pip install -r requirements.txt`（Tcl/Tk 8.x）。
+2. 啟動後在「待處理影片」新增影片／資料夾，或拖曳多個項目進視窗；需要浮水印時由兩種模式的「開啟資料夾」放入 PNG。
 3. 透過統一入口啟動 GUI：
 
 ```bash
@@ -29,12 +29,11 @@ python -m auto_reframe_core --help
 - Windows：`run.bat`
 - macOS：`run.command`
 
-GUI 的輸入、輸出與浮水印固定使用同一個影片工作區下的 `input/`、`output/`、`watermark/`。桌面版首次啟動選擇工作區；原始碼版預設沿用原專案資料夾。可在「關於／更新」更換工作區，儲存後重新啟動；原影片留在原位置。
+兩種處理模式共用「待處理影片」清單。支援多選影片、資料夾（預設只掃描當層，可勾選包含子資料夾）、Windows/macOS 拖曳、移除選取與清空，並顯示檔名、來源及總數。重複檔案會去重，不支援或無法讀取的項目會提示。直接處理原始檔，處理開始後固定任務清單。
 
-開始處理前，GUI 只檢查本次輸出 targets 可能使用的同名子資料夾；不相關的
-`output/` 內容不會阻擋工作。若匹配的資料夾已有內容，可選擇略過既有同名檔、
-覆寫本次同名檔、刪除匹配目標資料夾後完整重做，或取消。刪除選項只會移除對話框
-列出的直接子資料夾，其他輸出不受影響。
+預設每支影片輸出至其所在目錄的 `auto-reframe/`，不同來源分別輸出；也可選擇「指定資料夾」集中輸出。開始前檢查實際輸出檔案、寫入權限及跨來源同名碰撞，原始影片不得被覆寫。確認畫面列出影片數量、輸出模式與實際目的地。既有檔可略過、覆寫或只刪除列出的本次輸出檔再重做；其他檔案保留。
+
+CLI 可指定資料夾，例如 `python -m auto_reframe_core compress --input-dir /Videos --output-dir /Exports`；不需要選擇工作區。
 
 GUI 以主頁簽區分功能：
 
@@ -55,15 +54,15 @@ GUI 以主頁簽區分功能：
 ### GUI 設定檔
 
 - `config.json.example`：會加入 Git 的完整預設設定，也是 GUI 的預設值來源。
-- `config.json`：儲存在 macOS `~/Library/Application Support/Auto Reframe Videos` 或 Windows `%LOCALAPPDATA%\Auto Reframe Videos`；按下「儲存設定」後產生並自動載入。原始碼版也使用使用者資料目錄。
-- 舊版專案的 `config.json` 可由「關於／更新 → 匯入舊版設定與工作區」複製匯入，原檔不變；原始碼版第一次啟動也會在尚無新設定時匯入舊設定。
+- `config.json`：儲存在 macOS `~/Library/Application Support/Auto Reframe Videos` 或 Windows `%LOCALAPPDATA%\Auto Reframe Videos`；按下「儲存設定」後產生並自動載入。原始碼版也使用使用者資料目錄。浮水印在同目錄 `watermark/`；Windows 日誌在同目錄 `logs/`，macOS 日誌在 `~/Library/Logs/Auto Reframe Videos/`。
+- 「關於／更新 → 開啟設定檔」以系統預設程式開啟實際 `config.json`，不存在時先建立完整預設；頁面顯示位置。請先關閉程式再編輯，外部修改在下次啟動載入。
 - 按下「還原預設」會刪除 `config.json`，重新使用 `config.json.example`。
 
-工作區根目錄獨立儲存在 `workspace.json`；輸入／輸出子資料夾固定為 `input/` 與 `output/`，還原程式預設不會變更工作區。
+上下方文字由 GUI 編輯並儲存設定，不回退讀取文字檔。無首次啟動工作區選擇、設定匯入或資料遷移。
 
 ### 軟體更新
 
-桌面版在「關於／更新」檢查版本後，只開啟對應 OS／CPU 的 `.dmg` 或 `Setup.exe` 下載入口；先關閉程式，再覆蓋安裝。設定與影片工作區不會刪除。
+桌面版在「關於／更新」檢查版本後，只開啟對應 OS／CPU 的 `.dmg` 或 `Setup.exe` 下載入口；先關閉程式，再覆蓋安裝。設定、浮水印與日誌會保留。
 
 原始碼版的「關於／更新」頁籤可手動檢查與安裝原始碼 ZIP 更新。更新程式只接受
 `minhung1126/auto-reframe-videos` 的最新正式 GitHub Release，並驗證 GitHub
@@ -96,13 +95,15 @@ Releases API 提供的 SHA-256 digest 與 Release 內的逐檔 manifest。
 3. 將無法執行的 `.command` 檔案從 Finder 拖曳到終端機視窗內（會自動輸入路徑）。
 4. 按下 Enter 鍵。設定完成後即可正常雙擊執行。
 
-輸出會依裁切比例與解析度分類存放至 `output/` 資料夾。
+輸出依裁切比例與解析度分類，保存於選定的目的地。
 
 ---
 
 ## 桌面安裝版建置
 
 使用 PyInstaller 共用核心，分別在 macOS arm64、macOS x64、Windows x64 原生建置。安裝版包含 Python、Tcl/Tk、FFmpeg／FFprobe、字型與 HTTPS CA 憑證；Windows 不開啟終端機視窗。
+
+Windows 安裝器提供目前使用者或所有使用者模式，系統級安裝由安裝器要求管理員權限，程式日常執行使用一般使用者。macOS 維持 DMG 拖曳安裝至 `~/Applications` 或 `/Applications`。每位使用者的設定、浮水印與日誌獨立保存，升級及解除安裝保留資料。
 
 桌面版固定產生供自行使用的未簽署安裝檔，不需要 Apple Developer 或 Windows 簽署憑證。建置、FFmpeg 授權與乾淨環境／實機驗收請見 [桌面分發文件](docs/DESKTOP_DISTRIBUTION.md)。目前 macOS 最低版本候選為 13.0，仍須實機驗收；自動更新、Windows ARM64 與商店版另列第二階段。
 
@@ -116,9 +117,6 @@ config.json.example      # GUI 預設設定，納入 Git
 tests/                   # 行為守衛與入口測試
 scripts/                 # Release 建置與驗證
 fonts/                   # 內建字型與授權
-input/                   # 固定來源影片目錄（Git 忽略內容）
-output/                  # 固定輸出目錄（Git 忽略內容）
-watermark/               # 固定 PNG 浮水印目錄（Git 忽略內容）
 ```
 
 `auto_reframe_core/` 內部職責：
@@ -231,17 +229,19 @@ watermark/               # 固定 PNG 浮水印目錄（Git 忽略內容）
 
 ---
 
+文字檔設定僅供 CLI／Python API；GUI 只使用編輯器內容與設定檔。
+
 ## PNG 浮水印
 
-- 資料夾名稱固定為小寫 `watermark/`，這對區分大小寫的 macOS 磁碟很重要。
+- PNG 只掃描目前使用者資料目錄的 `watermark/`，保留「重新整理」及「開啟資料夾」，並顯示實際路徑。
 - GUI 啟動或按下「重新整理」時會掃描所有 `.png`／`.PNG`，依檔名排序並預選第一個。
 - 「蓋浮水印」可在重製與壓縮兩種模式中獨立開關。
 - 預設錨點為下方中央。
-- 預設大小比照 Lightroom「等比例 7」：以輸出與 PNG 的面積比求等比例縮放倍率，
-  `s = 0.07 × √((輸出寬 × 輸出高) ÷ (PNG寬 × PNG高))`。
+- 裁切重製預設大小比照 Lightroom「等比例 15」，壓縮為「等比例 10」：以輸出與 PNG 的面積比求等比例縮放倍率，
+  `s = ratio × √((輸出寬 × 輸出高) ÷ (PNG寬 × PNG高))`，ratio 分別為 0.15／0.10。
 - 預設垂直插入比照 Lightroom「3」：PNG 畫布底部距離為
   `3% × √(輸出寬 × 輸出高)`；PNG 自帶的透明留白會自然保留。
-- 預設透明度為 85%，並保留 PNG 本身的 alpha。
+- 預設透明度為 80%，並保留 PNG 本身的 alpha。
 - 浮水印會在每個解析度縮放完成後才疊加，再共用給相同尺寸的 H.264／H.265 輸出。
 - 有浮水印的輸出名稱會加 `_wm`，避免與無浮水印版本因 `skip_existing=True` 互相跳過。
 

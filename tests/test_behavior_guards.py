@@ -85,7 +85,7 @@ class PlatformProfileTests(unittest.TestCase):
             open_directory(Path("output"), PlatformProfile("linux", "posix", 4))
         popen.assert_called_once_with(["xdg-open", "output"])
 
-    def test_batch_runner_creates_fixed_input_and_output_directories(self):
+    def test_batch_runner_does_not_create_missing_input_or_output(self):
         with tempfile.TemporaryDirectory() as tmp:
             input_dir = Path(tmp) / "input"
             output_dir = Path(tmp) / "output"
@@ -96,11 +96,10 @@ class PlatformProfileTests(unittest.TestCase):
                 max_workers=1,
             )
 
-            result = run_video_batch(config, lambda *_args: True, "測試")
-
-            self.assertEqual(result, (0, []))
-            self.assertTrue(input_dir.is_dir())
-            self.assertTrue(output_dir.is_dir())
+            with self.assertRaisesRegex(ValueError, "輸入資料夾不存在"):
+                run_video_batch(config, lambda *_args: True, "測試")
+            self.assertFalse(input_dir.exists())
+            self.assertFalse(output_dir.exists())
 
     def test_batch_runner_ignores_unrelated_existing_output(self):
         with tempfile.TemporaryDirectory() as tmp:

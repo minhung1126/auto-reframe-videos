@@ -14,6 +14,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 INCLUDED_ROOT_FILES = (
     "README.md",
+    "requirements.txt",
     "SECURITY.md",
     "THIRD_PARTY_NOTICES.md",
     "config.json.example",

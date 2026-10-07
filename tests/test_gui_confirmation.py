@@ -36,8 +36,8 @@ class JobConfirmationMessageTests(unittest.TestCase):
                 with (
                     patch("auto_reframe_core.gui.sys.platform", platform_name),
                     patch(
-                        "auto_reframe_core.gui.find_target_output_conflicts",
-                        return_value=[],
+                        "auto_reframe_core.gui.preflight_outputs",
+                        return_value=((), ()),
                     ),
                     patch(
                         "auto_reframe_core.gui.messagebox.askyesno",
@@ -60,11 +60,11 @@ class JobConfirmationMessageTests(unittest.TestCase):
             ]
         )
 
-        self.assertIn("與本次輸出目標相同", message)
-        self.assertIn("output/ 內其他資料夾與檔案不受影響", message)
+        self.assertIn("本次規劃中已存在的輸出檔案", message)
+        self.assertIn("其他影片與檔案不受影響", message)
         self.assertIn("略過既有檔", message)
         self.assertIn("覆寫同名檔", message)
-        self.assertIn("刪除目標資料夾", message)
+        self.assertIn("刪除本次輸出檔", message)
         self.assertIn("取消", message)
 
     def test_reframe_lists_every_target_normalized_text_and_watermark(self):
@@ -112,7 +112,7 @@ class JobConfirmationMessageTests(unittest.TestCase):
             OUTPUT_CONFLICT_DELETE,
         )
 
-        self.assertIn("既有輸出：刪除列出的目標資料夾後完整重做", message)
+        self.assertIn("既有輸出：刪除列出的本次輸出檔後重做", message)
 
 
 if __name__ == "__main__":

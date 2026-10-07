@@ -1,0 +1,2 @@
+# Preserve the upstream TkDND license verbatim, including its trailing spaces.
+packaging/licenses/tkdnd.txt whitespace=-blank-at-eol

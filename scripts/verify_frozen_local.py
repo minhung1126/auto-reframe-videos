@@ -41,11 +41,12 @@ def main():
     (vendor / 'provenance.json').write_text(json.dumps(provenance) + '\n', encoding='utf-8')
     write_icons(metadata)
     (metadata / 'runtime-licenses').mkdir(exist_ok=True)
-    for package in ('certifi', 'pyinstaller'):
+    for package in ('certifi', 'pyinstaller', 'tkinterdnd2'):
         dist = distribution(package)
         for index, file in enumerate(dist.files or []):
             if file.name.upper().startswith(('LICENSE', 'COPYING')):
                 shutil.copyfile(dist.locate_file(file), metadata / 'runtime-licenses' / f'{package}-{index}.txt')
+    shutil.copyfile(ROOT / "packaging/licenses/tkdnd.txt", metadata / "runtime-licenses/tkdnd.txt")
     commit = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=ROOT, check=True, capture_output=True, text=True).stdout.strip()
     info = {'version': __version__, 'target': 'local-linux', 'commit': commit,
             'purpose': 'Test only; does not qualify native installers'}

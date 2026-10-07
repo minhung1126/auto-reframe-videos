@@ -46,7 +46,7 @@ class UnifiedEntrypointTests(unittest.TestCase):
         for mode, target in targets.items():
             with self.subTest(mode=mode), patch(target, return_value=None) as run:
                 self.assertEqual(cli.main([mode]), 0)
-                run.assert_called_once_with()
+                run.assert_called_once_with() if mode == "gui" else run.assert_called_once_with("input", "output")
 
     def test_platform_launchers_use_only_the_unified_gui_entry(self):
         for launcher in ("run.bat", "run.command"):

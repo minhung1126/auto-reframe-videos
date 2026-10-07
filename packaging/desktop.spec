@@ -22,6 +22,10 @@ datas = [(str(root / 'config.json.example'), '.'),
          (str(vendor / 'provenance.json'), '.'),
          (str(metadata / 'build-info.json'), '.'),
          (str(metadata / 'runtime-licenses'), 'licenses/runtime')]
+import tkinterdnd2
+dnd_platform = {"windows-x64": "win-x64", "macos-arm64": "osx-arm64", "macos-x64": "osx-x64"}.get(target, "linux-x64")
+dnd_root = Path(tkinterdnd2.__file__).parent / "tkdnd" / dnd_platform
+datas.append((str(dnd_root), "tkinterdnd2/tkdnd/" + dnd_platform))
 import certifi
 datas.append((certifi.where(), 'certs'))
 binaries = [(str(p), 'bin') for p in (vendor / 'bin').iterdir()]
@@ -47,7 +51,7 @@ if target.startswith('windows'):
 a = Analysis([str(root / 'auto_reframe_core' / '__main__.py')], pathex=[str(root)],
              binaries=binaries, datas=datas,
              hiddenimports=['auto_reframe_core.gui', 'tkinter', 'tkinter.filedialog',
-                            'auto_reframe_core.desktop_smoke'],
+                            'auto_reframe_core.desktop_smoke', 'tkinterdnd2'],
              excludes=['pytest', 'notebook', 'IPython'], noarchive=False)
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name=APP_NAME, console=False,

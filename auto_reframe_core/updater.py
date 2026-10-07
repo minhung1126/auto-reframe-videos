@@ -472,13 +472,12 @@ def stage_update(
 def can_self_update(install_root: Path) -> Tuple[bool, str]:
     """Refuse automatic overwrite of developer checkouts or unwritable installs."""
     if is_frozen():
-        return False, "桌面版請下載對應平台的安裝檔，關閉程式後手動升級；設定與工作區會保留。"
+        return False, "桌面版請下載對應平台的安裝檔，關閉程式後手動升級；使用者資料會保留。"
     root = Path(install_root).resolve()
     if (root / ".git").exists():
         return False, "偵測到 Git 工作目錄；請使用 git pull 更新開發版本。"
     entrypoints = (
         root / "auto_reframe_core" / "__main__.py",
-        root / "auto_reframe_gui.py",
     )
     if not any(path.is_file() for path in entrypoints):
         return False, "找不到 Auto Reframe 統一入口。"

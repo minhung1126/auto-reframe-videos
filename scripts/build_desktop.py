@@ -161,6 +161,10 @@ def main():
     args = parser.parse_args()
     if desktop_target() != args.target:
         parser.error('Build on the native target OS and CPU')
+    import tkinter
+    from importlib.metadata import version
+    if tkinter.TkVersion != 8.6 or version('tkinterdnd2') != '0.4.3':
+        parser.error('Desktop drag/drop requires Tcl/Tk 8.6 and tkinterdnd2 0.4.3')
     vendor = args.vendor_dir.resolve()
     if args.target == 'windows-x64':
         bundle_windows_runtime(vendor, Path(os.environ.get('ARV_MSYS_ROOT', 'C:/msys64')))
@@ -170,13 +174,14 @@ def main():
     from importlib.metadata import distribution
     runtime_licenses = staging / 'runtime-licenses'
     runtime_licenses.mkdir(exist_ok=True)
-    for package in ('certifi', 'pyinstaller'):
+    for package in ('certifi', 'pyinstaller', 'tkinterdnd2'):
         dist = distribution(package)
         licenses = [file for file in (dist.files or []) if file.name.upper().startswith(('LICENSE', 'COPYING'))]
         if not licenses:
             raise RuntimeError('Missing build-runtime license: ' + package)
         for index, file in enumerate(licenses):
             shutil.copyfile(dist.locate_file(file), runtime_licenses / f'{package}-{index}.txt')
+    shutil.copyfile(ROOT / "packaging/licenses/tkdnd.txt", runtime_licenses / "tkdnd.txt")
     if args.target == 'windows-x64':
         msys_root = Path(os.environ.get('ARV_MSYS_ROOT', 'C:/msys64'))
         toolchain_licenses = msys_root / 'mingw64' / 'share' / 'licenses'

@@ -38,34 +38,6 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized["compress"]["opacity"], 0.8)
         self.assertEqual(normalized["compress"]["margin"], 3)
 
-    def test_legacy_flat_config_migrates_to_both_modes(self):
-        legacy_settings = {
-            "watermark_enabled": True,
-            "watermark_file": "my_logo.png",
-            "watermark_position": "top-right",
-            "watermark_width_ratio": 0.08,
-            "watermark_opacity": 0.5,
-            "watermark_margin": 5,
-        }
-        normalized = normalize_watermark_settings(legacy_settings)
-
-        for mode in ("reframe", "compress"):
-            self.assertTrue(normalized[mode]["enabled"])
-            self.assertEqual(normalized[mode]["file"], "my_logo.png")
-            self.assertEqual(normalized[mode]["position"], "top-right")
-            self.assertEqual(normalized[mode]["width_ratio"], 0.08)
-            self.assertEqual(normalized[mode]["opacity"], 0.5)
-            self.assertEqual(normalized[mode]["margin"], 5)
-
-    def test_legacy_flat_config_without_ratio_uses_mode_defaults(self):
-        legacy_settings = {
-            "watermark_enabled": True,
-            "watermark_file": "my_logo.png",
-        }
-        normalized = normalize_watermark_settings(legacy_settings)
-
-        self.assertEqual(normalized["reframe"]["width_ratio"], 0.15)
-        self.assertEqual(normalized["compress"]["width_ratio"], 0.10)
 
     def test_valid_per_mode_structure_is_preserved(self):
         settings = {
@@ -161,71 +133,11 @@ class WatermarkSettingsNormalizationTests(unittest.TestCase):
                 normalized = normalize_watermark_settings({"watermarks": {"reframe": {"position": pos}}})
                 self.assertEqual(normalized["reframe"]["position"], pos)
 
-    def test_load_effective_settings_migrates_legacy_config(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            example_file = tmp_path / "config.json.example"
-            config_file = tmp_path / "config.json"
-
-            example_settings = {
-                "version": 1,
-                "settings": {
-                    "mode": "reframe",
-                    "watermarks": {
-                        "reframe": {
-                            "enabled": False,
-                            "file": "",
-                            "position": "bottom-center",
-                            "width_ratio": 0.15,
-                            "margin": 3,
-                        },
-                        "compress": {
-                            "enabled": False,
-                            "file": "",
-                            "position": "bottom-center",
-                            "width_ratio": 0.10,
-                            "margin": 3,
-                        },
-                    },
-                },
-            }
-            example_file.write_text(json.dumps(example_settings), encoding="utf-8")
-
-            legacy_saved = {
-                "version": 1,
-                "settings": {
-                    "mode": "compress",
-                    "watermark_enabled": True,
-                    "watermark_file": "my_logo.png",
-                    "watermark_position": "top-right",
-                    "watermark_width_ratio": 0.08,
-                    "watermark_opacity": 0.75,
-                    "watermark_margin": 6,
-                },
-            }
-            config_file.write_text(json.dumps(legacy_saved), encoding="utf-8")
-
-            with (
-                patch("auto_reframe_core.gui.CONFIG_EXAMPLE_PATH", example_file),
-                patch("auto_reframe_core.gui.CONFIG_PATH", config_file),
-            ):
-                from auto_reframe_core.gui import load_effective_settings
-                defaults, effective = load_effective_settings()
-                normalized = normalize_watermark_settings(effective)
-
-                for mode in ("reframe", "compress"):
-                    self.assertTrue(normalized[mode]["enabled"])
-                    self.assertEqual(normalized[mode]["file"], "my_logo.png")
-                    self.assertEqual(normalized[mode]["position"], "top-right")
-                    self.assertEqual(normalized[mode]["width_ratio"], 0.08)
-                    self.assertEqual(normalized[mode]["opacity"], 0.75)
-                    self.assertEqual(normalized[mode]["margin"], 6)
-
 
 def _can_create_tk_root() -> bool:
     try:
-        import tkinter as tk
-        root = tk.Tk()
+        import tkinterdnd2 as tk
+        root = tk.TkinterDnD.Tk()
         root.destroy()
         return True
     except Exception:
@@ -247,10 +159,51 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
             "auto_reframe_core.gui.WATERMARK_DIR", self.root_path / "watermark"
         )
         self.patcher.start()
+        config_patcher = patch("auto_reframe_core.gui.CONFIG_PATH", self.root_path / "config.json")
+        config_patcher.start()
+        self.addCleanup(config_patcher.stop)
 
     def tearDown(self):
         self.patcher.stop()
         self.tmp_dir.cleanup()
+
+    def test_shared_selection_drop_snapshot_and_removal(self):
+        from types import SimpleNamespace
+        from tkinterdnd2 import TkinterDnD
+        sources = []
+        for name in ("來源 A", "來源 B"):
+            directory = self.root_path / name
+            directory.mkdir()
+            video = directory / "相同 名稱.mp4"
+            video.write_bytes(b"video")
+            sources.append(video)
+        root = TkinterDnD.Tk()
+        try:
+            root.withdraw()
+            app = AutoReframeGUI(root)
+            # Native TkDND is loaded; exercise the Tcl-list payload used by Drop.
+            self.assertTrue(root.tk.call("package", "require", "tkdnd"))
+            payload = root.tk.call("list", *(str(path) for path in sources + [sources[0]]))
+            app._drop_videos(SimpleNamespace(data=payload))
+            self.assertEqual(app.video_files, tuple(sources))
+            self.assertEqual(app.video_count_var.get(), "影片總數：2")
+            mode, config = app._build_config()
+            self.assertEqual(config.video_files, tuple(sources))
+            self.assertEqual(config.output_mode, "source")
+            app.running = True
+            with patch("auto_reframe_core.gui.messagebox.showinfo"):
+                app._clear_videos()
+                app._add_items((sources[0],))
+            self.assertEqual(app.video_files, tuple(sources))
+            app.running = False
+            app.files_tree.selection_set("0")
+            app._remove_videos()
+            self.assertEqual(app.video_files, (sources[1],))
+            self.assertEqual(config.video_files, tuple(sources))
+            app._clear_videos()
+            self.assertEqual(app.video_count_var.get(), "影片總數：0")
+        finally:
+            root.destroy()
 
     @unittest.skipIf(__import__("os").name == "nt", "macOS bundle resource symlinks")
     def test_bundled_font_identity_survives_resource_symlinks_and_app_moves(self):
@@ -259,9 +212,9 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
         font = resources / "NotoSerifTC.ttf"
         font.write_bytes(b"font fixture")
         (self.root_path / "fonts").symlink_to(resources, target_is_directory=True)
-        import tkinter as tk
+        import tkinterdnd2 as tk
         with patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path):
-            root = tk.Tk()
+            root = tk.TkinterDnD.Tk()
             try:
                 root.withdraw()
                 app = AutoReframeGUI(root)
@@ -273,8 +226,8 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
 
     def test_gui_initializes_separate_watermark_variables_with_mode_defaults(self):
         with patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path):
-            import tkinter as tk
-            root = tk.Tk()
+            import tkinterdnd2 as tk
+            root = tk.TkinterDnD.Tk()
             try:
                 root.withdraw()
                 app = AutoReframeGUI(root)
@@ -307,8 +260,8 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
 
     def test_collect_settings_validates_and_rejects_out_of_range_ratio(self):
         with patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path):
-            import tkinter as tk
-            root = tk.Tk()
+            import tkinterdnd2 as tk
+            root = tk.TkinterDnD.Tk()
             try:
                 root.withdraw()
                 app = AutoReframeGUI(root)
@@ -332,8 +285,8 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
 
     def test_collect_settings_validates_and_rejects_out_of_range_margin(self):
         with patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path):
-            import tkinter as tk
-            root = tk.Tk()
+            import tkinterdnd2 as tk
+            root = tk.TkinterDnD.Tk()
             try:
                 root.withdraw()
                 app = AutoReframeGUI(root)
@@ -354,8 +307,8 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
             patch("auto_reframe_core.gui.CONFIG_PATH", config_file),
             patch("auto_reframe_core.gui.messagebox.showerror") as mock_err,
         ):
-            import tkinter as tk
-            root = tk.Tk()
+            import tkinterdnd2 as tk
+            root = tk.TkinterDnD.Tk()
             try:
                 root.withdraw()
                 app = AutoReframeGUI(root)
@@ -375,8 +328,8 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
             patch("auto_reframe_core.gui.CONFIG_PATH", config_file),
             patch("auto_reframe_core.gui.messagebox.showinfo"),
         ):
-            import tkinter as tk
-            root = tk.Tk()
+            import tkinterdnd2 as tk
+            root = tk.TkinterDnD.Tk()
             try:
                 root.withdraw()
                 app = AutoReframeGUI(root)
@@ -424,8 +377,8 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
             patch("auto_reframe_core.gui.CONFIG_PATH", config_file),
             patch("auto_reframe_core.gui.messagebox.showinfo"),
         ):
-            import tkinter as tk
-            root = tk.Tk()
+            import tkinterdnd2 as tk
+            root = tk.TkinterDnD.Tk()
             try:
                 root.withdraw()
                 app = AutoReframeGUI(root)
@@ -449,76 +402,6 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 self.assertEqual(app.watermark_opacity_vars["reframe"].get(), "0.8")
                 self.assertEqual(app.watermark_width_ratio_vars["compress"].get(), "0.1")
                 self.assertEqual(app.watermark_opacity_vars["compress"].get(), "0.8")
-            finally:
-                root.destroy()
-
-    def test_upgrade_from_legacy_config_json_preserves_user_settings(self):
-        config_file = self.root_path / "config.json"
-        legacy_payload = {
-            "version": 1,
-            "settings": {
-                "mode": "compress",
-                "targets": {
-                    "reframe": [{"ratio": [4, 5], "resolution": "1080p", "vcodec": "h264"}],
-                    "compress": [{"resolution": "source", "vcodec": "h265"}],
-                },
-                "final_ratio": [9, 16],
-                "watermark_enabled": True,
-                "watermark_file": "logo1.png",
-                "watermark_position": "top-left",
-                "watermark_width_ratio": 0.08,
-                "watermark_opacity": 0.75,
-                "watermark_margin": 6,
-                "font_path": "fonts/NotoSerifTC.ttf",
-                "font_color": "white",
-                "top_font_size": 48,
-                "bottom_font_size": 24,
-                "text_margin": 20,
-                "top_spacing": 1.08,
-                "bottom_spacing": 1.2,
-                "ffmpeg": "ffmpeg",
-                "ffprobe": "ffprobe",
-                "workers": 0,
-                "skip_existing": True,
-                "debug": False,
-            },
-        }
-        config_file.write_text(json.dumps(legacy_payload), encoding="utf-8")
-
-        with (
-            patch("auto_reframe_core.gui.SCRIPT_DIR", self.root_path),
-            patch("auto_reframe_core.gui.CONFIG_PATH", config_file),
-            patch("auto_reframe_core.gui.messagebox.showinfo"),
-        ):
-            import tkinter as tk
-            root = tk.Tk()
-            try:
-                root.withdraw()
-                app = AutoReframeGUI(root)
-
-                # Verified legacy settings migrated to widgets in both tabs
-                for mode in ("reframe", "compress"):
-                    self.assertTrue(app.watermark_enabled_vars[mode].get())
-                    self.assertEqual(app.watermark_file_vars[mode].get(), "logo1.png")
-                    self.assertEqual(
-                        app.watermark_position_vars[mode].get(),
-                        WATERMARK_POSITION_LABELS["top-left"],
-                    )
-                    self.assertEqual(app.watermark_width_ratio_vars[mode].get(), "0.08")
-                    self.assertEqual(app.watermark_opacity_vars[mode].get(), "0.75")
-                    self.assertEqual(app.watermark_margin_vars[mode].get(), "6")
-
-                # Saving should convert to new format with opacity
-                app.save_settings()
-
-                saved_data = json.loads(config_file.read_text(encoding="utf-8"))
-                saved_settings = saved_data["settings"]
-                self.assertIn("watermarks", saved_settings)
-                self.assertNotIn("watermark_opacity", saved_settings)
-                self.assertNotIn("watermark_enabled", saved_settings)
-                self.assertEqual(saved_settings["watermarks"]["reframe"]["position"], "top-left")
-                self.assertEqual(saved_settings["watermarks"]["reframe"]["width_ratio"], 0.08)
-                self.assertEqual(saved_settings["watermarks"]["reframe"]["opacity"], 0.75)
             finally:
                 root.destroy()
 

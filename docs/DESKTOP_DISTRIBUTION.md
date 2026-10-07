@@ -1,6 +1,6 @@
 # Desktop distribution — first edition
 
-This repository contains the native build, installation, migration and manual-update implementation.
+This repository contains the native build, installation and manual-update implementation.
 Desktop installers are permanently unsigned for personal use. No developer certificates, paid
 signing services or Apple notarization are required. Linux tests do not qualify native installer UX.
 
@@ -8,27 +8,35 @@ signing services or Apple notarization are required. Linux tests do not qualify 
 
 | Item | macOS | Windows |
 | --- | --- | --- |
-| Application | `/Applications/Auto Reframe Videos.app` | `%LOCALAPPDATA%\Programs\Auto Reframe Videos` |
+| Current-user installation | `~/Applications/Auto Reframe Videos.app` | `%LOCALAPPDATA%\Programs\Auto Reframe Videos\` |
+| System installation | `/Applications/Auto Reframe Videos.app` | `%ProgramFiles%\Auto Reframe Videos\` |
 | Settings | `~/Library/Application Support/Auto Reframe Videos/config.json` | `%LOCALAPPDATA%\Auto Reframe Videos\config.json` |
-| Workspace selection | `workspace.json` beside settings | Same |
-| Logs | `logs/` beside settings | Same |
-| Media | Selected external workspace with `input/`, `output/`, `watermark/` | Same |
+| Watermark | `~/Library/Application Support/Auto Reframe Videos/watermark/` | `%LOCALAPPDATA%\Auto Reframe Videos\watermark\` |
+| Logs | `~/Library/Logs/Auto Reframe Videos/` | `%LOCALAPPDATA%\Auto Reframe Videos\logs\` |
 
-Resources come from the source root or PyInstaller `_MEIPASS`; no frozen installation writes
-settings, text or debug logs into the bundle. Frozen tools always resolve to the shipped binaries.
-Source mode keeps `python -m auto_reframe_core [gui|reframe|compress]` and configurable tools.
-On Linux the development settings location is `$XDG_CONFIG_HOME/Auto Reframe Videos`.
+Windows Setup offers current-user and all-users installation. Only system installation elevates;
+normal application execution and the post-install launch use the original user's privileges.
+macOS keeps DMG drag installation without a custom wizard. System installation shares only
+application files; each user owns independent settings, watermark PNGs and logs. Upgrades and
+uninstall retain these data. Unsigned build policy is unchanged.
 
-The frozen GUI asks for a workspace on first launch. Cancelling exits without choosing a default.
-The source GUI defaults to the original project directory. Changing workspace saves the current
-settings and takes effect on restart; media is never moved. Restoring defaults removes only
-`config.json`, preserving workspace selection and files.
+Resources resolve from the source root or PyInstaller `_MEIPASS`. Frozen tools use shipped
+binaries. Linux development data uses `$XDG_CONFIG_HOME/Auto Reframe Videos`. No first-launch
+workspace dialog, `workspace.json`, legacy import/migration, or automatic input/output creation
+exists. GUI text is saved in config, without text-file fallback. The About page opens the actual
+config with the default application, first atomically creating complete defaults if absent;
+external changes load on next launch, and users are instructed to close before editing.
 
-“關於／更新 → 匯入舊版設定與工作區” reads the selected project's versioned `config.json`,
-imports text content when absent from that config, validates target/watermark settings, preserves
-custom relative font paths and retains the original config and media. Settings/workspace files
-are rolled back together if migration fails. Selecting the old project avoids moving large media.
-Source first launch copies an existing project config if there is no user-data config yet.
+Both modes share original-file selection with multi-file/folder native drag/drop, deduplication,
+readability feedback and an immutable running-task snapshot. Default output is `auto-reframe/`
+beside each source; specified-folder mode combines outputs. Preflight rejects cross-source path
+collisions or original-file overwrite and probes actual destination writes. Confirmation shows
+count, mode and every destination. Existing output actions apply only to planned files.
+CLI supports `--input-dir` and `--output-dir` without a workspace.
+
+Native drag/drop uses pinned `tkinterdnd2==0.4.3` / TkDND 2.9.3 (macOS arm64), 2.9.4 (other targets) with Tcl/Tk 8.x. The spec includes
+only the target platform native directory. Build/audit gates require its binaries and both wrapper
+and native licenses. Frozen smoke loads TkDND and registers a drop target. See THIRD_PARTY_NOTICES.
 
 The source updater keeps its ZIP, manifest and transactional installer. Frozen processes cannot
 invoke that installer: they select exactly their OS/CPU asset, validate release URL/digest metadata,
@@ -36,7 +44,7 @@ save current settings and open the corresponding download. The user closes the a
 manually. The browser performs the download; users can compare the published SHA-256 before installing.
 No automatic desktop installation is included. Windows Setup uses Restart Manager and an application
 mutex to block replacing a live app. The uninstaller only removes installation files. Deleting a
-Mac app or uninstalling Windows leaves settings and the external workspace intact.
+Mac app or uninstalling Windows leaves settings, watermark PNGs and logs intact.
 
 ## Reviewed FFmpeg inputs
 
@@ -184,9 +192,9 @@ Record evidence per target, installer version, machine, OS and GPU in this check
 | Top/video/bottom layers, fonts, literal text, watermark, multiple targets | Pending | Pending | Pending |
 | VideoToolbox / available NVENC, AMF, QSV; actual software fallback | Pending | Pending | Pending |
 | Cancel all workers; remove incomplete tmp; retain completed finals | Pending | Pending | Pending |
-| First-launch cancel/retry, settings save/reset, old project import | Pending | Pending | Pending |
+| First launch, config open/save/reset, watermark folder opening | Pending | Pending | Pending |
 | Move app, overwrite upgrade, upgrade while running | Pending | Pending | Pending |
-| Delete/uninstall retains settings, original config and all media | Pending | Pending | Pending |
+| Delete/uninstall retains per-user settings, watermark and logs | Pending | Pending | Pending |
 | Personal installation via per-app OS confirmation | Pending | Pending | Pending |
 | macOS 13 / Windows 10 22H2 and Windows 11 | Pending | Pending | Pending |
 | License/source-offer audit and artifact privacy scan | Pending | Pending | Pending |
@@ -212,7 +220,23 @@ This directory is ignored and is **not** a licensed Linux release or a macOS/Win
 Native installer, hardware and minimum-OS qualification remain separate.
 The ordinary CI workflow runs this test automatically and stores its report.
 
-A local run on the current source version passed with bundled Tcl/Tk 9.0.4 and all four expected
-H.264/H.265 Reframe/Compress outputs. This caught and fixed private-prefix Tcl/Tk libraries that
-PyInstaller's normal dependency lookup had missed. macOS and Windows continue using their native
-Python/Tk hooks; the Linux fallback does not replace those hooks.
+The current drag/drop runtime requires Tcl/Tk 8.x. Previous Tcl/Tk 9-only smoke evidence does
+not qualify this build. Native runners use Python 3.12 / Tk 8.6; the build gate rejects incompatible
+Tk versions and frozen smoke must load TkDND successfully.
+
+## Required native UX qualification (pending)
+
+Linux checks cannot qualify Setup.exe or DMG. For each Windows installation scope, verify default
+paths, installer-only elevation, ordinary daily execution, another user's independent data, and
+upgrade/uninstall data retention. On macOS test both drag destinations and data retention.
+On both OSes verify first launch without workspace prompts; drag multiple files/folders including
+spaces and Chinese names; nested-folder selection; duplicate/unreadable feedback; both output
+modes with multiple sources; same-name collision refusal; confirmation destinations; cancellation;
+config opening/creation and next-launch reload; both watermark open-folder/refresh controls.
+
+Windows checkbox repair remains a candidate until actual screenshots are reviewed at **100%,
+125%, 150%, 200%** scaling on Windows 11 and Windows 10 22H2, covering desktop-shortcut tasks
+and the completion-page launch checkbox. Check the Chinese font, glyph visibility, control
+bounds, row height and spacing, and click/keyboard operation. Archive screenshots with scaling,
+OS, installer version and scope. No native qualification or screenshot evidence was available
+in the Linux implementation environment; do not mark this gate passed from `.iss` alone.

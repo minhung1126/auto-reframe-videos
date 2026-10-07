@@ -131,7 +131,7 @@ GUI 設定檔則使用版本化文件，且把兩種模式分開：
 
 ## PNG 浮水印契約
 
-- GUI 只掃描所選工作區小寫 `watermark/` 內的 `.png`／`.PNG`，排序後顯示。
+- GUI 只掃描目前使用者資料目錄小寫 `watermark/` 內的 `.png`／`.PNG`，排序後顯示。
 - 使用者浮水印屬本機資料，不得加入 Git 或 Release。
 - 啟用浮水印時必須有可讀檔案；位置（支援 3×3 錨點九宮格選擇圈圈）、寬度比例、透明度（預設 80% / 0.8，opacity < 1.0 時以 `colorchannelmixer=aa={opacity}` 處理）與邊距都要驗證。
 - 浮水印在每個輸出解析度完成縮放與文字處理後套用，再依 codec 分支，避免重複工作。
@@ -186,14 +186,19 @@ auto_reframe_core/gui_options.py
   `reframe` 與 `compress` mode。
 - Windows／macOS 雙擊啟動器分別為 `run.bat` 與 `run.command`，兩者都只啟動
   統一入口的 GUI mode。
-- 更新器可辨識舊版 `auto_reframe_gui.py`，僅用於讓既有 Release 升級並交易式
-  移除舊檔；新 Release 不得再包含根目錄相容入口。
-- GUI 的 `input/`、`output/`、`watermark/` 固定在同一個可選外部工作區；不得分別
-  任意改名。原始碼版未選工作區時使用原專案；桌面版首次啟動必須選擇安裝目錄之外
-  的工作區。唯讀資源、使用者設定／logs 與影片工作區由 `runtime_paths.py` 統一處理。
-- `config.json.example` 是已提交的完整預設值來源；`config.json` 儲存在使用者資料
-  目錄。`workspace.json` 獨立保存工作區，不因還原預設而刪除。舊專案設定只能複製
-  匯入，原檔與影片必須保留。不得把個人路徑或個人設定寫回 example。
+- 專案尚未首次發布，不保留舊版入口、設定匯入、工作區遷移或相容分支。
+- GUI 使用共用待處理影片清單，支援多選、資料夾掃描與 Windows/macOS 拖曳；直接處理
+  原始檔，不複製或搬移，不建立固定 `input/`、`output/`，不讀寫 `workspace.json`。
+- 設定與浮水印放在 `runtime_paths.user_data_root()`：Windows
+  `%LOCALAPPDATA%\Auto Reframe Videos`；macOS
+  `~/Library/Application Support/Auto Reframe Videos`。設定為 `config.json`，浮水印為 `watermark/`。
+- Windows logs 位於使用者資料目錄 `logs/`；macOS logs 位於
+  `~/Library/Logs/Auto Reframe Videos/`。系統級安裝的每位使用者資料皆獨立。
+- `config.json.example` 是完整預設來源；關於頁開啟實際設定檔，不存在時先原子建立完整預設。
+  外部修改下次啟動載入，提醒先關閉程式。GUI 上下方文字只由 GUI 編輯並保存在設定檔。
+- 輸出預設為各影片來源目錄的 `auto-reframe/`，也支援共用指定資料夾；處理開始前固定清單、
+  檢查所有實際輸出、寫入權限、跨來源碰撞與原始檔保護。不得靜默覆寫碰撞。
+- CLI 保留 `--input-dir`、`--output-dir`。所有來源／輸出規劃維持既有命名與取消、tmp 清理、promotion 契約。
 - 設定檔寫入必須維持版本驗證、UTF-8 與 temporary-file replace 的原子流程。
 - Tk widget 只能在主執行緒更新；背景處理、更新檢查與下載結果透過 queue／`after()`
   回到主執行緒。
@@ -270,7 +275,8 @@ auto_reframe_core/
   video_utils.py                FFprobe、bitrate、進度、平行化與取消
   batch_runner.py               掃描 input、清理 tmp、批次總結
   config_store.py               版本化 GUI 設定讀寫
-  runtime_paths.py              唯讀資源、使用者資料、工作區、舊設定遷移
+  runtime_paths.py              唯讀資源與使用者設定、watermark、logs 路徑
+  video_list.py                 原始影片清單、資料夾掃描與去重
   desktop_smoke.py              成品 Tk／軟體轉碼自我測試
   encoder_profiles.py           硬體編碼探測與 encoder args
   ffmpeg_graphs.py              Reframe／Compress filter graph
@@ -286,7 +292,7 @@ auto_reframe_core/
   watermark.py                  浮水印驗證與 overlay helpers
 packaging/
   desktop.spec                  PyInstaller 明確資源清單與 windowed 入口
-  windows.iss                   每使用者安裝、使用中升級阻擋、保留外部資料
+  windows.iss                   目前／所有使用者安裝、使用中升級阻擋、保留使用者資料
   ffmpeg-sources.json            FFmpeg 與靜態依賴確切來源 commit／SHA-256
   runtime-licenses.json          Python／Tcl／Tk 授權文字固定來源與雜湊
 scripts/
@@ -360,3 +366,17 @@ python tests/input_smoke.py path/to/video.mp4 --seconds 2
 - macOS 13.0 是目前建置上限候選值，必須核對所有 Mach-O load commands 並在實機驗收後才宣稱最低支援版本。
 - Windows 11 優先，Windows 10 22H2 必須實機驗證；Windows ARM64 不列入首版原生支援。
 - 沒有 reviewed vendor 或測試硬體時必須如實列出未完成驗收，不能用 CI smoke 取代硬體／安裝體驗。
+
+## 安裝範圍與拖曳驗收
+
+- Windows 安裝器提供僅目前使用者（`%LOCALAPPDATA%\Programs\Auto Reframe Videos`）與
+  所有使用者（`%ProgramFiles%\Auto Reframe Videos`）模式；只有安裝器的系統級安裝要求管理員權限。
+  程式日常執行使用一般使用者，升級／解除安裝保留使用者資料。
+- macOS 維持 DMG 拖曳安裝：`~/Applications/Auto Reframe Videos.app` 或
+  `/Applications/Auto Reframe Videos.app`；不增加自訂精靈。
+- TkDND 依賴固定版本，打包相應 OS／CPU 的原生元件、Python wrapper 與完整授權；
+  frozen smoke 必須載入 TkDND 並註冊 drop target。TkDND 2.9.3／2.9.4 要求 Tcl/Tk 8.x。
+- Windows 安裝器桌面捷徑與完成頁必須以 100%、125%、150%、200% 原生畫面驗收，
+  包括中文字型、控制項尺寸、列高、間距及 DPI；設定變更或 Linux GUI 不足以宣稱修復完成。
+- Windows/macOS 原生驗收包含兩種安裝範圍、首次啟動、拖曳、多來源輸出、設定檔及 watermark 資料夾開啟。
+  無法執行時明確列為待驗收，維持未簽署政策。

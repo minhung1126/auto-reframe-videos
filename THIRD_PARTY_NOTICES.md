@@ -41,3 +41,15 @@ When MinGW runtime DLLs are required, they are shipped beside FFmpeg/FFprobe and
 recorded by SHA-256 in provenance. Their native package notices, including MinGW CRT
 and winpthreads notices, are copied into `licenses/runtime`.
 See `docs/DESKTOP_DISTRIBUTION.md` for the mandatory redistribution checklist.
+
+## GUI drag and drop
+
+- `tkinterdnd2` 0.4.3 (MIT), https://github.com/Eliav2/tkinterdnd2.
+  PyPI wheel SHA-256: `8804f5d2e2a99713ec93e85384397fec6bf66fdf2065e3750938d55018971c4a`.
+- The wheel ships native TkDND libraries (macOS arm64: 2.9.3; Windows x64/macOS x64/Linux x64: 2.9.4) for Windows/macOS/Linux.
+  Upstream: https://github.com/petasis/tkdnd/tree/tkdnd-release-test-v2.9.4.
+  License: `packaging/licenses/tkdnd.txt`, SHA-256
+  `86501f2f0b7dc0ade34deef0cfba930286ec28a12c63949c7417ef53f01aae88`.
+- Native desktop bundles include only the target OS/CPU TkDND directory and both
+  license notices under `licenses/runtime/`. The TkDND license grants redistribution
+  with its notice retained verbatim; it does not change this project's license.

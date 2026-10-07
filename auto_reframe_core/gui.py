@@ -57,13 +57,11 @@ from auto_reframe_core.updater import (
     prepare_update,
 )
 from auto_reframe_core.runtime_paths import (
-    resource_root, user_data_root, is_frozen, tool_path, load_workspace,
-    save_workspace, validate_workspace, import_legacy_settings, migrate_legacy_project,
+    resource_root, user_data_root, is_frozen, tool_path, watermark_root, logs_root,
 )
 from auto_reframe_core.version import __version__
 from auto_reframe_core.output_plans import (
-    delete_target_output_conflicts,
-    find_target_output_conflicts,
+    preflight_outputs, delete_planned_conflicts, output_root_for,
 )
 from auto_reframe_core.platform_profile import open_directory
 from auto_reframe_core.video_utils import VideoProgressEvent, h264, h265
@@ -72,11 +70,8 @@ from auto_reframe_core.video_utils import VideoProgressEvent, h264, h265
 SCRIPT_DIR = resource_root()
 CONFIG_PATH = user_data_root() / "config.json"
 CONFIG_EXAMPLE_PATH = SCRIPT_DIR / "config.json.example"
-INPUT_DIR = SCRIPT_DIR / "input"
-OUTPUT_DIR = SCRIPT_DIR / "output"
-WATERMARK_DIR = SCRIPT_DIR / "watermark"
-UPDATE_ERROR_PATH = (user_data_root() / "logs" / "update-error.log"
-                     if is_frozen() else SCRIPT_DIR / "update-error.log")
+WATERMARK_DIR = watermark_root()
+UPDATE_ERROR_PATH = logs_root(create=False) / "update-error.log"
 CREDIT_SYMBOL = "©"
 VIDEO_EXTENSIONS = {
     ".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"
@@ -103,7 +98,7 @@ OUTPUT_CONFLICT_CANCEL = "cancel"
 OUTPUT_CONFLICT_LABELS = {
     OUTPUT_CONFLICT_SKIP: "略過既有同名檔，只產生缺少的輸出",
     OUTPUT_CONFLICT_OVERWRITE: "覆寫本次同名檔，保留資料夾內其他內容",
-    OUTPUT_CONFLICT_DELETE: "刪除列出的目標資料夾後完整重做",
+    OUTPUT_CONFLICT_DELETE: "刪除列出的本次輸出檔後重做",
 }
 
 
@@ -139,20 +134,20 @@ def format_video_event_log(event: VideoProgressEvent) -> str:
 
 def build_output_conflict_message(conflicts: list[Path]) -> str:
     """Explain the exact output scope considered by the preflight check."""
-    shown = [f"  • {path.name}" for path in conflicts[:8]]
+    shown = [f"  • {path}" for path in conflicts[:8]]
     if len(conflicts) > len(shown):
         shown.append(f"  • ……另有 {len(conflicts) - len(shown)} 個")
     return "\n".join(
         [
-            f"偵測到 {len(conflicts)} 個與本次輸出目標相同、且已有內容的子資料夾：",
+            f"偵測到 {len(conflicts)} 個本次規劃中已存在的輸出檔案：",
             "",
             *shown,
             "",
-            "只會處理上列項目；output/ 內其他資料夾與檔案不受影響。",
+            "只會處理上列檔案；其他影片與檔案不受影響。",
             "",
             "略過既有檔：保留全部內容，只產生缺少的同名輸出。",
             "覆寫同名檔：重新產生本次同名影片，保留資料夾內其他檔案。",
-            "刪除目標資料夾：刪除上列資料夾的全部內容（無法復原），再完整重做。",
+            "刪除本次輸出檔：刪除上列檔案（無法復原），再重新處理。",
             "取消：不開始本次工作。",
         ]
     )
@@ -197,7 +192,7 @@ class OutputConflictDialog:
         overwrite_button.grid(row=0, column=1, padx=(0, 8))
         delete_button = ttk.Button(
             buttons,
-            text="刪除目標資料夾",
+            text="刪除本次輸出檔",
             command=lambda: self._choose(OUTPUT_CONFLICT_DELETE),
         )
         delete_button.grid(row=0, column=2, padx=(0, 8))
@@ -250,6 +245,11 @@ def build_job_confirmation_message(
         f"模式：{MODE_LABELS[mode]}",
         f"浮水印：{watermark}",
     ]
+    if getattr(config, "video_files", None) is not None:
+        lines.append(f"影片數量：{len(config.video_files)}")
+        lines.append("輸出模式：" + ("各影片所在資料夾的 auto-reframe/" if config.output_mode == "source" else "指定資料夾"))
+        lines.append("實際目的地：")
+        lines.extend(f"  {path}" for path in sorted({output_root_for(config, p) for p in config.video_files}))
     if output_conflict_action:
         lines.append(f"既有輸出：{OUTPUT_CONFLICT_LABELS[output_conflict_action]}")
     lines.extend(["", "輸出組合："])
@@ -285,12 +285,8 @@ def build_job_confirmation_message(
 
 
 def ensure_runtime_directories(paths=None):
-    """Create the fixed runtime directories before any job starts."""
-    runtime_paths = tuple(paths) if paths is not None else (
-        INPUT_DIR,
-        OUTPUT_DIR,
-        WATERMARK_DIR,
-    )
+    """Create only per-user data directories; media stays in its original location."""
+    runtime_paths = tuple(paths) if paths is not None else (WATERMARK_DIR,)
     for path in runtime_paths:
         Path(path).mkdir(parents=True, exist_ok=True)
 
@@ -303,18 +299,6 @@ def load_effective_settings():
     effective = deepcopy(defaults)
     saved = load_config(CONFIG_PATH)
     if saved:
-        if "watermarks" not in saved and any(
-            k in saved
-            for k in (
-                "watermark_enabled",
-                "watermark_file",
-                "watermark_position",
-                "watermark_width_ratio",
-                "watermark_opacity",
-                "watermark_margin",
-            )
-        ):
-            effective.pop("watermarks", None)
         effective.update(saved)
     return defaults, effective
 
@@ -381,37 +365,6 @@ def normalize_watermark_settings(settings: dict) -> dict:
             mode_entry = raw_watermarks.get(mode)
             if not isinstance(mode_entry, dict):
                 raise ConfigStoreError(f"設定檔的 watermarks.{mode} 必須是物件。")
-        elif (
-            "watermark_enabled" in settings
-            or "watermark_position" in settings
-            or "watermark_width_ratio" in settings
-            or "watermark_opacity" in settings
-            or "watermark_margin" in settings
-        ):
-            legacy_ratio = settings.get("watermark_width_ratio")
-            width_ratio_val = (
-                float(legacy_ratio)
-                if legacy_ratio is not None
-                else default_width_ratio
-            )
-            legacy_opacity = settings.get("watermark_opacity")
-            opacity_val = (
-                parse_watermark_opacity(legacy_opacity)
-                if legacy_opacity is not None
-                else DEFAULT_WATERMARK_OPACITY
-            )
-            mode_entry = {
-                "enabled": bool(settings.get("watermark_enabled", False)),
-                "file": str(settings.get("watermark_file", "")),
-                "position": str(
-                    settings.get("watermark_position", DEFAULT_WATERMARK_POSITION)
-                ),
-                "width_ratio": width_ratio_val,
-                "opacity": opacity_val,
-                "margin": int(
-                    settings.get("watermark_margin", DEFAULT_WATERMARK_MARGIN)
-                ),
-            }
         else:
             mode_entry = {}
 
@@ -488,15 +441,6 @@ class QueueStream(io.TextIOBase):
     def isatty(self):
         """Tell progress renderers to use newline-delimited GUI log output."""
         return False
-
-
-def _read_optional_text(path: Path) -> str:
-    if not path.is_file():
-        return ""
-    try:
-        return path.read_text(encoding="utf-8-sig").replace("\r", "").rstrip("\n")
-    except (OSError, UnicodeError):
-        return ""
 
 
 def copy_text_to_clipboard(root, text: str) -> None:
@@ -581,6 +525,7 @@ class AutoReframeGUI:
         self.update_busy = False
         self.installing_update = False
         self.update_info = None
+        self.video_files = ()
         self.watermark_paths = {}
         self.video_progress_states = {}
         ensure_runtime_directories()
@@ -601,6 +546,10 @@ class AutoReframeGUI:
         self.root.after(250, self._show_pending_update_error)
 
     def _create_variables(self, settings):
+        self.output_mode_var = tk.StringVar(value=settings.get("output_mode", "source"))
+        self.output_folder_var = tk.StringVar(value=settings.get("output_folder", ""))
+        self.recursive_var = tk.BooleanVar(value=settings.get("include_subfolders", False))
+        self.video_count_var = tk.StringVar(value="影片總數：0")
         mode = str(settings.get("mode", ""))
         if mode not in MODE_LABELS:
             raise ConfigStoreError(f"不支援的預設模式: {mode!r}")
@@ -688,6 +637,91 @@ class AutoReframeGUI:
         if val in WATERMARK_POSITION_LABELS:
             self.watermark_position_vars[mode].set(WATERMARK_POSITION_LABELS[val])
 
+    def _build_files_tab(self):
+        from tkinterdnd2 import DND_FILES
+        tab = self.files_tab
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(1, weight=1)
+        controls = ttk.Frame(tab)
+        controls.grid(row=0, column=0, sticky="ew", pady=8)
+        for label, command in (("新增影片", self._add_videos), ("新增資料夾", self._add_folder),
+                               ("移除選取", self._remove_videos), ("清空清單", self._clear_videos)):
+            ttk.Button(controls, text=label, command=command).pack(side="left", padx=4)
+        ttk.Checkbutton(controls, text="包含子資料夾", variable=self.recursive_var).pack(side="left", padx=8)
+        self.files_tree = ttk.Treeview(tab, columns=("name", "source"), show="headings", selectmode="extended")
+        self.files_tree.heading("name", text="檔名")
+        self.files_tree.heading("source", text="來源位置")
+        self.files_tree.column("name", width=220)
+        self.files_tree.column("source", width=600)
+        self.files_tree.grid(row=1, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(tab, orient="vertical", command=self.files_tree.yview)
+        scroll.grid(row=1, column=1, sticky="ns")
+        self.files_tree.configure(yscrollcommand=scroll.set)
+        ttk.Label(tab, textvariable=self.video_count_var).grid(row=2, column=0, sticky="w", pady=8)
+        output = ttk.LabelFrame(tab, text="輸出位置", padding=10)
+        output.grid(row=3, column=0, sticky="ew")
+        output.columnconfigure(1, weight=1)
+        ttk.Radiobutton(output, text="各影片所在資料夾的 auto-reframe/（預設）", variable=self.output_mode_var,
+                        value="source").grid(row=0, column=0, columnspan=3, sticky="w", pady=4)
+        ttk.Radiobutton(output, text="指定資料夾", variable=self.output_mode_var,
+                        value="specified").grid(row=1, column=0, sticky="w", pady=4)
+        ttk.Entry(output, textvariable=self.output_folder_var).grid(row=1, column=1, sticky="ew", padx=8)
+        ttk.Button(output, text="選擇…", command=self._choose_output).grid(row=1, column=2)
+        ttk.Label(tab, text="可拖曳多個影片或資料夾進視窗。處理期間無法修改清單。原始影片不會搬移。").grid(row=4, column=0, sticky="w", pady=8)
+        self.root.drop_target_register(DND_FILES)
+        self.root.dnd_bind("<<Drop>>", self._drop_videos)
+
+    def _add_items(self, items):
+        if self.running:
+            messagebox.showinfo("處理中", "本次任務清單已固定，請完成後再修改。", parent=self.root)
+            return
+        from auto_reframe_core.video_list import collect_videos
+        self.video_files, errors = collect_videos(items, self.video_files, self.recursive_var.get())
+        self._refresh_files()
+        if errors:
+            messagebox.showwarning("部分項目無法加入", "\n".join(errors), parent=self.root)
+
+    def _refresh_files(self):
+        self.files_tree.delete(*self.files_tree.get_children())
+        for index, path in enumerate(self.video_files):
+            self.files_tree.insert("", "end", iid=str(index), values=(path.name, str(path.parent)))
+        self.video_count_var.set(f"影片總數：{len(self.video_files)}")
+
+    def _drop_videos(self, event):
+        self._add_items(self.root.tk.splitlist(event.data))
+        return "copy"
+
+    def _add_videos(self):
+        from auto_reframe_core.video_list import VIDEO_EXTENSIONS
+        files = filedialog.askopenfilenames(parent=self.root, title="新增影片", filetypes=(
+            ("影片", " ".join("*" + extension for extension in sorted(VIDEO_EXTENSIONS))), ("所有檔案", "*")))
+        if files:
+            self._add_items(files)
+
+    def _add_folder(self):
+        folder = filedialog.askdirectory(parent=self.root, title="新增資料夾")
+        if folder:
+            self._add_items((folder,))
+
+    def _remove_videos(self):
+        if self.running:
+            return
+        selected = {int(item) for item in self.files_tree.selection()}
+        self.video_files = tuple(path for index, path in enumerate(self.video_files) if index not in selected)
+        self._refresh_files()
+
+    def _clear_videos(self):
+        if self.running:
+            return
+        self.video_files = ()
+        self._refresh_files()
+
+    def _choose_output(self):
+        folder = filedialog.askdirectory(parent=self.root, title="選擇輸出資料夾")
+        if folder:
+            self.output_folder_var.set(folder)
+            self.output_mode_var.set("specified")
+
     def _build_ui(self):
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
@@ -710,6 +744,9 @@ class AutoReframeGUI:
         self.notebook = ttk.Notebook(self.root)
         self.notebook.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 6))
 
+        self.files_tab = ttk.Frame(self.notebook, padding=8)
+        self.notebook.add(self.files_tab, text="待處理影片")
+        self._build_files_tab()
         self.reframe_tab = ttk.Frame(self.notebook, padding=8)
         self.compress_tab = ttk.Frame(self.notebook, padding=8)
         self.activity_tab = ttk.Frame(self.notebook, padding=8)
@@ -875,49 +912,7 @@ class AutoReframeGUI:
     def _build_mode_output_tab(self, parent, mode):
         parent.columnconfigure(0, weight=1)
 
-        job = ttk.LabelFrame(parent, text="固定工作資料夾", padding=10)
-        job.grid(row=0, column=0, sticky="ew")
-        job.columnconfigure(1, weight=1)
-
-        ttk.Label(job, text="輸入資料夾").grid(
-            row=0, column=0, sticky="w", padx=(0, 8), pady=4
-        )
-        ttk.Label(
-            job,
-            text=str(INPUT_DIR),
-            relief="sunken",
-            anchor="w",
-            padding=(5, 3),
-        ).grid(
-            row=0, column=1, sticky="ew", pady=4
-        )
-        ttk.Button(
-            job,
-            text="開啟資料夾",
-            command=lambda directory=INPUT_DIR: self._open_directory(directory),
-        ).grid(
-            row=0, column=2, padx=(8, 0), pady=4
-        )
-
-        ttk.Label(job, text="輸出資料夾").grid(
-            row=1, column=0, sticky="w", padx=(0, 8), pady=4
-        )
-        ttk.Label(
-            job,
-            text=str(OUTPUT_DIR),
-            relief="sunken",
-            anchor="w",
-            padding=(5, 3),
-        ).grid(
-            row=1, column=1, sticky="ew", pady=4
-        )
-        ttk.Button(
-            job,
-            text="開啟資料夾",
-            command=lambda directory=OUTPUT_DIR: self._open_directory(directory),
-        ).grid(
-            row=1, column=2, padx=(8, 0), pady=4
-        )
+        ttk.Label(parent, text="兩種模式共用〔待處理影片〕清單與輸出位置。直接處理原始檔。").grid(row=0, column=0, sticky="w")
 
         targets = ttk.LabelFrame(parent, text="輸出目標（可加入多個組合）", padding=10)
         targets.grid(row=1, column=0, sticky="nsew", pady=(10, 0))
@@ -1019,6 +1014,7 @@ class AutoReframeGUI:
             row=0, column=2, padx=(8, 0)
         )
 
+        ttk.Button(watermark, text="開啟資料夾", command=lambda: self._open_directory(WATERMARK_DIR)).grid(row=0, column=3, padx=(8, 0))
         params = ttk.Frame(watermark)
         params.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
 
@@ -1078,7 +1074,7 @@ class AutoReframeGUI:
         hint_ratio = "0.15（裁切重製）" if mode == "reframe" else "0.10（影片壓縮）"
         ttk.Label(
             watermark,
-            text=f"來源：watermark/*.png；預設下方中央、等比例 {hint_ratio}、透明度 0.8（80%）、垂直插入 3。",
+            text=f"來源：{WATERMARK_DIR}；預設下方中央、等比例 {hint_ratio}、透明度 0.8（80%）、垂直插入 3。",
             foreground="#555555",
         ).grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
@@ -1218,8 +1214,9 @@ class AutoReframeGUI:
             text=f"github.com/{GITHUB_OWNER}/{GITHUB_REPOSITORY}/releases",
         ).grid(row=1, column=1, sticky="w", pady=4)
 
-        ttk.Button(about, text="選擇影片工作區…", command=self.choose_workspace).grid(row=2, column=0, pady=8)
-        ttk.Button(about, text="匯入舊版設定與工作區…", command=self.import_old_settings).grid(row=2, column=1, sticky="w", pady=8)
+        ttk.Button(about, text="開啟設定檔", command=self.open_config).grid(row=2, column=0, pady=8)
+        ttk.Label(about, text=str(CONFIG_PATH), wraplength=650).grid(row=2, column=1, sticky="w")
+        ttk.Label(about, text="請先關閉程式再編輯；外部修改於下次啟動載入。", wraplength=800).grid(row=3, column=0, columnspan=2, sticky="w")
         updater = ttk.LabelFrame(self.update_tab, text="軟體更新", padding=12)
         updater.grid(row=1, column=0, sticky="nsew", pady=(12, 0))
         updater.columnconfigure(0, weight=1)
@@ -1256,8 +1253,7 @@ class AutoReframeGUI:
 
         allowed, reason = can_self_update(SCRIPT_DIR)
         environment_text = (
-            "此安裝可自動更新；安裝時會備份舊版，並保留 config.json、"
-            "input/、output/、watermark/ 與上下方文字。"
+            "此安裝可自動更新；安裝時會備份舊版，使用者資料獨立保存。"
             if allowed
             else reason
         )
@@ -1289,45 +1285,13 @@ class AutoReframeGUI:
         normalize_watermark_settings(settings)
         save_config(CONFIG_PATH, settings)
 
-    def import_old_settings(self):
-        if self.running or self.update_busy:
-            messagebox.showinfo("請稍候", "請等影片處理與更新完成後再匯入。", parent=self.root)
-            return
-        selected = filedialog.askdirectory(title="選擇舊版專案資料夾", parent=self.root)
-        if not selected:
-            return
-        if CONFIG_PATH.exists() and not messagebox.askyesno("匯入設定", "以舊版設定取代目前已儲存的設定？原檔與影片會保留。", parent=self.root):
-            return
+    def open_config(self):
         try:
-            workspace = validate_workspace(selected)
-            workspace.ensure()
-            def validate(settings):
-                defaults = load_config(CONFIG_EXAMPLE_PATH) or {}
-                defaults.update(settings)
-                normalize_target_sets(defaults)
-                normalize_watermark_settings(defaults)
-            migrate_legacy_project(selected, CONFIG_PATH.parent, validate)
+            if not CONFIG_PATH.exists():
+                save_config(CONFIG_PATH, self.default_settings)
+            open_directory(CONFIG_PATH)
         except (ConfigStoreError, OSError, ValueError) as exc:
-            messagebox.showerror("無法匯入", str(exc), parent=self.root)
-            return
-        messagebox.showinfo("已匯入", "請重新啟動程式以使用舊設定與原影片工作區。", parent=self.root)
-        self.root.destroy()
-
-    def choose_workspace(self):
-        if self.running or self.update_busy:
-            messagebox.showinfo("請稍候", "請等影片處理與更新完成後再切換工作區。", parent=self.root)
-            return
-        selected = filedialog.askdirectory(title="選擇影片工作區", parent=self.root)
-        if not selected:
-            return
-        try:
-            self.save_settings_for_upgrade()
-            save_workspace(validate_workspace(selected))
-        except (ConfigStoreError, OSError, ValueError) as exc:
-            messagebox.showerror("無法儲存工作區", str(exc), parent=self.root)
-            return
-        messagebox.showinfo("已儲存工作區", "請重新啟動程式以使用新工作區。原影片會留在原資料夾。", parent=self.root)
-        self.root.destroy()
+            messagebox.showerror("無法開啟設定檔", str(exc), parent=self.root)
 
     def _advanced_path_row(self, label, variable, row):
         ttk.Label(self.advanced_tab, text=label).grid(
@@ -1345,10 +1309,10 @@ class AutoReframeGUI:
 
     def _load_initial_text(self):
         top_text = self.settings.get(
-            "top_text", _read_optional_text(INPUT_DIR.parent / "top_text.txt")
+            "top_text", ""
         )
         bottom_text = self.settings.get(
-            "bottom_text", _read_optional_text(INPUT_DIR.parent / "bottom_text.txt")
+            "bottom_text", ""
         )
         self.top_text.insert("1.0", str(top_text))
         self.bottom_text.insert("1.0", str(bottom_text))
@@ -1703,18 +1667,17 @@ class AutoReframeGUI:
     def _build_config(self):
         mode = self._mode_key()
         ensure_runtime_directories()
-        input_dir = INPUT_DIR.resolve()
-        output_dir = OUTPUT_DIR.resolve()
-        videos = [
-            item for item in input_dir.iterdir()
-            if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS
-        ]
+        videos = tuple(self.video_files)
         if not videos:
-            raise ValueError("輸入資料夾中沒有支援的影片檔。")
+            raise ValueError("請先加入待處理影片。")
         if not self.targets[mode]:
             raise ValueError("請至少加入一個輸出目標。")
-
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_mode = self.output_mode_var.get()
+        if output_mode not in {"source", "specified"}:
+            raise ValueError("輸出模式無效。")
+        folder = self.output_folder_var.get().strip()
+        if output_mode == "specified" and not folder:
+            raise ValueError("請選擇輸出資料夾。")
         workers = int(self.workers_var.get().strip())
         if workers < 0:
             raise ValueError("平行工作數不可小於 0。")
@@ -1752,8 +1715,9 @@ class AutoReframeGUI:
             raise ValueError("浮水印邊距必須介於 0 與 100。")
 
         common = dict(
-            input_dir=str(input_dir),
-            output_dir=str(output_dir),
+            video_files=videos,
+            output_mode=output_mode,
+            output_dir=folder,
             targets=[dict(target) for target in self.targets[mode]],
             ffmpeg_path=tool_path("ffmpeg", self.ffmpeg_var.get().strip()),
             ffprobe_path=tool_path("ffprobe", self.ffprobe_var.get().strip()),
@@ -1789,7 +1753,7 @@ class AutoReframeGUI:
         return mode, config
 
     def _collect_settings(self) -> dict:
-        """Collect GUI state without mutable input/output directory settings."""
+        """Collect GUI settings independently of the transient selected-file list."""
         font_path = Path(self.font_path_var.get()).expanduser()
         if font_path.resolve() == (SCRIPT_DIR / "fonts" / "NotoSerifTC.ttf").resolve():
             # macOS bundles symlink data from Frameworks into Resources.
@@ -1847,6 +1811,9 @@ class AutoReframeGUI:
             }
 
         return {
+            "output_mode": self.output_mode_var.get(),
+            "output_folder": self.output_folder_var.get(),
+            "include_subfolders": self.recursive_var.get(),
             "mode": self._mode_key(),
             "targets": deepcopy(self.targets),
             "final_ratio": list(self.settings["final_ratio"]),
@@ -1899,6 +1866,9 @@ class AutoReframeGUI:
         self.status_var.set("已還原 config.json.example 的預設設定")
 
     def _apply_settings_to_widgets(self, settings):
+        self.output_mode_var.set(settings.get("output_mode", "source"))
+        self.output_folder_var.set(settings.get("output_folder", ""))
+        self.recursive_var.set(settings.get("include_subfolders", False))
         mode = str(settings["mode"])
         self.mode_var.set(MODE_LABELS[mode])
         for target_mode in MODE_LABELS:
@@ -1952,7 +1922,7 @@ class AutoReframeGUI:
         self.top_text.delete("1.0", "end")
         self.top_text.insert(
             "1.0",
-            str(settings.get("top_text", _read_optional_text(INPUT_DIR.parent / "top_text.txt"))),
+            str(settings.get("top_text", "")),
         )
         self.bottom_text.delete("1.0", "end")
         self.bottom_text.insert(
@@ -1960,7 +1930,7 @@ class AutoReframeGUI:
             str(
                 settings.get(
                     "bottom_text",
-                    _read_optional_text(INPUT_DIR.parent / "bottom_text.txt"),
+                    "",
                 )
             ),
         )
@@ -1977,10 +1947,10 @@ class AutoReframeGUI:
             messagebox.showerror("設定無效", str(exc), parent=self.root)
             return
 
-        output_dir = Path(config.output_dir)
         try:
-            conflicts = find_target_output_conflicts(config, mode)
-        except OSError as exc:
+            destinations, finals = preflight_outputs(config, mode)
+            conflicts = [path for path in finals if path.exists()]
+        except (OSError, ValueError) as exc:
             messagebox.showerror("無法檢查輸出資料夾", str(exc), parent=self.root)
             return
 
@@ -2007,7 +1977,7 @@ class AutoReframeGUI:
 
         if conflict_action == OUTPUT_CONFLICT_DELETE:
             try:
-                delete_target_output_conflicts(output_dir, conflicts)
+                delete_planned_conflicts(conflicts, finals)
             except (OSError, ValueError) as exc:
                 messagebox.showerror("無法刪除目標輸出", str(exc), parent=self.root)
                 return
@@ -2224,28 +2194,9 @@ class AutoReframeGUI:
 
 
 def main():
-    global INPUT_DIR, OUTPUT_DIR, WATERMARK_DIR
-    root = tk.Tk()
+    from tkinterdnd2 import TkinterDnD
+    root = TkinterDnD.Tk()
     try:
-        workspace = load_workspace()
-        if workspace is None:
-            root.withdraw()
-            selected = filedialog.askdirectory(title="首次啟動：選擇影片工作區（可選原專案資料夾）", parent=root)
-            if not selected:
-                root.destroy()
-                return
-            workspace = validate_workspace(selected)
-            save_workspace(workspace)
-            root.deiconify()
-        workspace.ensure()
-        INPUT_DIR, OUTPUT_DIR, WATERMARK_DIR = workspace.input, workspace.output, workspace.watermark
-        if not is_frozen() and not CONFIG_PATH.exists() and (SCRIPT_DIR / "config.json").is_file():
-            def validate(settings):
-                defaults = load_config(CONFIG_EXAMPLE_PATH) or {}
-                defaults.update(settings)
-                normalize_target_sets(defaults)
-                normalize_watermark_settings(defaults)
-            import_legacy_settings(SCRIPT_DIR, CONFIG_PATH, validate)
         AutoReframeGUI(root)
     except (ConfigStoreError, OSError, ValueError) as exc:
         messagebox.showerror("無法啟動", str(exc), parent=root)

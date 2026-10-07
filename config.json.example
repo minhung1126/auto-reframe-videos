@@ -5,12 +5,18 @@
     "targets": {
       "reframe": [
         {
-          "ratio": [4, 5],
+          "ratio": [
+            4,
+            5
+          ],
           "resolution": "source",
           "vcodec": "h265"
         },
         {
-          "ratio": [4, 5],
+          "ratio": [
+            4,
+            5
+          ],
           "resolution": "1080p",
           "vcodec": "h264"
         }
@@ -22,7 +28,10 @@
         }
       ]
     },
-    "final_ratio": [9, 16],
+    "final_ratio": [
+      9,
+      16
+    ],
     "watermarks": {
       "reframe": {
         "enabled": false,
@@ -36,7 +45,7 @@
         "enabled": false,
         "file": "",
         "position": "bottom-center",
-        "width_ratio": 0.10,
+        "width_ratio": 0.1,
         "opacity": 0.8,
         "margin": 3
       }
@@ -52,6 +61,11 @@
     "ffprobe": "ffprobe",
     "workers": 0,
     "skip_existing": true,
-    "debug": false
+    "debug": false,
+    "top_text": "",
+    "bottom_text": "",
+    "output_mode": "source",
+    "output_folder": "",
+    "include_subfolders": false
   }
 }

@@ -31,3 +31,6 @@ credentials*.json
 secrets*.json
 .ipynb_checkpoints/
 *.ipynb
+
+# Local development scratch and verification assets
+/work/

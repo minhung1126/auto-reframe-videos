@@ -52,6 +52,12 @@ def verify_bundle(app, target):
     for name in required:
         if not (resources / name).is_file():
             raise RuntimeError('Missing frozen resource: ' + name)
+    dnd_platform = {"windows-x64": "win-x64", "macos-arm64": "osx-arm64", "macos-x64": "osx-x64"}.get(target, "linux-x64")
+    dnd_root = resources / "tkinterdnd2" / "tkdnd" / dnd_platform
+    if not (dnd_root / "pkgIndex.tcl").is_file() or not any(p.suffix.lower() in {'.dll', '.dylib', '.so'} for p in dnd_root.iterdir()):
+        raise RuntimeError('Missing native drag/drop runtime')
+    if not (resources / "licenses/runtime/tkdnd.txt").is_file() or not list((resources / "licenses/runtime").glob('tkinterdnd2-*.txt')):
+        raise RuntimeError('Missing drag/drop licenses')
     info = json.loads((resources / 'build-info.json').read_text(encoding='utf-8'))
     if info['version'] != __version__ or info['target'] != target or not re.fullmatch('[0-9a-f]{40,64}', info['commit']):
         raise RuntimeError('Build provenance mismatch')
