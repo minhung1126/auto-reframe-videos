@@ -151,7 +151,7 @@ HAS_DISPLAY = _can_create_tk_root()
 class WatermarkGUISavingBehaviorTests(unittest.TestCase):
     def setUp(self):
         self.tmp_dir = tempfile.TemporaryDirectory()
-        self.root_path = Path(self.tmp_dir.name)
+        self.root_path = Path(self.tmp_dir.name).resolve()
         (self.root_path / "watermark").mkdir()
         (self.root_path / "watermark" / "logo1.png").write_bytes(b"png1")
         (self.root_path / "watermark" / "logo2.png").write_bytes(b"png2")
