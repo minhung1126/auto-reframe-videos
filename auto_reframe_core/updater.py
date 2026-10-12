@@ -481,6 +481,9 @@ def can_self_update(install_root: Path) -> Tuple[bool, str]:
     )
     if not any(path.is_file() for path in entrypoints):
         return False, "找不到 Auto Reframe 統一入口。"
+    manifest_path = root / MANIFEST_NAME
+    if manifest_path.is_symlink() or not manifest_path.is_file():
+        return False, "找不到可信的已安裝 Release manifest；請重新下載並解壓完整 Release ZIP。"
     if not os.access(str(root), os.W_OK):
         return False, "程式目錄不可寫入，無法自動安裝更新。"
     return True, ""

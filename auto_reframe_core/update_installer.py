@@ -139,7 +139,7 @@ def verify_staged_files(staged_root: Path, manifest: dict) -> None:
 def find_local_modifications(install_root: Path, old_manifest: Optional[dict]) -> list:
     """Return managed files changed since the currently installed release."""
     if old_manifest is None:
-        return []
+        raise InstallError("Installed release manifest is missing; refusing an untracked update.")
     changed = []
     for item in old_manifest["files"]:
         relative = _safe_relative_path(item["path"])
@@ -189,11 +189,9 @@ def apply_update(
     verify_staged_files(staged, new_manifest)
 
     current_manifest_path = _confined_path(root, PurePosixPath(MANIFEST_NAME))
-    old_manifest = (
-        _load_manifest(current_manifest_path)
-        if current_manifest_path.is_file()
-        else None
-    )
+    if not current_manifest_path.is_file():
+        raise InstallError("Installed release manifest is missing; refusing an untracked update.")
+    old_manifest = _load_manifest(current_manifest_path)
     local_changes = find_local_modifications(root, old_manifest)
     if local_changes:
         preview = ", ".join(local_changes[:8])
@@ -202,12 +200,11 @@ def apply_update(
         raise InstallError(f"Locally modified managed files: {preview}")
 
     new_items = {item["path"]: item for item in new_manifest["files"]}
-    old_items = (
-        {item["path"]: item for item in old_manifest["files"]}
-        if old_manifest is not None
-        else {}
-    )
-    touched = sorted(set(new_items) | set(old_items))
+    old_items = {item["path"]: item for item in old_manifest["files"]}
+    for name in set(new_items) - set(old_items):
+        if _confined_path(root, _safe_relative_path(name)).exists():
+            raise InstallError(f"Unmanaged update path already exists: {name}")
+    touched = sorted(set(new_items) | set(old_items) | {MANIFEST_NAME})
     rollback_root = Path(tempfile.mkdtemp(prefix=".update-rollback-", dir=root))
     existed = {}
     try:
@@ -231,7 +228,7 @@ def apply_update(
             for name in sorted(set(old_items) - set(new_items)):
                 relative = _safe_relative_path(name)
                 _confined_path(root, relative).unlink(missing_ok=True)
-            current_manifest_path.unlink(missing_ok=True)
+            _copy_into_place(Path(manifest_path), current_manifest_path, 0o644)
         except BaseException:
             for name in reversed(touched):
                 relative = _safe_relative_path(name)

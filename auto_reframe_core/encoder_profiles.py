@@ -69,12 +69,7 @@ def _encoder_probe_cmd(ffmpeg_path: str, encoder: str) -> List[str]:
     return cmd
 
 
-def _detect_hw_encoder(
-    ffmpeg_path: str,
-    codec: str,
-    profile: Optional[PlatformProfile] = None,
-) -> Tuple[str, Optional[str]]:
-    """Detect the first usable hardware encoder for h265 or h264."""
+def _list_encoders(ffmpeg_path: str, profile=None) -> str:
     try:
         res = subprocess.run(
             [ffmpeg_path, "-hide_banner", "-encoders"],
@@ -92,6 +87,18 @@ def _detect_hw_encoder(
         raise RuntimeError(
             f"FFmpeg 無法列出編碼器（exit code {res.returncode}）: {ffmpeg_path}"
         )
+    return encoders
+
+
+def _detect_hw_encoder(
+    ffmpeg_path: str,
+    codec: str,
+    profile: Optional[PlatformProfile] = None,
+    *,
+    available_encoders: Optional[str] = None,
+) -> Tuple[str, Optional[str]]:
+    """Detect the first usable hardware encoder for h265 or h264."""
+    encoders = _list_encoders(ffmpeg_path, profile) if available_encoders is None else available_encoders
 
     label = codec.upper()
     for enc, hw in _encoder_candidates(codec, profile):
@@ -113,6 +120,16 @@ def _detect_hw_encoder(
     sw = _SW_FALLBACK[codec]
     print(f"  [核心系統] 未發現可用硬體加速 ({label})，回退至軟體編碼 ({sw})")
     return sw, None
+
+
+def detect_target_encoders(ffmpeg_path: str, codecs, profile=None) -> dict:
+    """Probe only selected codecs, sharing the encoder listing within this batch."""
+    requested = set(codecs)
+    if not requested or not requested <= _SW_FALLBACK.keys():
+        raise ValueError(f"不支援的目標 codecs: {sorted(requested)}")
+    encoders = _list_encoders(ffmpeg_path, profile)
+    return {codec: _detect_hw_encoder(ffmpeg_path, codec, profile, available_encoders=encoders)
+            for codec in ("h265", "h264") if codec in requested}
 
 
 def detect_h265_hw_encoder(ffmpeg_path: str = "ffmpeg") -> Tuple[str, Optional[str]]:

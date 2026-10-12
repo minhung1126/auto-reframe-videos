@@ -1,6 +1,6 @@
 # Public repository and release safety checklist
 
-Audit date: 2026-07-28
+Audit date: 2026-10-12
 
 ## Audit result
 
@@ -74,15 +74,18 @@ Current status:
 - Completed: Every third-party Action reference in the current workflows is
   pinned to a full-length commit SHA.
 
-Repository hardening still to confirm:
+Repository hardening verified through the authenticated GitHub API on 2026-10-12:
 
-- Enable repository-level enforcement that requires Actions to be pinned to a
-  full-length commit SHA.
-- Enable private vulnerability reporting.
-- Enable GitHub Secret Protection, including secret scanning and push
-  protection.
-- Protect `main`: require the cross-platform CI checks and prevent force
-  pushes.
+- Actions require full-length commit SHA pinning; the default workflow token
+  remains read-only and cannot approve pull request reviews.
+- Private vulnerability reporting is enabled.
+- Secret scanning and secret-scanning push protection are enabled.
+- The active `Protect main` ruleset prevents deletion and force pushes and
+  requires the three cross-platform Python CI checks and resolved review
+  threads. Repository administrators retain the existing bypass permission.
+- Release immutability remains enabled; the published v3.0.12 Release is
+  immutable and contains the source archive and all three unsigned installers
+  with SHA-256 digests, checksums and build records.
 
 ## Release procedure
 

@@ -285,13 +285,19 @@ class ArchiveStagingTests(unittest.TestCase):
 
 
 class InstallerTests(unittest.TestCase):
-    def test_self_update_requires_unified_install_marker(self):
+    def test_self_update_requires_unified_entry_and_installed_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             unified = root / "auto_reframe_core" / "__main__.py"
-            unified.parent.mkdir()
-            unified.write_text("", encoding="utf-8")
+            write_installed_manifest(
+                root, "2.3.0", [("auto_reframe_core/__main__.py", b"entry", 0o644)]
+            )
             self.assertEqual(can_self_update(root), (True, ""))
+
+            (root / MANIFEST_NAME).unlink()
+            allowed, reason = can_self_update(root)
+            self.assertFalse(allowed)
+            self.assertIn("manifest", reason)
 
             unified.unlink()
             allowed, reason = can_self_update(root)
@@ -319,7 +325,7 @@ class InstallerTests(unittest.TestCase):
                 ("auto_reframe_core/__main__.py", b"new entry", 0o644),
                 ("new_module.py", b"new module", 0o644),
             ]
-            write_installed_manifest(staged, "2.4.0", new_files)
+            new_manifest = write_installed_manifest(staged, "2.4.0", new_files)
             manifest_path = staged / MANIFEST_NAME
 
             update_installer.apply_update(
@@ -343,9 +349,108 @@ class InstallerTests(unittest.TestCase):
                 (root / "watermark" / "mine.png").read_bytes(),
                 b"personal watermark",
             )
-            self.assertFalse((root / MANIFEST_NAME).exists())
+            self.assertEqual(
+                json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8")),
+                new_manifest,
+            )
             self.assertFalse((root / ".update-backups").exists())
             self.assertEqual(list(root.glob(".update-rollback-*")), [])
+            self.assertEqual(list(root.rglob("*.update-tmp")), [])
+
+    def test_second_update_refuses_changes_since_first_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "app"
+            stage_b = Path(directory) / "stage-b"
+            stage_c = Path(directory) / "stage-c"
+            for path in (root, stage_b, stage_c):
+                path.mkdir()
+            for path, version, payload in (
+                (root, "1.0.0", b"release-A"),
+                (stage_b, "1.0.1", b"release-B"),
+                (stage_c, "1.0.2", b"release-C"),
+            ):
+                write_installed_manifest(
+                    path, version, [("auto_reframe_core/__main__.py", payload, 0o644)]
+                )
+            update_installer.apply_update(root, stage_b, stage_b / MANIFEST_NAME, "1.0.1")
+            manifest_b = (root / MANIFEST_NAME).read_bytes()
+            entry = root / "auto_reframe_core/__main__.py"
+            entry.write_bytes(b"USER EDIT AFTER B")
+
+            with self.assertRaisesRegex(update_installer.InstallError, "Locally modified"):
+                update_installer.apply_update(root, stage_c, stage_c / MANIFEST_NAME, "1.0.2")
+
+            self.assertEqual(entry.read_bytes(), b"USER EDIT AFTER B")
+            self.assertEqual((root / MANIFEST_NAME).read_bytes(), manifest_b)
+            self.assertEqual(list(root.glob(".update-rollback-*")), [])
+
+    def test_second_update_removes_files_retired_after_first_update(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "app"
+            stage_b = Path(directory) / "stage-b"
+            stage_c = Path(directory) / "stage-c"
+            for path in (root, stage_b, stage_c):
+                path.mkdir()
+            write_installed_manifest(
+                root, "1.0.0", [("auto_reframe_core/__main__.py", b"release-A", 0o644)]
+            )
+            write_installed_manifest(stage_b, "1.0.1", [
+                ("auto_reframe_core/__main__.py", b"release-B", 0o644),
+                ("auto_reframe_core/obsolete.py", b"only-in-B", 0o644),
+            ])
+            manifest_c = write_installed_manifest(
+                stage_c, "1.0.2", [("auto_reframe_core/__main__.py", b"release-C", 0o644)]
+            )
+            update_installer.apply_update(root, stage_b, stage_b / MANIFEST_NAME, "1.0.1")
+            self.assertTrue((root / "auto_reframe_core/obsolete.py").is_file())
+            update_installer.apply_update(root, stage_c, stage_c / MANIFEST_NAME, "1.0.2")
+
+            self.assertFalse((root / "auto_reframe_core/obsolete.py").exists())
+            self.assertEqual(
+                json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8")), manifest_c
+            )
+            self.assertEqual(list(root.glob(".update-rollback-*")), [])
+            self.assertEqual(list(root.rglob("*.update-tmp")), [])
+
+    def test_transaction_requires_installed_manifest_without_touching_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "app"
+            staged = Path(directory) / "staged"
+            root.mkdir()
+            staged.mkdir()
+            entry = root / "auto_reframe_core/__main__.py"
+            entry.parent.mkdir()
+            entry.write_bytes(b"untracked user content")
+            write_installed_manifest(
+                staged, "2.4.0", [("auto_reframe_core/__main__.py", b"new entry", 0o644)]
+            )
+            with self.assertRaisesRegex(update_installer.InstallError, "manifest is missing"):
+                update_installer.apply_update(root, staged, staged / MANIFEST_NAME, "2.4.0")
+            with self.assertRaisesRegex(update_installer.InstallError, "manifest is missing"):
+                update_installer.find_local_modifications(root, None)
+            self.assertEqual(entry.read_bytes(), b"untracked user content")
+            self.assertFalse((root / MANIFEST_NAME).exists())
+            self.assertEqual(list(root.glob(".update-rollback-*")), [])
+
+    def test_transaction_refuses_overwrite_of_newly_managed_existing_file(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "app"
+            staged = Path(directory) / "staged"
+            root.mkdir()
+            staged.mkdir()
+            write_installed_manifest(
+                root, "2.3.0", [("auto_reframe_core/__main__.py", b"old entry", 0o644)]
+            )
+            personal = root / "new_module.py"
+            personal.write_bytes(b"personal file")
+            write_installed_manifest(staged, "2.4.0", [
+                ("auto_reframe_core/__main__.py", b"new entry", 0o644),
+                ("new_module.py", b"release module", 0o644),
+            ])
+            with self.assertRaisesRegex(update_installer.InstallError, "Unmanaged update path"):
+                update_installer.apply_update(root, staged, staged / MANIFEST_NAME, "2.4.0")
+            self.assertEqual(personal.read_bytes(), b"personal file")
+            self.assertEqual((root / "auto_reframe_core/__main__.py").read_bytes(), b"old entry")
 
     def test_transaction_refuses_local_managed_changes_and_git_checkout(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -429,6 +534,46 @@ class InstallerTests(unittest.TestCase):
                 json.loads((root / MANIFEST_NAME).read_text(encoding="utf-8"))["version"],
                 "2.3.0",
             )
+
+    def test_manifest_commit_failure_restores_previous_transaction(self):
+        for fail_after_replace in (False, True):
+            with self.subTest(fail_after_replace=fail_after_replace):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory) / "app"
+                    staged = Path(directory) / "staged"
+                    root.mkdir()
+                    staged.mkdir()
+                    write_installed_manifest(root, "2.3.0", [
+                        ("auto_reframe_core/__main__.py", b"old entry", 0o644),
+                        ("obsolete.py", b"old obsolete", 0o644),
+                    ])
+                    old_manifest = (root / MANIFEST_NAME).read_bytes()
+                    write_installed_manifest(staged, "2.4.0", [
+                        ("auto_reframe_core/__main__.py", b"new entry", 0o644),
+                        ("new_module.py", b"new module", 0o644),
+                    ])
+                    original_replace = update_installer.os.replace
+                    failed = {"once": False}
+
+                    def fail_manifest_once(source, target):
+                        if Path(target) == root / MANIFEST_NAME and not failed["once"]:
+                            failed["once"] = True
+                            if fail_after_replace:
+                                original_replace(source, target)
+                            raise OSError("simulated manifest commit failure")
+                        return original_replace(source, target)
+
+                    with patch("auto_reframe_core.update_installer.os.replace", side_effect=fail_manifest_once):
+                        with self.assertRaisesRegex(OSError, "manifest commit failure"):
+                            update_installer.apply_update(root, staged, staged / MANIFEST_NAME, "2.4.0")
+
+                    self.assertTrue(failed["once"])
+                    self.assertEqual((root / "auto_reframe_core/__main__.py").read_bytes(), b"old entry")
+                    self.assertEqual((root / "obsolete.py").read_bytes(), b"old obsolete")
+                    self.assertFalse((root / "new_module.py").exists())
+                    self.assertEqual((root / MANIFEST_NAME).read_bytes(), old_manifest)
+                    self.assertEqual(list(root.glob(".update-rollback-*")), [])
+                    self.assertEqual(list(root.rglob("*.update-tmp")), [])
 
     def test_installer_cleanup_only_removes_owned_temp_directory(self):
         owned = Path(tempfile.mkdtemp(prefix="auto-reframe-update-"))

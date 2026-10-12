@@ -8,9 +8,10 @@ import unittest
 from unittest.mock import patch
 
 from auto_reframe_core.config_store import ConfigStoreError, load_config
-from auto_reframe_core.gui import (
-    AutoReframeGUI,
+from auto_reframe_core.gui import AutoReframeGUI, MODE_LABELS
+from auto_reframe_core.gui_settings import (
     DEFAULT_WATERMARK_WIDTH_RATIOS,
+    normalize_target_sets,
     normalize_watermark_settings,
 )
 from auto_reframe_core.gui_options import WATERMARK_POSITION_LABELS
@@ -185,6 +186,10 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
             self.assertTrue(root.tk.call("package", "require", "tkdnd"))
             payload = root.tk.call("list", *(str(path) for path in sources + [sources[0]]))
             app._drop_videos(SimpleNamespace(data=payload))
+            self.assertEqual(app.video_files, ())
+            app.scan_worker.join(5)
+            self.assertFalse(app.scan_worker.is_alive())
+            app._drain_events()
             self.assertEqual(app.video_files, tuple(sources))
             self.assertEqual(app.video_count_var.get(), "影片總數：2")
             mode, config = app._build_config()
@@ -299,6 +304,65 @@ class WatermarkGUISavingBehaviorTests(unittest.TestCase):
                 self.assertIn("0 與 100", str(ctx.exception))
             finally:
                 root.destroy()
+
+    def test_saving_and_processing_use_the_same_field_validation(self):
+        from tkinterdnd2 import TkinterDnD
+        root = TkinterDnD.Tk()
+        try:
+            root.withdraw()
+            app = AutoReframeGUI(root)
+            app.video_files = (self.root_path / "selected.mp4",)
+            for variable, bad_value, valid_value, field in (
+                (app.workers_var, "-1", "0", "workers"),
+                (app.top_spacing_var, "NaN", "1.08", "top_spacing"),
+                (app.watermark_margin_vars["reframe"], "101", "3", "margin"),
+            ):
+                with self.subTest(field=field):
+                    variable.set(bad_value)
+                    with self.assertRaisesRegex(ValueError, field) as collected:
+                        app._collect_settings()
+                    with self.assertRaisesRegex(ValueError, field) as processing:
+                        app._build_config()
+                    self.assertEqual(str(collected.exception), str(processing.exception))
+                    variable.set(valid_value)
+            with (
+                patch.object(Path, "resolve", side_effect=AssertionError("main-thread resolve")),
+                patch.object(Path, "is_file", side_effect=AssertionError("main-thread is_file")),
+            ):
+                mode, config = app._build_config()
+            self.assertEqual(mode, "reframe")
+            self.assertEqual(config.video_files, app.video_files)
+        finally:
+            root.destroy()
+
+    def test_processing_allows_incomplete_other_mode_but_saving_rejects(self):
+        from tkinterdnd2 import TkinterDnD
+        root = TkinterDnD.Tk()
+        try:
+            root.withdraw()
+            app = AutoReframeGUI(root)
+            app.video_files = (self.root_path / "selected.mp4",)
+            app.mode_var.set(MODE_LABELS["compress"])
+            app.targets["reframe"] = []
+            app.top_font_size_var.set("editing")
+            app.watermark_width_ratio_vars["reframe"].set("editing")
+            self.assertEqual(app._build_config()[0], "compress")
+            with patch("auto_reframe_core.gui.messagebox.showerror") as error:
+                app.save_settings()
+            error.assert_called_once()
+            self.assertFalse((self.root_path / "config.json").exists())
+
+            app.targets = normalize_target_sets(app.default_settings)
+            app.top_font_size_var.set("48")
+            app.watermark_width_ratio_vars["reframe"].set("0.15")
+            app.mode_var.set(MODE_LABELS["reframe"])
+            app.targets["compress"] = []
+            app.watermark_margin_vars["compress"].set("editing")
+            self.assertEqual(app._build_config()[0], "reframe")
+            with self.assertRaisesRegex(ValueError, "targets.compress"):
+                app._collect_settings()
+        finally:
+            root.destroy()
 
     def test_save_settings_aborts_and_does_not_corrupt_config_on_error(self):
         config_file = self.root_path / "config.json"

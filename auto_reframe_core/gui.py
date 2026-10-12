@@ -39,13 +39,21 @@ from auto_reframe_core.gui_options import (
 )
 from auto_reframe_core.watermark import (
     WATERMARK_POSITIONS,
-    parse_watermark_opacity,
 )
 from auto_reframe_core.config_store import (
     ConfigStoreError,
     clear_config,
-    load_config,
     save_config,
+)
+from auto_reframe_core.gui_settings import (
+    DEFAULT_WATERMARK_MARGIN,
+    DEFAULT_WATERMARK_OPACITY,
+    DEFAULT_WATERMARK_POSITION,
+    DEFAULT_WATERMARK_WIDTH_RATIOS,
+    load_effective_settings as _load_effective_settings,
+    normalize_gui_settings,
+    normalize_target_sets,
+    normalize_watermark_settings,
 )
 from auto_reframe_core.updater import (
     GITHUB_OWNER,
@@ -61,7 +69,7 @@ from auto_reframe_core.runtime_paths import (
 )
 from auto_reframe_core.version import __version__
 from auto_reframe_core.output_plans import (
-    preflight_outputs, delete_planned_conflicts, output_root_for,
+    prepare_video_batch, validate_prepared_batch, delete_planned_conflicts, output_root_for,
 )
 from auto_reframe_core.platform_profile import open_directory
 from auto_reframe_core.video_utils import VideoProgressEvent, h264, h265
@@ -249,7 +257,10 @@ def build_job_confirmation_message(
         lines.append(f"影片數量：{len(config.video_files)}")
         lines.append("輸出模式：" + ("各影片所在資料夾的 auto-reframe/" if config.output_mode == "source" else "指定資料夾"))
         lines.append("實際目的地：")
-        lines.extend(f"  {path}" for path in sorted({output_root_for(config, p) for p in config.video_files}))
+        prepared = getattr(config, "prepared_batch", None)
+        destinations = (prepared.destinations if prepared is not None else
+                        sorted({output_root_for(config, p) for p in config.video_files}))
+        lines.extend(f"  {path}" for path in destinations)
     if output_conflict_action:
         lines.append(f"既有輸出：{OUTPUT_CONFLICT_LABELS[output_conflict_action]}")
     lines.extend(["", "輸出組合："])
@@ -292,135 +303,7 @@ def ensure_runtime_directories(paths=None):
 
 
 def load_effective_settings():
-    """Load committed defaults, then overlay the optional local config."""
-    defaults = load_config(CONFIG_EXAMPLE_PATH)
-    if defaults is None:
-        raise ConfigStoreError(f"找不到預設設定: {CONFIG_EXAMPLE_PATH}")
-    effective = deepcopy(defaults)
-    saved = load_config(CONFIG_PATH)
-    if saved:
-        effective.update(saved)
-    return defaults, effective
-
-
-def normalize_target_sets(settings: dict) -> dict:
-    """Validate target data loaded from JSON before it reaches the GUI."""
-    raw_targets = settings.get("targets")
-    if not isinstance(raw_targets, dict):
-        raise ConfigStoreError("設定檔的 targets 必須是物件。")
-
-    final_ratio_value = settings.get("final_ratio")
-    if not isinstance(final_ratio_value, (list, tuple)) or len(final_ratio_value) != 2:
-        raise ConfigStoreError("設定檔的 final_ratio 必須是 [寬, 高]。")
-    final_ratio = (int(final_ratio_value[0]), int(final_ratio_value[1]))
-    if final_ratio[0] <= 0 or final_ratio[1] <= 0:
-        raise ConfigStoreError("設定檔的 final_ratio 必須大於 0。")
-
-    normalized = {"reframe": [], "compress": []}
-    for mode in normalized:
-        entries = raw_targets.get(mode)
-        if not isinstance(entries, list) or not entries:
-            raise ConfigStoreError(f"設定檔的 targets.{mode} 不可為空。")
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise ConfigStoreError(f"targets.{mode} 的每個項目都必須是物件。")
-            resolution = str(entry.get("resolution", "")).lower()
-            codec = str(entry.get("vcodec", "")).lower()
-            if resolution not in RESOLUTION_LABELS or codec not in CODEC_LABELS:
-                raise ConfigStoreError(f"targets.{mode} 包含不支援的解析度或 codec。")
-            target = {"resolution": resolution, "vcodec": codec}
-            if mode == "reframe":
-                ratio_value = entry.get("ratio")
-                if not isinstance(ratio_value, (list, tuple)) or len(ratio_value) != 2:
-                    raise ConfigStoreError("重製 target 的 ratio 必須是 [寬, 高]。")
-                ratio = (int(ratio_value[0]), int(ratio_value[1]))
-                if ratio[0] <= 0 or ratio[1] <= 0:
-                    raise ConfigStoreError("重製 target 的 ratio 必須大於 0。")
-                if ratio[0] / ratio[1] < final_ratio[0] / final_ratio[1]:
-                    raise ConfigStoreError("中央影片比例不可比 final_ratio 更窄高。")
-                target["ratio"] = ratio
-            if target not in normalized[mode]:
-                normalized[mode].append(target)
-    return normalized
-
-
-DEFAULT_WATERMARK_WIDTH_RATIOS = {
-    "reframe": 0.15,
-    "compress": 0.10,
-}
-DEFAULT_WATERMARK_POSITION = "bottom-center"
-DEFAULT_WATERMARK_OPACITY = 0.8
-DEFAULT_WATERMARK_MARGIN = 3
-
-
-def normalize_watermark_settings(settings: dict) -> dict:
-    """Validate and normalize per-mode watermark settings from JSON or GUI."""
-    raw_watermarks = settings.get("watermarks")
-    normalized = {}
-
-    for mode in ("reframe", "compress"):
-        default_width_ratio = DEFAULT_WATERMARK_WIDTH_RATIOS[mode]
-        mode_entry = None
-        if isinstance(raw_watermarks, dict) and mode in raw_watermarks:
-            mode_entry = raw_watermarks.get(mode)
-            if not isinstance(mode_entry, dict):
-                raise ConfigStoreError(f"設定檔的 watermarks.{mode} 必須是物件。")
-        else:
-            mode_entry = {}
-
-        enabled = bool(mode_entry.get("enabled", False))
-        file_val = str(mode_entry.get("file", "")).strip()
-
-        position = str(
-            mode_entry.get("position", DEFAULT_WATERMARK_POSITION)
-        ).strip().lower()
-        if position not in WATERMARK_POSITIONS:
-            allowed = ", ".join(sorted(WATERMARK_POSITIONS))
-            raise ConfigStoreError(
-                f"watermarks.{mode}.position 無效: {position!r}。可用值: {allowed}"
-            )
-
-        try:
-            width_ratio = float(mode_entry.get("width_ratio", default_width_ratio))
-        except (TypeError, ValueError) as exc:
-            raise ConfigStoreError(
-                f"watermarks.{mode}.width_ratio 必須是數字。"
-            ) from exc
-        if not 0.01 <= width_ratio <= 1.0:
-            raise ConfigStoreError(
-                f"watermarks.{mode}.width_ratio 必須介於 0.01 與 1.0。"
-            )
-
-        try:
-            opacity = parse_watermark_opacity(
-                mode_entry.get("opacity", DEFAULT_WATERMARK_OPACITY)
-            )
-        except (TypeError, ValueError) as exc:
-            raise ConfigStoreError(
-                f"watermarks.{mode}.opacity 必須介於 0.0 與 1.0（或 0% 與 100%）。"
-            ) from exc
-
-        try:
-            margin = int(mode_entry.get("margin", DEFAULT_WATERMARK_MARGIN))
-        except (TypeError, ValueError) as exc:
-            raise ConfigStoreError(
-                f"watermarks.{mode}.margin 必須是整數。"
-            ) from exc
-        if not 0 <= margin <= 100:
-            raise ConfigStoreError(
-                f"watermarks.{mode}.margin 必須介於 0 與 100。"
-            )
-
-        normalized[mode] = {
-            "enabled": enabled,
-            "file": file_val,
-            "position": position,
-            "width_ratio": width_ratio,
-            "opacity": opacity,
-            "margin": margin,
-        }
-
-    return normalized
+    return _load_effective_settings(CONFIG_EXAMPLE_PATH, CONFIG_PATH)
 
 
 class QueueStream(io.TextIOBase):
@@ -521,6 +404,9 @@ class AutoReframeGUI:
         self.event_queue = queue.Queue()
         self.worker = None
         self.running = False
+        self.preflight_busy = False
+        self.scan_busy = False
+        self.scan_worker = None
         self.update_worker = None
         self.update_busy = False
         self.installing_update = False
@@ -546,6 +432,7 @@ class AutoReframeGUI:
         self.root.after(250, self._show_pending_update_error)
 
     def _create_variables(self, settings):
+        settings = normalize_gui_settings(settings)
         self.output_mode_var = tk.StringVar(value=settings.get("output_mode", "source"))
         self.output_folder_var = tk.StringVar(value=settings.get("output_folder", ""))
         self.recursive_var = tk.BooleanVar(value=settings.get("include_subfolders", False))
@@ -672,14 +559,46 @@ class AutoReframeGUI:
         self.root.dnd_bind("<<Drop>>", self._drop_videos)
 
     def _add_items(self, items):
-        if self.running:
+        if self.running or self.update_busy:
             messagebox.showinfo("處理中", "本次任務清單已固定，請完成後再修改。", parent=self.root)
             return
+        if self.scan_busy:
+            messagebox.showinfo("正在掃描", "請等目前掃描完成後再加入影片。", parent=self.root)
+            return
+        self.scan_busy = True
+        self._set_footer_buttons("disabled")
+        self.status_var.set("正在掃描影片…")
+        self.scan_worker = threading.Thread(
+            target=self._scan_items,
+            args=(tuple(items), tuple(self.video_files), bool(self.recursive_var.get())),
+            name="video-scan",
+            daemon=True,
+        )
+        self.scan_worker.start()
+
+    def _scan_items(self, items, existing, recursive):
         from auto_reframe_core.video_list import collect_videos
-        self.video_files, errors = collect_videos(items, self.video_files, self.recursive_var.get())
+        try:
+            result = collect_videos(items, existing, recursive)
+        except Exception as exc:
+            self.event_queue.put(("scan_error", str(exc)))
+        else:
+            self.event_queue.put(("scan_done", result))
+
+    def _finish_scan(self, result):
+        self.scan_busy = False
+        self.video_files, errors = result
         self._refresh_files()
+        self._set_footer_buttons("normal")
+        self.status_var.set(f"掃描完成：{len(self.video_files)} 個影片")
         if errors:
             messagebox.showwarning("部分項目無法加入", "\n".join(errors), parent=self.root)
+
+    def _finish_scan_error(self, error):
+        self.scan_busy = False
+        self._set_footer_buttons("normal")
+        self.status_var.set("影片掃描失敗")
+        messagebox.showerror("無法掃描影片", error, parent=self.root)
 
     def _refresh_files(self):
         self.files_tree.delete(*self.files_tree.get_children())
@@ -704,14 +623,14 @@ class AutoReframeGUI:
             self._add_items((folder,))
 
     def _remove_videos(self):
-        if self.running:
+        if self.running or self.scan_busy:
             return
         selected = {int(item) for item in self.files_tree.selection()}
         self.video_files = tuple(path for index, path in enumerate(self.video_files) if index not in selected)
         self._refresh_files()
 
     def _clear_videos(self):
-        if self.running:
+        if self.running or self.scan_busy:
             return
         self.video_files = ()
         self._refresh_files()
@@ -1281,8 +1200,6 @@ class AutoReframeGUI:
 
     def save_settings_for_upgrade(self):
         settings = self._collect_settings()
-        normalize_target_sets(settings)
-        normalize_watermark_settings(settings)
         save_config(CONFIG_PATH, settings)
 
     def open_config(self):
@@ -1383,12 +1300,13 @@ class AutoReframeGUI:
             )
 
     def check_for_updates(self):
-        if self.update_busy:
+        if self.update_busy or self.running or self.scan_busy:
             return
         self.update_busy = True
         self.update_info = None
         self.check_update_button.configure(state="disabled")
         self.install_update_button.configure(state="disabled")
+        self._set_footer_buttons("disabled")
         self.update_status_var.set("正在連線 GitHub 檢查最新正式版本…")
         self.status_var.set("正在檢查軟體更新…")
         self.update_worker = threading.Thread(
@@ -1408,6 +1326,7 @@ class AutoReframeGUI:
 
     def _finish_update_check(self, info):
         self.update_busy = False
+        self._set_footer_buttons("normal")
         self.update_info = info
         self.check_update_button.configure(state="normal")
         immutable_text = "不可變 Release" if info.immutable else "一般 Release"
@@ -1417,7 +1336,7 @@ class AutoReframeGUI:
                 f"{immutable_text}）。"
             )
             allowed, _reason = can_self_update(SCRIPT_DIR)
-            if (allowed or is_frozen()) and not self.running:
+            if (allowed or is_frozen()) and not self.running and not self.scan_busy:
                 self.install_update_button.configure(state="normal")
             self.status_var.set(f"可更新至 v{info.latest_version}")
         else:
@@ -1432,6 +1351,7 @@ class AutoReframeGUI:
 
     def _finish_update_check_error(self, error):
         self.update_busy = False
+        self._set_footer_buttons("normal")
         self.check_update_button.configure(state="normal")
         self.install_update_button.configure(state="disabled")
         self.update_status_var.set("更新檢查失敗。")
@@ -1440,6 +1360,8 @@ class AutoReframeGUI:
         messagebox.showerror("無法檢查更新", error, parent=self.root)
 
     def install_update(self):
+        if self.scan_busy:
+            return
         if is_frozen():
             if self.running or self.update_busy or not self.update_info or not self.update_info.available:
                 return
@@ -1477,8 +1399,6 @@ class AutoReframeGUI:
             return
         try:
             settings = self._collect_settings()
-            normalize_target_sets(settings)
-            normalize_watermark_settings(settings)
             save_config(CONFIG_PATH, settings)
             self.settings = deepcopy(settings)
             self.watermark_settings = normalize_watermark_settings(self.settings)
@@ -1544,7 +1464,7 @@ class AutoReframeGUI:
     def _finish_update_install_error(self, error):
         self.update_busy = False
         self.check_update_button.configure(state="normal")
-        if self.update_info is not None and self.update_info.available:
+        if self.update_info is not None and self.update_info.available and not self.running and not self.scan_busy:
             self.install_update_button.configure(state="normal")
         self._set_footer_buttons("normal")
         self.update_status_var.set("更新安裝失敗。")
@@ -1665,180 +1585,114 @@ class AutoReframeGUI:
             self.status_var.set("watermark/ 尚無 PNG；需要浮水印時請先放入圖片")
 
     def _build_config(self):
-        mode = self._mode_key()
-        ensure_runtime_directories()
+        settings = self._collect_settings(portable_paths=False, validation_mode=self._mode_key())
+        mode = settings["mode"]
         videos = tuple(self.video_files)
         if not videos:
             raise ValueError("請先加入待處理影片。")
-        if not self.targets[mode]:
-            raise ValueError("請至少加入一個輸出目標。")
-        output_mode = self.output_mode_var.get()
-        if output_mode not in {"source", "specified"}:
-            raise ValueError("輸出模式無效。")
-        folder = self.output_folder_var.get().strip()
+        output_mode = settings["output_mode"]
+        folder = settings["output_folder"]
         if output_mode == "specified" and not folder:
             raise ValueError("請選擇輸出資料夾。")
-        workers = int(self.workers_var.get().strip())
-        if workers < 0:
-            raise ValueError("平行工作數不可小於 0。")
-
-        watermark_enabled = self.watermark_enabled_vars[mode].get()
-        watermark_file = self.watermark_file_vars[mode].get().strip()
-        watermark_path = self.watermark_paths.get(watermark_file)
-        if watermark_enabled and watermark_path is None:
+        watermark = settings["watermarks"][mode]
+        watermark_path = self.watermark_paths.get(watermark["file"])
+        if watermark["enabled"] and watermark_path is None:
             raise ValueError("已啟用浮水印，但 watermark/ 中沒有可用的 PNG。")
-
-        pos_label = self.watermark_position_vars[mode].get().strip()
-        pos_key = WATERMARK_POSITION_KEYS_BY_LABEL.get(pos_label, pos_label)
-        if pos_key not in WATERMARK_POSITIONS:
-            raise ValueError(f"浮水印位置無效: {pos_label!r}。")
-
-        try:
-            width_ratio = float(self.watermark_width_ratio_vars[mode].get().strip())
-        except ValueError as exc:
-            raise ValueError("浮水印等比例必須是數字。") from exc
-        if not 0.01 <= width_ratio <= 1.0:
-            raise ValueError("浮水印等比例必須介於 0.01 與 1.0。")
-
-        try:
-            opacity = parse_watermark_opacity(
-                self.watermark_opacity_vars[mode].get().strip()
-            )
-        except ValueError as exc:
-            raise ValueError(f"浮水印透明度無效: {exc}") from exc
-
-        try:
-            margin = int(self.watermark_margin_vars[mode].get().strip())
-        except ValueError as exc:
-            raise ValueError("浮水印邊距必須是整數。") from exc
-        if not 0 <= margin <= 100:
-            raise ValueError("浮水印邊距必須介於 0 與 100。")
 
         common = dict(
             video_files=videos,
             output_mode=output_mode,
             output_dir=folder,
-            targets=[dict(target) for target in self.targets[mode]],
-            ffmpeg_path=tool_path("ffmpeg", self.ffmpeg_var.get().strip()),
-            ffprobe_path=tool_path("ffprobe", self.ffprobe_var.get().strip()),
-            skip_existing=self.skip_existing_var.get(),
-            max_workers=workers,
-            debug=self.debug_var.get(),
-            watermark_enabled=watermark_enabled,
+            targets=settings["targets"][mode],
+            ffmpeg_path=self.ffmpeg_var.get().strip() or "ffmpeg",
+            ffprobe_path=self.ffprobe_var.get().strip() or "ffprobe",
+            skip_existing=settings["skip_existing"],
+            max_workers=settings["workers"],
+            debug=settings["debug"],
+            watermark_enabled=watermark["enabled"],
             watermark_file=str(watermark_path) if watermark_path else "",
-            watermark_position=pos_key,
-            watermark_width_ratio=width_ratio,
-            watermark_opacity=opacity,
-            watermark_margin=margin,
+            watermark_position=watermark["position"],
+            watermark_width_ratio=watermark["width_ratio"],
+            watermark_opacity=watermark["opacity"],
+            watermark_margin=watermark["margin"],
         )
         if mode == "compress":
             return mode, CompressConfig(**common)
 
-        font_path = Path(self.font_path_var.get()).expanduser().resolve()
-        if not font_path.is_file():
-            raise ValueError(f"找不到字型檔: {font_path}")
+        font_path = Path(settings["font_path"]).expanduser()
+        if not font_path.is_absolute():
+            font_path = SCRIPT_DIR / font_path
         config = ReframeConfig(
             **common,
-            final_ratio=tuple(int(value) for value in self.settings["final_ratio"]),
-            top_text_override=self.top_text.get("1.0", "end-1c"),
-            bottom_text_override=self.bottom_text.get("1.0", "end-1c"),
+            final_ratio=tuple(settings["final_ratio"]),
+            top_text_override=settings["top_text"],
+            bottom_text_override=settings["bottom_text"],
             font_path=str(font_path),
-            font_color=self.font_color_var.get().strip() or "white",
-            top_font_size=int(self.top_font_size_var.get()),
-            bottom_font_size=int(self.bottom_font_size_var.get()),
-            text_margin=int(self.text_margin_var.get()),
-            top_text_line_spacing_ratio=float(self.top_spacing_var.get()),
-            bottom_text_line_spacing_ratio=float(self.bottom_spacing_var.get()),
+            font_color=settings["font_color"],
+            top_font_size=settings["top_font_size"],
+            bottom_font_size=settings["bottom_font_size"],
+            text_margin=settings["text_margin"],
+            top_text_line_spacing_ratio=settings["top_spacing"],
+            bottom_text_line_spacing_ratio=settings["bottom_spacing"],
         )
         return mode, config
 
-    def _collect_settings(self) -> dict:
+    def _collect_settings(self, *, portable_paths=True, validation_mode=None) -> dict:
         """Collect GUI settings independently of the transient selected-file list."""
-        font_path = Path(self.font_path_var.get()).expanduser()
-        if font_path.resolve() == (SCRIPT_DIR / "fonts" / "NotoSerifTC.ttf").resolve():
-            # macOS bundles symlink data from Frameworks into Resources.
-            # Preserve the resource identity across moves and replacement installs.
-            font_value = "fonts/NotoSerifTC.ttf"
-        else:
-            try:
-                font_value = font_path.resolve().relative_to(SCRIPT_DIR).as_posix()
-            except ValueError:
-                font_value = str(font_path.resolve())
-
         watermarks = {}
         for mode in ("reframe", "compress"):
-            mode_title = "【裁切重製】" if mode == "reframe" else "【影片壓縮】"
-            enabled = bool(self.watermark_enabled_vars[mode].get())
-            watermark_file = self.watermark_file_vars[mode].get().strip()
-
             pos_label = self.watermark_position_vars[mode].get().strip()
-            pos_key = WATERMARK_POSITION_KEYS_BY_LABEL.get(pos_label, pos_label)
-            if pos_key not in WATERMARK_POSITIONS:
-                raise ValueError(f"{mode_title}浮水印位置無效: {pos_label!r}。")
-
-            ratio_raw = self.watermark_width_ratio_vars[mode].get().strip()
-            try:
-                width_ratio = float(ratio_raw)
-            except ValueError as exc:
-                raise ValueError(f"{mode_title}浮水印等比例必須是數字。") from exc
-            if not 0.01 <= width_ratio <= 1.0:
-                raise ValueError(f"{mode_title}浮水印等比例必須介於 0.01 與 1.0。")
-
-            opacity_raw = self.watermark_opacity_vars[mode].get().strip()
-            try:
-                opacity = parse_watermark_opacity(opacity_raw)
-            except ValueError as exc:
-                raise ValueError(
-                    f"{mode_title}浮水印透明度「{opacity_raw}」無效，"
-                    "必須介於 0.0 與 1.0（或 0% 到 100%）。"
-                ) from exc
-
-            margin_raw = self.watermark_margin_vars[mode].get().strip()
-            try:
-                margin = int(margin_raw)
-            except ValueError as exc:
-                raise ValueError(f"{mode_title}浮水印邊距必須是整數。") from exc
-            if not 0 <= margin <= 100:
-                raise ValueError(f"{mode_title}浮水印邊距必須介於 0 與 100。")
-
             watermarks[mode] = {
-                "enabled": enabled,
-                "file": watermark_file,
-                "position": pos_key,
-                "width_ratio": width_ratio,
-                "opacity": opacity,
-                "margin": margin,
+                "enabled": self.watermark_enabled_vars[mode].get(),
+                "file": self.watermark_file_vars[mode].get(),
+                "position": WATERMARK_POSITION_KEYS_BY_LABEL.get(pos_label, pos_label),
+                "width_ratio": self.watermark_width_ratio_vars[mode].get(),
+                "opacity": self.watermark_opacity_vars[mode].get(),
+                "margin": self.watermark_margin_vars[mode].get(),
             }
 
-        return {
+        raw_settings = {
             "output_mode": self.output_mode_var.get(),
             "output_folder": self.output_folder_var.get(),
             "include_subfolders": self.recursive_var.get(),
             "mode": self._mode_key(),
             "targets": deepcopy(self.targets),
-            "final_ratio": list(self.settings["final_ratio"]),
+            "final_ratio": deepcopy(self.settings.get("final_ratio")),
             "watermarks": watermarks,
             "top_text": self.top_text.get("1.0", "end-1c"),
             "bottom_text": self.bottom_text.get("1.0", "end-1c"),
-            "font_path": font_value,
-            "font_color": self.font_color_var.get().strip() or "white",
-            "top_font_size": int(self.top_font_size_var.get()),
-            "bottom_font_size": int(self.bottom_font_size_var.get()),
-            "text_margin": int(self.text_margin_var.get()),
-            "top_spacing": float(self.top_spacing_var.get()),
-            "bottom_spacing": float(self.bottom_spacing_var.get()),
+            "font_path": self.font_path_var.get(),
+            "font_color": self.font_color_var.get(),
+            "top_font_size": self.top_font_size_var.get(),
+            "bottom_font_size": self.bottom_font_size_var.get(),
+            "text_margin": self.text_margin_var.get(),
+            "top_spacing": self.top_spacing_var.get(),
+            "bottom_spacing": self.bottom_spacing_var.get(),
             "ffmpeg": "ffmpeg" if is_frozen() else self.ffmpeg_var.get().strip() or "ffmpeg",
             "ffprobe": "ffprobe" if is_frozen() else self.ffprobe_var.get().strip() or "ffprobe",
-            "workers": int(self.workers_var.get()),
-            "skip_existing": bool(self.skip_existing_var.get()),
-            "debug": bool(self.debug_var.get()),
+            "workers": self.workers_var.get(),
+            "skip_existing": self.skip_existing_var.get(),
+            "debug": self.debug_var.get(),
         }
+        try:
+            settings = normalize_gui_settings(raw_settings, validation_mode=validation_mode)
+        except ConfigStoreError as exc:
+            raise ValueError(str(exc)) from exc
+        if portable_paths:
+            font_path = Path(settings["font_path"]).expanduser()
+            if font_path.resolve() == (SCRIPT_DIR / "fonts" / "NotoSerifTC.ttf").resolve():
+                # macOS resource symlinks preserve the font's identity after app moves.
+                settings["font_path"] = "fonts/NotoSerifTC.ttf"
+            else:
+                try:
+                    settings["font_path"] = font_path.resolve().relative_to(SCRIPT_DIR).as_posix()
+                except ValueError:
+                    settings["font_path"] = str(font_path.resolve())
+        return settings
 
     def save_settings(self):
         try:
             settings = self._collect_settings()
-            normalize_target_sets(settings)
-            normalize_watermark_settings(settings)
             save_config(CONFIG_PATH, settings)
         except (ConfigStoreError, OSError, ValueError) as exc:
             messagebox.showerror("無法儲存設定", str(exc), parent=self.root)
@@ -1859,7 +1713,7 @@ class AutoReframeGUI:
             messagebox.showerror("無法還原預設", str(exc), parent=self.root)
             return
 
-        self.settings = deepcopy(self.default_settings)
+        self.settings = normalize_gui_settings(self.default_settings)
         self.targets = normalize_target_sets(self.settings)
         self.watermark_settings = normalize_watermark_settings(self.settings)
         self._apply_settings_to_widgets(self.settings)
@@ -1939,7 +1793,7 @@ class AutoReframeGUI:
         self._switch_mode()
 
     def start_job(self):
-        if self.running:
+        if self.running or self.scan_busy or self.update_busy:
             return
         try:
             mode, config = self._build_config()
@@ -1947,12 +1801,46 @@ class AutoReframeGUI:
             messagebox.showerror("設定無效", str(exc), parent=self.root)
             return
 
+        self.running = True
+        self.preflight_busy = True
+        self._set_footer_buttons("disabled")
+        self.status_var.set("正在檢查影片與輸出位置…")
+        self.worker = threading.Thread(
+            target=self._prepare_job,
+            args=(mode, config),
+            name="video-preflight",
+            daemon=True,
+        )
+        self.worker.start()
+
+    def _prepare_job(self, mode, config):
         try:
-            destinations, finals = preflight_outputs(config, mode)
-            conflicts = [path for path in finals if path.exists()]
-        except (OSError, ValueError) as exc:
-            messagebox.showerror("無法檢查輸出資料夾", str(exc), parent=self.root)
-            return
+            prepared = prepare_video_batch(config, mode)
+            config.prepared_batch = prepared
+            conflicts = tuple(path for path in prepared.finals if path.exists())
+        except Exception as exc:
+            self.event_queue.put(("preflight_error", str(exc)))
+        else:
+            self.event_queue.put(("preflight_done", (mode, config, conflicts)))
+
+    def _cancel_preflight(self, status="已取消開始處理"):
+        self.preflight_busy = False
+        self.running = False
+        self._set_footer_buttons("normal")
+        self.status_var.set(status)
+
+    def _finish_preflight_error(self, error):
+        self._cancel_preflight("無法開始處理")
+        messagebox.showerror("無法檢查影片與輸出", error, parent=self.root)
+
+    def _finish_preflight(self, result):
+        try:
+            self._confirm_prepared_job(result)
+        except Exception as exc:
+            self._finish_preflight_error(str(exc))
+
+    def _confirm_prepared_job(self, result):
+        mode, config, conflicts = result
 
         conflict_action = None
         if conflicts:
@@ -1962,7 +1850,7 @@ class AutoReframeGUI:
                 prefer_skip=config.skip_existing,
             )
             if conflict_action == OUTPUT_CONFLICT_CANCEL:
-                self.status_var.set("已取消開始處理")
+                self._cancel_preflight()
                 return
             config.skip_existing = conflict_action == OUTPUT_CONFLICT_SKIP
 
@@ -1972,19 +1860,32 @@ class AutoReframeGUI:
             parent=self.root,
             default=messagebox.YES,
         ):
-            self.status_var.set("已取消開始處理")
+            self._cancel_preflight()
             return
 
-        if conflict_action == OUTPUT_CONFLICT_DELETE:
-            try:
-                delete_planned_conflicts(conflicts, finals)
-            except (OSError, ValueError) as exc:
-                messagebox.showerror("無法刪除目標輸出", str(exc), parent=self.root)
-                return
+        self.status_var.set("正在確認來源與輸出狀態…")
+        self.worker = threading.Thread(
+            target=self._validate_job,
+            args=(mode, config, conflict_action, conflicts),
+            name="video-preflight-confirm",
+            daemon=True,
+        )
+        self.worker.start()
 
+    def _validate_job(self, mode, config, conflict_action, conflicts):
+        try:
+            validate_prepared_batch(config, mode)
+            if conflict_action == OUTPUT_CONFLICT_DELETE:
+                delete_planned_conflicts(conflicts, config.prepared_batch.finals)
+        except Exception as exc:
+            self.event_queue.put(("preflight_error", str(exc)))
+        else:
+            self.event_queue.put(("job_ready", (mode, config)))
+
+    def _start_prepared_job(self, result):
+        mode, config = result
+        self.preflight_busy = False
         self.skip_existing_var.set(config.skip_existing)
-        self.running = True
-        self._set_footer_buttons("disabled")
         self.status_var.set("正在偵測硬體並處理影片…")
         self._reset_video_progress()
         self.notebook.select(self.activity_tab)
@@ -2026,6 +1927,16 @@ class AutoReframeGUI:
                     self._finish_with_error(payload)
                 elif event == "done":
                     self._finish_success(payload)
+                elif event == "scan_done":
+                    self._finish_scan(payload)
+                elif event == "scan_error":
+                    self._finish_scan_error(payload)
+                elif event == "preflight_done":
+                    self._finish_preflight(payload)
+                elif event == "preflight_error":
+                    self._finish_preflight_error(payload)
+                elif event == "job_ready":
+                    self._start_prepared_job(payload)
                 elif event == "update_check_done":
                     self._finish_update_check(payload)
                 elif event == "update_check_error":
@@ -2132,6 +2043,8 @@ class AutoReframeGUI:
         self.progress_summary_var.set("｜".join(parts))
 
     def _set_footer_buttons(self, state):
+        if state == "normal" and (self.running or self.scan_busy or self.update_busy):
+            state = "disabled"
         self.start_button.configure(state=state)
         self.save_button.configure(state=state)
         self.restore_button.configure(state=state)
@@ -2180,6 +2093,13 @@ class AutoReframeGUI:
             messagebox.showwarning(
                 "更新進行中",
                 "正在檢查或準備軟體更新，請稍候。",
+                parent=self.root,
+            )
+            return
+        if self.scan_busy or self.preflight_busy:
+            messagebox.showwarning(
+                "檢查進行中",
+                "正在掃描或檢查影片，請完成後再關閉視窗。",
                 parent=self.root,
             )
             return

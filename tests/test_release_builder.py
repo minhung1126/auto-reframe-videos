@@ -2,9 +2,13 @@
 
 from pathlib import Path
 import hashlib
+import json
+import tempfile
 import unittest
+import zipfile
 
-from scripts.build_release import application_files, manifest_for, project_version
+from auto_reframe_core.updater import MANIFEST_NAME, can_self_update
+from scripts.build_release import application_files, build_release, manifest_for, project_version
 
 
 class ReleaseBuilderTests(unittest.TestCase):
@@ -43,6 +47,22 @@ class ReleaseBuilderTests(unittest.TestCase):
         self.assertEqual(set(paths), set(payloads))
         self.assertEqual(modes["run.command"], 0o755)
         self.assertEqual(modes["run.bat"], 0o644)
+
+    def test_built_source_archive_contains_first_update_tracking(self):
+        version = project_version()
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            archive, _ = build_release(version, temporary / "dist")
+            with zipfile.ZipFile(archive) as bundle:
+                bundle.extractall(temporary / "install")
+            installed = temporary / "install" / f"auto-reframe-videos-v{version}"
+            manifest = json.loads((installed / MANIFEST_NAME).read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], version)
+            self.assertEqual(can_self_update(installed), (True, ""))
+            for item in manifest["files"]:
+                payload = (installed / item["path"]).read_bytes()
+                self.assertEqual(len(payload), item["size"])
+                self.assertEqual(hashlib.sha256(payload).hexdigest(), item["sha256"])
 
     def test_bundled_font_hash_and_license_notice_are_pinned(self):
         root = Path(__file__).resolve().parents[1]

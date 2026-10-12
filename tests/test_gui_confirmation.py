@@ -2,8 +2,10 @@
 """Tests for the pre-processing confirmation summary."""
 
 import unittest
+import queue
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 from auto_reframe_core.compress import CompressConfig
 from auto_reframe_core.gui import (
@@ -29,15 +31,18 @@ class JobConfirmationMessageTests(unittest.TestCase):
             with self.subTest(platform=platform_name):
                 app = AutoReframeGUI.__new__(AutoReframeGUI)
                 app.running = False
-                app.root = object()
+                app.scan_busy = app.update_busy = app.preflight_busy = False
+                app.root = SimpleNamespace(after=Mock())
+                app.event_queue = queue.Queue()
+                app._set_footer_buttons = Mock()
                 app.status_var = StatusVariable()
                 app._build_config = lambda: ("compress", CompressConfig())
 
                 with (
                     patch("auto_reframe_core.gui.sys.platform", platform_name),
                     patch(
-                        "auto_reframe_core.gui.preflight_outputs",
-                        return_value=((), ()),
+                        "auto_reframe_core.gui.prepare_video_batch",
+                        return_value=SimpleNamespace(destinations=(), finals=()),
                     ),
                     patch(
                         "auto_reframe_core.gui.messagebox.askyesno",
@@ -45,7 +50,12 @@ class JobConfirmationMessageTests(unittest.TestCase):
                     ) as confirmation,
                 ):
                     app.start_job()
+                    app.worker.join(5)
+                    self.assertFalse(app.worker.is_alive())
+                    confirmation.assert_not_called()
+                    app._drain_events()
 
+                confirmation.assert_called_once()
                 self.assertEqual(
                     confirmation.call_args.kwargs["default"],
                     messagebox.YES,

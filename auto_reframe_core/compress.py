@@ -14,25 +14,23 @@ from queue import Queue
 
 from auto_reframe_core.batch_runner import run_video_batch
 from auto_reframe_core.ffmpeg_graphs import build_compress_split_command
+from auto_reframe_core.ffmpeg_execution import build_ffmpeg_attempts, execute_output_plan
+from auto_reframe_core.encoder_profiles import detect_target_encoders
 from auto_reframe_core.output_plans import (
     output_root_for,
     build_compress_output_plan,
-    cleanup_temp_outputs,
-    promote_temp_outputs,
 )
 from auto_reframe_core.platform_profile import (
     pause_for_windows_shell,
     should_pause_with_windows_prompt,
 )
 from auto_reframe_core.video_utils import (
-    # 硬體加速偵測
-    detect_h265_hw_encoder, detect_h264_hw_encoder,
     # 影片資訊
     get_video_info,
     # 共用常數
     h264, h265,
     # 執行工具
-    emit_video_progress, tqdm_write, run_ffmpeg_with_progress,
+    emit_video_progress, run_ffmpeg_with_progress,
 )
 from auto_reframe_core.target_specs import normalize_compress_target
 from auto_reframe_core.watermark import WatermarkConfig, build_watermark_config
@@ -53,6 +51,7 @@ class CompressConfig:
     output_dir: str = "output"
     video_files: tuple | None = None
     output_mode: str = "specified"
+    prepared_batch: object | None = field(default=None, repr=False, compare=False)
 
     # --- 輸出目標 (重要設定) ---
     # resolution: '4k', '2k', '1080p', 'fhd', '720p', 'hd', '480p', '360p', 'source'
@@ -95,8 +94,9 @@ class VideoCompressor:
         self.config.ffmpeg_path = tool_path("ffmpeg", self.config.ffmpeg_path)
         self.config.ffprobe_path = tool_path("ffprobe", self.config.ffprobe_path)
         self._validate_config()
-        self.h265_encoder, self.h265_hwaccel = detect_h265_hw_encoder(self.config.ffmpeg_path)
-        self.h264_encoder, self.h264_hwaccel = detect_h264_hw_encoder(self.config.ffmpeg_path)
+        profiles = detect_target_encoders(self.config.ffmpeg_path, {t["vcodec"] for t in self.config.targets})
+        self.h265_encoder, self.h265_hwaccel = profiles.get(h265, ("libx265", None))
+        self.h264_encoder, self.h264_hwaccel = profiles.get(h264, ("libx264", None))
 
     def _validate_config(self):
         if not self.config.targets:
@@ -140,47 +140,19 @@ class VideoCompressor:
         )
 
     def _ffmpeg_attempts(self, input_file: Path, active_maps: list, info: dict):
-        first_cmd = self.build_ffmpeg_split_command(input_file, active_maps, info)
-        attempts = [("硬體優先", first_cmd)]
-        if "-hwaccel" in first_cmd:
-            attempts.append(
-                (
-                    "停用硬體解碼、保留硬體編碼",
-                    self.build_ffmpeg_split_command(
-                        input_file,
-                        active_maps,
-                        info,
-                        disable_decode_hwaccel=True,
-                    ),
-                )
-            )
-
-        uses_hardware_encoder = any(
-            (entry[5] == h264 and self.h264_encoder != "libx264")
-            or (entry[5] == h265 and self.h265_encoder != "libx265")
-            for entry in active_maps
+        return build_ffmpeg_attempts(
+            lambda **kwargs: self.build_ffmpeg_split_command(input_file, active_maps, info, **kwargs),
+            active_maps, self.h264_encoder, self.h265_encoder,
         )
-        if uses_hardware_encoder:
-            attempts.append(
-                (
-                    "軟體解碼與軟體編碼",
-                    self.build_ffmpeg_split_command(
-                        input_file,
-                        active_maps,
-                        info,
-                        disable_decode_hwaccel=True,
-                        force_software_encode=True,
-                    ),
-                )
-            )
-        return attempts
 
     def process_single_video(self, task_info: Tuple[int, int, Path], position_q: Queue) -> bool:
         idx, total, file_path = task_info
         cancellation = getattr(position_q, "cancellation", None)
         if cancellation is not None and cancellation.cancelled:
             return False
-        info = get_video_info(self.config.ffprobe_path, file_path)
+        prepared = getattr(self.config, "prepared_batch", None)
+        info = (dict(prepared.validate_video(file_path).info) if prepared is not None
+                else get_video_info(self.config.ffprobe_path, file_path))
         if not info:
             return False
         if cancellation is not None and cancellation.cancelled:
@@ -189,7 +161,9 @@ class VideoCompressor:
         out_dir = output_root_for(self.config, file_path)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        plan = build_compress_output_plan(self.config, out_dir, file_path, info)
+        plan = (prepared.output_plan(file_path, skip_existing=self.config.skip_existing)
+                if prepared is not None
+                else build_compress_output_plan(self.config, out_dir, file_path, info))
 
         if not plan.has_work:
             emit_video_progress(
@@ -206,72 +180,12 @@ class VideoCompressor:
             debug_log_path = logs_root() / f"ffmpeg_debug_{file_path.stem}_compress.log"
 
         attempts = self._ffmpeg_attempts(file_path, plan.active_maps, info)
-        returncode = 1
-        stderr_log = []
-        phase = "影片壓縮"
-        for attempt_index, (attempt_label, cmd) in enumerate(attempts, 1):
-            if cancellation is not None and cancellation.cancelled:
-                cleanup_temp_outputs(plan.tmps)
-                return False
-            desc = f"({idx}/{total}) {file_path.stem[:12]} [Auto Compress]"
-            if attempt_index > 1:
-                emit_video_progress(
-                    getattr(self, "progress_callback", None),
-                    task_info,
-                    kind="retry",
-                    progress=0,
-                    phase=phase,
-                    attempt=attempt_index,
-                    message=attempt_label,
-                )
-                if getattr(self, "progress_callback", None) is None:
-                    tqdm_write(f"  [重試] {file_path.name}: {attempt_label}")
-                desc += f" [重試 {attempt_index}]"
-
-            progress_callback = getattr(self, "progress_callback", None)
-            ffmpeg_progress = None
-            if progress_callback is not None:
-                def ffmpeg_progress(
-                    percent,
-                    current_attempt=attempt_index,
-                    current_label=attempt_label,
-                ):
-                    emit_video_progress(
-                        progress_callback,
-                        task_info,
-                        kind="progress",
-                        progress=percent,
-                        phase=phase,
-                        attempt=current_attempt,
-                        message=current_label,
-                    )
-            returncode, stderr_log = run_ffmpeg_with_progress(
-                cmd,
-                info,
-                desc,
-                position_q,
-                debug_log_path,
-                progress_callback=ffmpeg_progress,
-            )
-            if cancellation is not None and cancellation.cancelled:
-                cleanup_temp_outputs(plan.tmps)
-                return False
-            if returncode == 0:
-                break
-            cleanup_temp_outputs(plan.tmps)
-
-        if returncode != 0:
-            if getattr(self, "progress_callback", None) is None:
-                tqdm_write(f" [失敗!] ({idx}/{total}) {file_path.name}")
-            print(f"\n\n[FFmpeg Error] 處理影片 {file_path.name} 時失敗！")
-            print(f"\n指令輸出結尾：\n{''.join(stderr_log)}")
-            return False
-
-        if getattr(self, "progress_callback", None) is None:
-            tqdm_write(f"({idx}/{total}) {file_path.name} 處理完成!")
-        promote_temp_outputs(plan.tmps, plan.finals)
-
-        return True
+        return execute_output_plan(
+            plan, attempts, info, task_info, position_q, runner=run_ffmpeg_with_progress,
+            phase="影片壓縮", description=f"({idx}/{total}) {file_path.stem[:12]} [Auto Compress]",
+            progress_callback=getattr(self, "progress_callback", None), debug_log_path=debug_log_path,
+            before_promotion=(lambda: prepared.validate_video(file_path)) if prepared is not None else None,
+        )
 
     def run(self):
         return run_video_batch(

@@ -612,7 +612,12 @@ class CompressCommandGuardTests(unittest.TestCase):
         def report_attempt_progress(*_args, progress_callback=None, **_kwargs):
             if progress_callback is not None:
                 progress_callback(25)
-            return next(attempt_results)
+            result = next(attempt_results)
+            if result[0] == 0:
+                for argument in _args[0]:
+                    if str(argument).endswith(".mp4.tmp"):
+                        Path(argument).write_bytes(b"completed output")
+            return result
 
         run_progress.side_effect = report_attempt_progress
 

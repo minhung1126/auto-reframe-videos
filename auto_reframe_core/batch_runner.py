@@ -21,12 +21,19 @@ def run_video_batch(
             raise ValueError(f"輸入資料夾不存在：{in_dir}")
         videos = tuple(sorted(f for f in in_dir.iterdir()
                               if f.is_file() and f.suffix.lower() in config.video_extensions))
-    from auto_reframe_core.output_plans import output_root_for, preflight_outputs, cleanup_temp_outputs
+    from auto_reframe_core.output_plans import (
+        output_root_for, prepare_video_batch, validate_prepared_batch, cleanup_temp_outputs,
+    )
     if videos and hasattr(config, "targets"):
         from dataclasses import replace
-        _, finals = preflight_outputs(replace(config, video_files=videos),
-                          "reframe" if hasattr(config, "final_ratio") else "compress")
-        cleanup_temp_outputs([path.with_name(path.name + ".tmp") for path in finals])
+        mode = "reframe" if hasattr(config, "final_ratio") else "compress"
+        batch_config = replace(config, video_files=videos)
+        if getattr(config, "prepared_batch", None) is None:
+            config.prepared_batch = prepare_video_batch(batch_config, mode)
+        else:
+            validate_prepared_batch(batch_config, mode)
+        videos = config.prepared_batch.videos
+        cleanup_temp_outputs([path.with_name(path.name + ".tmp") for path in config.prepared_batch.finals])
     for out_dir in {output_root_for(config, path) for path in videos}:
         out_dir.mkdir(parents=True, exist_ok=True)
     # Each processor cleans only its own temporary outputs on failure/cancellation.
