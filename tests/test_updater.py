@@ -3,6 +3,7 @@
 from io import BytesIO
 import hashlib
 import json
+import os
 from pathlib import Path
 import shutil
 import stat
@@ -576,6 +577,21 @@ class InstallerTests(unittest.TestCase):
                     self.assertEqual((root / MANIFEST_NAME).read_bytes(), old_manifest)
                     self.assertEqual(list(root.glob(".update-rollback-*")), [])
                     self.assertEqual(list(root.rglob("*.update-tmp")), [])
+
+    def test_installer_cleanup_can_remove_its_current_owned_directory(self):
+        original_directory = Path.cwd()
+        owned = Path(tempfile.mkdtemp(prefix="auto-reframe-update-")).resolve()
+        plan = owned / "install-plan.json"
+        plan.write_text("{}", encoding="utf-8")
+        try:
+            os.chdir(owned)
+            update_installer._cleanup_work_dir(plan)
+            self.assertFalse(owned.exists())
+            self.assertTrue(Path.cwd().is_dir())
+        finally:
+            os.chdir(original_directory)
+            if owned.exists():
+                shutil.rmtree(owned)
 
     def test_installer_cleanup_only_removes_owned_temp_directory(self):
         owned = Path(tempfile.mkdtemp(prefix="auto-reframe-update-"))

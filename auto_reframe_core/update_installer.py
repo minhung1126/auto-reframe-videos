@@ -301,6 +301,16 @@ def _cleanup_work_dir(plan_path: Path) -> None:
         return
     if not work_dir.name.startswith("auto-reframe-update-"):
         return
+    # Windows holds the process's current directory open until it is changed.
+    try:
+        Path.cwd().resolve().relative_to(work_dir)
+    except (OSError, ValueError):
+        pass
+    else:
+        try:
+            os.chdir(temp_root)
+        except OSError:
+            return
     shutil.rmtree(work_dir, ignore_errors=True)
 
 
