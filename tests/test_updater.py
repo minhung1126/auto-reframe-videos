@@ -539,8 +539,10 @@ class InstallerTests(unittest.TestCase):
         for fail_after_replace in (False, True):
             with self.subTest(fail_after_replace=fail_after_replace):
                 with tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory) / "app"
-                    staged = Path(directory) / "staged"
+                    # The helper resolves native temporary-directory aliases.
+                    parent = Path(directory).resolve()
+                    root = parent / "app"
+                    staged = parent / "staged"
                     root.mkdir()
                     staged.mkdir()
                     write_installed_manifest(root, "2.3.0", [
