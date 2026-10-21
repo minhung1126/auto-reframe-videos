@@ -1,342 +1,259 @@
 # Auto Reframe Videos
 
-將橫向影片透過 FFmpeg 自動裁切、轉換為手機直式影片（9:16），也可只做等比例壓縮。支援跨平台 GUI、PNG 浮水印、硬體加速、平行處理、單次解碼多路輸出，並可在上下黑邊疊加自訂文字。
+以 Python、FFmpeg／FFprobe 與 Tkinter 建立的批次影片工具，提供 Windows／macOS GUI、H.264／H.265 轉碼、多目標輸出、上下方文字與 PNG 浮水印。
 
----
+| 模式 | 處理方式 | 預設輸出目標 |
+| --- | --- | --- |
+| 裁切重製（Reframe） | 依指定比例從來源中央裁切，置中放入預設 9:16 畫布，上下補黑邊並可加文字 | 中央影片 4:5，原始解析度上限／H.265，以及 1080p 上限／H.264 |
+| 影片壓縮（Compress） | 保留來源比例，只縮小與轉碼 | 原始解析度上限／H.265 |
 
-## 快速開始
+兩種模式都可加入多列輸出目標，分別選擇解析度與 codec；裁切重製另可選擇中央影片比例。輸出為 MP4，有音訊時轉為 AAC。
 
-### 統一入口（建議）
+## 安裝與啟動
 
-1. 安裝原始碼 GUI 依賴：`python -m pip install -r requirements.txt`（Tcl/Tk 8.x）。
-2. 啟動後在「待處理影片」新增影片／資料夾，或拖曳多個項目進視窗；需要浮水印時由兩種模式的「開啟資料夾」放入 PNG。
-3. 透過統一入口啟動 GUI：
+### 桌面安裝版
+
+前往 [GitHub Releases](https://github.com/minhung1126/auto-reframe-videos/releases) 選擇符合 OS／CPU 的安裝檔：
+
+| 平台 | 成品 | 安裝位置 |
+| --- | --- | --- |
+| Windows x64 | `auto-reframe-videos-vX.Y.Z-windows-x64-Setup.exe` | 可選僅目前使用者或所有使用者 |
+| macOS Apple Silicon | `auto-reframe-videos-vX.Y.Z-macos-arm64.dmg` | 拖曳至 `~/Applications` 或 `/Applications` |
+| macOS Intel | `auto-reframe-videos-vX.Y.Z-macos-x64.dmg` | 拖曳至 `~/Applications` 或 `/Applications` |
+
+安裝版隨附 Python、Tcl/Tk、拖曳元件 TkDND、FFmpeg／FFprobe、字型與 HTTPS CA 憑證，不需另裝 Python 或 FFmpeg。Windows 日常啟動不開啟終端機，僅「所有使用者」安裝需要管理員權限；各使用者的設定與浮水印獨立保存，升級及解除安裝保留使用者資料。
+
+桌面成品固定為供自行使用的**未簽署安裝檔**。三種原生建置與自我測試已納入 CI；乾淨實機安裝、GPU、升級與資料保留、Windows DPI 等驗收仍有待完成項目。macOS 13.0 為最低版本候選，Windows 11 優先、Windows 10 22H2 待實機驗證；Windows ARM64 尚無原生安裝檔。詳見[桌面分發與驗收規範](https://github.com/minhung1126/auto-reframe-videos/blob/main/docs/DESKTOP_DISTRIBUTION.md)。
+
+### 原始碼版
+
+建議使用含 Tkinter 的 Python 3.12，並準備：
+
+- Tcl/Tk 8.x，供 GUI 與 TkDND 使用。
+- 外部 FFmpeg 與 FFprobe，加入 `PATH`，或於 GUI「進階設定」指定執行檔。FFmpeg 需具備文字繪製及所需編碼器，例如 `drawtext`、`libx264`、`libx265`。
+- `requirements.txt` 中固定版本的 `tkinterdnd2`。
+
+在專案目錄執行：
 
 ```bash
+python -m pip install -r requirements.txt
 python -m auto_reframe_core
 ```
 
-同一入口也可執行個別模式：
+省略模式會開啟 GUI，也可明確指定 `gui`。Windows 可雙擊 `run.bat`；macOS 可雙擊 `run.command`，若缺少執行權限，先執行 `chmod +x run.command`。macOS 的啟動器使用 `python3`，手動執行指令時也可將 `python` 換成 `python3`。
 
-```bash
-python -m auto_reframe_core reframe
-python -m auto_reframe_core compress
-python -m auto_reframe_core --help
-```
+`tqdm` 是選用的 CLI 進度套件，可另以 `python -m pip install tqdm` 安裝。未安裝時仍可處理影片。
 
-也可直接雙擊平台啟動器；兩者都會轉送至上述統一入口：
+## GUI 使用流程
 
-- Windows：`run.bat`
-- macOS：`run.command`
+1. 在「待處理影片」新增多個影片或資料夾，也可將檔案／資料夾拖入視窗。資料夾預設只掃描當層，可勾選包含子資料夾；重複檔案會去重。
+2. 選擇輸出位置。預設為各來源影片旁的 `auto-reframe/`，也可指定共用資料夾。
+3. 切換至「裁切重製」或「影片壓縮」，加入需要的輸出目標；有需要時啟用該模式的浮水印。裁切重製可在「編輯上下文」與「文字樣式」設定上下方文字。
+4. 按下開始處理。程式會在背景檢查來源與實際輸出，列出目的地；若有既有輸出，可選略過、覆寫、刪除列出的本次輸出後重做，或取消。確認後會再次驗證來源與輸出狀態。
+5. 在「處理進度」查看每支影片的狀態、目前階段與進度，並從下方事件日誌查看詳細訊息。要保留選項與文字時，按下「儲存設定」。
 
-兩種處理模式共用「待處理影片」清單。支援多選影片、資料夾（預設只掃描當層，可勾選包含子資料夾）、Windows/macOS 拖曳、移除選取與清空，並顯示檔名、來源及總數。重複檔案會去重，不支援或無法讀取的項目會提示。直接處理原始檔，處理開始後固定任務清單。
+GUI 共用同一份待處理影片清單，直接讀取原始檔。來源與輸出碰撞、跨來源同名輸出及寫入權限問題會在開始前檢查，原始影片受到覆寫保護。
 
-影片掃描與輸出預檢在背景執行，完成後才顯示確認畫面。確認後會重新驗證來源及輸出狀態；來源變動時會停止本次任務，避免沿用失效的尺寸與輸出規劃。
+可掃描的影片副檔名為 `.mp4`、`.mkv`、`.avi`、`.mov`、`.wmv`、`.flv`、`.webm`、`.ts`、`.m4v`；實際能否解碼取決於影片內容與 FFmpeg。
 
-預設每支影片輸出至其所在目錄的 `auto-reframe/`，不同來源分別輸出；也可選擇「指定資料夾」集中輸出。開始前檢查實際輸出檔案、寫入權限及跨來源同名碰撞，原始影片不得被覆寫。確認畫面列出影片數量、輸出模式與實際目的地。既有檔可略過、覆寫或只刪除列出的本次輸出檔再重做；其他檔案保留。
+| 頁籤 | 功能 |
+| --- | --- |
+| 待處理影片 | 新增、拖曳、掃描、移除與清空影片，選擇輸出位置 |
+| 裁切重製 | 輸出設定、編輯上下文、文字樣式與浮水印 |
+| 影片壓縮 | 保留比例的多目標轉碼與浮水印 |
+| 處理進度 | 逐片狀態與事件日誌，可調整表格和日誌的分隔比例 |
+| 進階設定 | 工具路徑、平行工作數、跳過既有輸出與 FFmpeg 除錯日誌；桌面版的工具路徑固定使用隨附檔案 |
+| 關於／更新 | 查看版本、開啟設定檔與 Release 頁面、檢查更新 |
 
-CLI 可指定資料夾，例如 `python -m auto_reframe_core compress --input-dir /Videos --output-dir /Exports`；不需要選擇工作區。
+目前 GUI 未提供影片預覽或轉碼中的停止按鈕；處理期間關閉視窗會提示等待完成。
 
-GUI 以主頁簽區分功能：
+## 輸出比例、解析度與檔案
 
-- **比例裁切／直式重製**：維持固定的「上方文字／中央影片／下方文字」三層 9:16 版面。
-- **影片壓縮／縮小解析度**：保留來源比例，只縮小與轉碼。
-- **關於／更新**：檢查 GitHub 最新正式 Release，下載、驗證並安裝更新。
+裁切重製可選中央影片比例 `4:5`、`1:1`、`4:3`、`16:9`，或輸入自訂 `寬:高`。中央影片比例不得比最終畫布更窄高。
 
-「裁切重製」內另有「輸出設定／編輯上下文／文字樣式」子頁簽，只有需要上下方文字的裁切工作會顯示上下文編輯器。「編輯上下文」提供 `©` 一鍵複製，以及直接插入上方或下方文字的按鈕。
+支援的解析度鍵值為 `source`、`4k`、`2k`、`1080p`／`fhd`、`720p`／`hd`、`480p`、`360p`，codec 為 `h264`、`h265`。GUI 會顯示對應的中文名稱。
 
-每個輸出目標可獨立選擇：
+解析度選項表示**不大於指定上限、且來源可容納的最大標準解析度**；選擇 4K 或 1080p 不會插值放大來源。`source` 保留可用來源尺寸，編碼寬高需要對齊時向下取偶數。輸出尺寸計算會採用影片旋轉後的顯示方向，檔名的解析度標籤依實際輸出尺寸產生。
 
-- 解析度上限：原始、4K、2K / 1440p、Full HD 1080p、HD 720p、480p、360p。
-- Codec：H.264 / AVC、H.265 / HEVC。
-- 重製中央影片比例：4:5、1:1、4:3、16:9，或直接輸入自訂 `寬:高`。
-
-可加入多列目標，一次輸出多個比例／解析度／codec 組合。解析度是「不大於指定值的最大標準解析度」，不會為了達到 4K 或 1080p 而插值放大。
-
-### GUI 設定檔
-
-- `config.json.example`：會加入 Git 的完整預設設定，也是 GUI 的預設值來源。
-- `config.json`：儲存在 macOS `~/Library/Application Support/Auto Reframe Videos` 或 Windows `%LOCALAPPDATA%\Auto Reframe Videos`；按下「儲存設定」後產生並自動載入。原始碼版也使用使用者資料目錄。浮水印在同目錄 `watermark/`；Windows 日誌在同目錄 `logs/`，macOS 日誌在 `~/Library/Logs/Auto Reframe Videos/`。
-- 「關於／更新 → 開啟設定檔」以系統預設程式開啟實際 `config.json`，不存在時先建立完整預設；頁面顯示位置。請先關閉程式再編輯，外部修改在下次啟動載入。
-- 按下「還原預設」會刪除 `config.json`，重新使用 `config.json.example`。
-
-上下方文字由 GUI 編輯並儲存設定，不回退讀取文字檔。無首次啟動工作區選擇、設定匯入或資料遷移。
-
-### 軟體更新
-
-桌面版在「關於／更新」檢查版本後，只開啟對應 OS／CPU 的 `.dmg` 或 `Setup.exe` 下載入口；先關閉程式，再覆蓋安裝。設定、浮水印與日誌會保留。
-
-原始碼版的「關於／更新」頁籤可手動檢查與安裝原始碼 ZIP 更新。更新程式只接受
-`minhung1126/auto-reframe-videos` 的最新正式 GitHub Release，並驗證 GitHub
-Releases API 提供的 SHA-256 digest 與 Release 內的逐檔 manifest。
-
-安裝前會在 `.update-backups/` 備份舊程式，且不會覆寫：
-
-- `config.json`
-- `input/`、`output/`
-- `top_text.txt`、`bottom_text.txt`
-- `watermark/`
-
-成功更新後，下載與 staging 暫存檔會自動清除；`.update-backups/` 會保留，
-方便需要時手動回復舊程式。
-
-如果程式位於 Git 工作目錄，為避免破壞開發中的 tracked files，自動安裝會停用，
-請改用 `git pull`。從 Release ZIP 解壓縮的版本才會啟用一鍵安裝。
-
-原始碼更新會保留 `.release-manifest.json`，用來保護本機修改及移除新版已淘汰的程式檔。
-若舊版安裝已缺少這份紀錄，請重新下載並解壓完整 Release ZIP；程式會停用自動安裝，避免覆寫無法驗證的本機內容。
-
-### macOS 一鍵執行
-
-專案內提供單一 macOS 啟動腳本 `run.command`，會開啟 GUI。
-
-**如何使用：**
-只需在 Finder 中雙擊 `run.command`，系統就會自動開啟終端機並啟動 GUI。
-
-**⚠️ 首次執行注意事項（權限問題）：**
-如果雙擊檔案時出現「沒有權限」或「無法執行」的錯誤（常見於從 Windows 傳送檔案到 macOS 時遺失執行權限），請進行以下設定：
-1. 打開 macOS 的「終端機」（Terminal）。
-2. 輸入 `chmod +x `（注意 `+x` 後面有一個空白）。
-3. 將無法執行的 `.command` 檔案從 Finder 拖曳到終端機視窗內（會自動輸入路徑）。
-4. 按下 Enter 鍵。設定完成後即可正常雙擊執行。
-
-輸出依裁切比例與解析度分類，保存於選定的目的地。
-
----
-
-## 桌面安裝版建置
-
-使用 PyInstaller 共用核心，分別在 macOS arm64、macOS x64、Windows x64 原生建置。安裝版包含 Python、Tcl/Tk、FFmpeg／FFprobe、字型與 HTTPS CA 憑證；Windows 不開啟終端機視窗。
-
-Windows 安裝器提供目前使用者或所有使用者模式，系統級安裝由安裝器要求管理員權限，程式日常執行使用一般使用者。macOS 維持 DMG 拖曳安裝至 `~/Applications` 或 `/Applications`。每位使用者的設定、浮水印與日誌獨立保存，升級及解除安裝保留資料。
-
-桌面版固定產生供自行使用的未簽署安裝檔，不需要 Apple Developer 或 Windows 簽署憑證。建置、FFmpeg 授權與乾淨環境／實機驗收請見 [桌面分發文件](docs/DESKTOP_DISTRIBUTION.md)。目前 macOS 最低版本候選為 13.0，仍須實機驗收；自動更新、Windows ARM64 與商店版另列第二階段。
-
-## 專案結構
+輸出依中央比例、有效解析度與 codec 分類；浮水印版本的資料夾及檔名另加 `_wm`。例如：
 
 ```text
-auto_reframe_core/       # 所有應用程式實作與統一入口
-run.bat                  # Windows GUI 啟動器
-run.command              # macOS GUI 啟動器
-config.json.example      # GUI 預設設定，納入 Git
-tests/                   # 行為守衛與入口測試
-scripts/                 # Release 建置與驗證
-fonts/                   # 內建字型與授權
+auto-reframe/
+├── 4x5_FHD_h264/
+│   └── clip_4x5_FHD_h264.mp4
+├── 4x5_FHD_h265_wm/
+│   └── clip_4x5_FHD_h265_wm.mp4
+└── COMPRESS_4K_h265/
+    └── clip_COMPRESS_4K_h265.mp4
 ```
 
-`auto_reframe_core/` 內部職責：
+完全相同的有效輸出可去重；同一路徑若對應不同輸出身分則報錯。未完成檔案先寫入 `.mp4.tmp`，同一輸出組全部成功後才轉為正式檔案；失敗會清理該次暫存檔，已完成的正式輸出保留。
 
-| 模組 | 職責 |
-|---|---|
-| `__main__.py` / `cli.py` | GUI、Reframe、Compress 的統一啟動路由 |
-| `gui.py` | Windows / macOS 共用 Tk GUI |
-| `reframe.py` | `ReframeConfig` 與 Reframe 工作協調 |
-| `compress.py` | `CompressConfig` 與 Compress 工作協調 |
-| `video_utils.py` | FFprobe、bitrate、進度、平行化與取消 |
-| `platform_profile.py` | Windows/macOS 平台判斷與 worker 上限 |
-| `encoder_profiles.py` | H.264/H.265 硬體編碼器偵測與 encoder 參數 |
-| `target_specs.py` | targets 驗證與正規化 |
-| `reframe_geometry.py` | 裁切、補邊與 final canvas 尺寸計算 |
-| `output_plans.py` | 輸出尺寸、命名、tmp/final 檔案規劃 |
-| `ffmpeg_graphs.py` | FFmpeg command / filter graph 組裝 |
-| `text_layout.py` | 固定 top/video/bottom 文字版面邏輯 |
-| `watermark.py` | 共用 PNG 浮水印驗證與 overlay graph |
-| `gui_options.py` | GUI 顯示選項、比例解析與 PNG 掃描 |
-| `config_store.py` | `config.json` 版本驗證與原子儲存 |
-| `batch_runner.py` | 掃描輸入、清 tmp、平行執行與任務總結 |
+## 上下方文字
 
-固定版面與 drawtext 行為由 `tests/test_behavior_guards.py` 鎖住。重構或修改濾鏡時請先閱讀 `AGENTS.md`。
+Reframe 由上到下維持三層版面：
 
----
-
-## 設定值說明（`ReframeConfig`）
-
-所有設定值均在 `auto_reframe_core/reframe.py` 的 `ReframeConfig` 類別中定義。
-
-### 輸入 / 輸出
-
-| 設定值 | 預設值 | 說明 |
-|---|---|---|
-| `input_dir` | `"input"` | 來源影片資料夾路徑 |
-| `output_dir` | `"output"` | 輸出影片資料夾路徑 |
-
-### 輸出目標（`targets`）
-
-| 設定值 | 預設值 | 說明 |
-|---|---|---|
-| `targets` | `[{'ratio': (4, 5), 'resolution': 'source', 'vcodec': h265}, {'ratio': (4, 5), 'resolution': '1080p', 'vcodec': h264}]` | 多目標輸出設定。每個目標需指定裁切比例 `ratio`、解析度上限 `resolution`、編碼器 `vcodec` |
-| `final_ratio` | `(9, 16)` | 最終輸出影片的比例（寬:高）。不足的部分以黑邊補齊 |
-
-> 例：`targets` 中可同時包含 `(4,5)` 與 `(1,1)`，每種比例都會輸出對應解析度與 codec 的版本。
-
-### 上方文字設定
-
-| 設定值 | 預設值 | 說明 |
-|---|---|---|
-| `top_text_file` | `"top_text.txt"` | 上方文字的來源檔案路徑 |
-| `top_font_size` | `48` | 上方文字的基準字型大小（px，以 FHD 1920px 高為準，其他解析度等比縮放） |
-
-### 下方文字設定
-
-| 設定值 | 預設值 | 說明 |
-|---|---|---|
-| `bottom_text_file` | `"bottom_text.txt"` | 下方文字的來源檔案路徑 |
-| `bottom_font_size` | `24` | 下方文字的基準字型大小（px，以 FHD 1920px 高為準，其他解析度等比縮放） |
-
-### 字型設定
-
-| 設定值 | 預設值 | 說明 |
-|---|---|---|
-| `font_path` | `"fonts/NotoSerifTC.ttf"` | 字型檔案路徑（相對於腳本位置） |
-| `font_color` | `"white"` | 文字顏色，同時作為描邊顏色。接受 FFmpeg 顏色名稱或 `#RRGGBB` 格式 |
-| `text_margin` | `20` | 文字與影片邊緣的間距（px，以 FHD 為準，其他解析度等比縮放） |
-| `top_text_line_spacing_ratio` | `1.08` | 上方文字區的多行文字行距倍數（`1.0` = 無額外間距） |
-| `bottom_text_line_spacing_ratio` | `1.2` | 下方文字區的多行文字行距倍數（`1.0` = 無額外間距） |
-
-### 系統與平行化
-
-| 設定值 | 預設值 | 說明 |
-|---|---|---|
-| `ffmpeg_path` | `"ffmpeg"` | FFmpeg 執行檔路徑。若未加入 PATH 請填寫完整路徑，例如 `"C:/ffmpeg/bin/ffmpeg.exe"` |
-| `ffprobe_path` | `"ffprobe"` | FFprobe 執行檔路徑，同上 |
-| `video_extensions` | `{".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts", ".m4v"}` | 腳本會掃描的影片副檔名集合 |
-| `skip_existing` | `True` | `True` 時若輸出檔案已存在則跳過，設為 `False` 可強制重新轉換 |
-| `max_workers` | `0` | 同時平行處理的影片數量。`0` 代表自動判斷；目前上限為 macOS=4、其他平台=8 |
-| `debug` | `False` | `True` 時會將 FFmpeg 的完整輸出記錄至使用者資料目錄 `logs/` 下的 `ffmpeg_debug_<檔名>_<比例>.log` |
-
----
-
-## 文字模板
-
-### `top_text.txt`（上方文字）
-
-顯示在影片**上方黑邊**中，支援多行。每一行對應一列文字，由上往下排列。**留空檔案則不顯示任何文字。**
-
-```text {.line-numbers}
-1: 2026.03.22
-2: 富邦悍將 vs 統一獅 @ 亞太主球場
+```text
+┌────────────────────┐
+│ 上方黑邊：上方文字  │
+├────────────────────┤
+│  置中的裁切影片    │
+├────────────────────┤
+│ 下方黑邊：下方文字  │
+└────────────────────┘
 ```
 
-### `bottom_text.txt`（下方文字）
+文字水平置中。上方文字以最下面一行靠近影片上緣，增加行數時向上延伸；下方文字以第一行靠近影片下緣，後續行向下延伸。兩者與影片的距離由 `text_margin` 控制，留空即不顯示文字。
 
-顯示在影片**下方黑邊**中，支援多行。排列方式與上方相同，從黑邊頂端起向下排列。**留空檔案則不顯示任何文字。**
+預設使用內附 Noto Serif TC 白字，上／下字級為 48／24、邊距 20、行距倍數 1.08／1.2。字級、間距與邊距以 1920px 高為基準，隨輸出高度縮放。GUI 支援選擇字型、文字顏色與複製／插入 `©`。
 
-```text {.line-numbers}
-1: ©your.credit
-```
-
-### 注意事項
-
-- 檔案編碼請使用 **UTF-8**（支援中文、日文等多位元組字元）
-- 若文字中包含 `:` 或 `%` 符號，腳本會自動轉義，**不需手動處理**
-- 若文字中包含單引號 `'`，腳本同樣會自動轉義
-- 若檔案不存在，腳本啟動時會自動建立空白檔案
-
----
-
-文字檔設定僅供 CLI／Python API；GUI 只使用編輯器內容與設定檔。
+GUI 文字由編輯器提供並儲存於設定檔。CLI／Python API 預設讀取 `top_text.txt` 與 `bottom_text.txt`：相對路徑以 `input_dir` 的父目錄為基準，缺少時建立空白檔。建議使用 UTF-8；換行會正規化並保留中間空白行，反斜線、單引號、冒號與 `%` 可直接輸入。
 
 ## PNG 浮水印
 
-- PNG 只掃描目前使用者資料目錄的 `watermark/`，保留「重新整理」及「開啟資料夾」，並顯示實際路徑。
-- GUI 啟動或按下「重新整理」時會掃描所有 `.png`／`.PNG`，依檔名排序並預選第一個。
-- 「蓋浮水印」可在重製與壓縮兩種模式中獨立開關。
-- 預設錨點為下方中央。
-- 裁切重製預設大小比照 Lightroom「等比例 15」，壓縮為「等比例 10」：以輸出與 PNG 的面積比求等比例縮放倍率，
-  `s = ratio × √((輸出寬 × 輸出高) ÷ (PNG寬 × PNG高))`，ratio 分別為 0.15／0.10。
-- 預設垂直插入比照 Lightroom「3」：PNG 畫布底部距離為
-  `3% × √(輸出寬 × 輸出高)`；PNG 自帶的透明留白會自然保留。
-- 預設透明度為 80%，並保留 PNG 本身的 alpha。
-- 浮水印會在每個解析度縮放完成後才疊加，再共用給相同尺寸的 H.264／H.265 輸出。
-- 有浮水印的輸出名稱會加 `_wm`，避免與無浮水印版本因 `skip_existing=True` 互相跳過。
+在各模式的浮水印區按「開啟資料夾」，將 PNG 放入使用者資料目錄的 `watermark/`，再按「重新整理」。GUI 僅列出此資料夾的 `.png`／`.PNG` 並排序；兩種模式各自保存啟用狀態與選項。
 
----
+- 位置支援九宮格錨點，預設下方中央。
+- 裁切重製的預設等比例大小為 `0.15`（Lightroom 15），影片壓縮為 `0.10`（Lightroom 10）。
+- 透明度預設 `0.8`（80%），保留 PNG 本身的 alpha；GUI 亦接受 `80` 或 `80%`。
+- 垂直插入預設 `3`，比照 Lightroom 的插入值；PNG 自帶透明留白會保留並一起縮放。
+- 浮水印套用於完成縮放與文字的畫面，再共用給相同尺寸的不同 codec 輸出，並覆蓋整段影片。
 
-## 輸出目錄結構
+大小採用面積基準。若輸出為 `Wo × Ho`，PNG 完整畫布為 `Wm × Hm`，縮放倍率為：
 
-```
-output/
-├── 4x5_FHD_h265_wm/
-│   └── video_name_4x5_FHD_h265_wm.mp4
-├── COMPRESS_4K_h265_wm/
-│   └── video_name_COMPRESS_4K_h265_wm.mp4
-└── previews/
-    └── reframe_fhd_h264.jpg
+```text
+s = ratio × √((Wo × Ho) / (Wm × Hm))
+浮水印尺寸 = (Wm × s) × (Hm × s)
+下方錨點、插入值 3 的畫布邊距 = round(0.03 × √(Wo × Ho))
 ```
 
----
+## 設定與日誌位置
 
-## 硬體加速
+原始碼版與桌面版都使用各使用者的資料目錄：
 
-腳本啟動時會自動偵測並優先使用以下編碼器：
+| 資料 | Windows | macOS |
+| --- | --- | --- |
+| 設定 | `%LOCALAPPDATA%\Auto Reframe Videos\config.json` | `~/Library/Application Support/Auto Reframe Videos/config.json` |
+| 浮水印 | `%LOCALAPPDATA%\Auto Reframe Videos\watermark/` | `~/Library/Application Support/Auto Reframe Videos/watermark/` |
+| 日誌 | `%LOCALAPPDATA%\Auto Reframe Videos\logs/` | `~/Library/Logs/Auto Reframe Videos/` |
 
-| 優先順序 | 編碼器 | 加速方式 | 適用硬體 |
-|---|---|---|---|
-| 1 | `h264_nvenc` / `hevc_nvenc` | CUDA | NVIDIA GPU |
-| 2 | `h264_amf` / `hevc_amf` | D3D11VA | AMD GPU |
-| 3 | `h264_qsv` / `hevc_qsv` | QSV | Intel GPU |
-| 4 | `h264_videotoolbox` / `hevc_videotoolbox` | VideoToolbox | macOS |
-| 5 | `libx264` / `libx265` | 軟體編碼 | 全平台（備援） |
+[`config.json.example`](config.json.example) 是完整預設來源；使用者的 `config.json` 為版本化 JSON，透過 UTF-8 與暫存檔替換方式原子儲存。Reframe／Compress 的目標及浮水印設定分開保存。
 
-正式轉碼若硬體路徑失敗，會依序重試：
+「關於／更新 → 開啟設定檔」會開啟實際設定檔，不存在時先建立完整預設。手動編輯前請先關閉程式，修改會在下次啟動載入。「還原預設」會刪除使用者設定檔並重新套用預設。
 
-1. 停用硬體解碼，但保留硬體編碼。
-2. 軟體解碼與 `libx264`／`libx265` 軟體編碼。
+影片清單由每次使用時加入；GUI 不建立固定的 `input/`、`output/` 或工作區設定檔。使用者影片、文字、浮水印、設定與日誌不應加入版本控制或分發成品。
 
----
+## CLI 與 Python API
 
-## 依賴套件
+所有模式使用同一入口：
 
 ```bash
-pip install tqdm
+python -m auto_reframe_core --help
+python -m auto_reframe_core --version
+python -m auto_reframe_core reframe --input-dir ./videos --output-dir ./exports
+python -m auto_reframe_core compress --input-dir ./videos --output-dir ./exports
 ```
 
-> `tqdm` 為選擇性依賴，未安裝時會回退至傳統文字進度輸出。原始碼版的 FFmpeg 與 FFprobe 需另行安裝並加入系統 PATH；桌面安裝版使用隨附執行檔。
+CLI 掃描輸入資料夾當層；省略路徑時使用目前目錄下的 `input/` 與 `output/`。CLI 使用 `ReframeConfig`／`CompressConfig` 的預設值，與 GUI 儲存的設定分開；目前命令列提供模式與輸入／輸出路徑選項，進一步自訂目標請使用 GUI 或 Python API。CLI 有互動確認／結束提示，批次整合可直接呼叫 API。
 
-Tkinter 通常隨 Windows 的 python.org 安裝程式提供。macOS 若使用精簡或 Homebrew Python 而無法 `import tkinter`，請安裝對應的 Tcl/Tk 套件，或改用包含 Tk 的 python.org 版本。
+例如，自訂 Reframe 的中央影片比例、解析度與文字：
 
----
+```python
+from auto_reframe_core.reframe import ReframeConfig, VideoReframer
 
-## 驗證
+config = ReframeConfig(
+    input_dir="./videos",
+    output_dir="./exports",
+    targets=[
+        {"ratio": (4, 5), "resolution": "1080p", "vcodec": "h264"},
+        {"ratio": (1, 1), "resolution": "720p", "vcodec": "h265"},
+    ],
+    top_text_override="活動名稱\n拍攝日期",
+    bottom_text_override="© Your Name",
+)
+success_count, failed_files = VideoReframer(config).run()
+```
+
+壓縮模式的 `targets` 不含 `ratio`：
+
+```python
+from auto_reframe_core.compress import CompressConfig, VideoCompressor
+
+config = CompressConfig(
+    input_dir="./videos",
+    output_dir="./exports",
+    targets=[{"resolution": "1080p", "vcodec": "h265"}],
+)
+success_count, failed_files = VideoCompressor(config).run()
+```
+
+兩者都可設定 `skip_existing`、`max_workers`、`debug` 與 `watermark_*`。Reframe 另有 `final_ratio` 與文字樣式設定；完整欄位見 [`reframe.py`](auto_reframe_core/reframe.py) 與 [`compress.py`](auto_reframe_core/compress.py)。
+
+## 硬體加速與批次處理
+
+程式會實際探測所選 codec 的可用硬體編碼器。macOS 優先 VideoToolbox；其他平台依 NVENC、AMF、QSV、VideoToolbox 順序探測，最後使用 `libx264`／`libx265`。實際可用性取決於 FFmpeg、驅動程式與硬體。
+
+轉碼失敗時，若原先啟用硬體解碼，先停用硬體解碼並保留硬體編碼；仍失敗且使用硬體編碼時，再改用軟體解碼與軟體編碼。VideoToolbox 用於編碼，不作為解碼側的 `-hwaccel` 值。
+
+同一裁切比例的多目標共用解碼，相同尺寸的不同 codec 共用縮放、文字與浮水印。多支影片可平行處理；工作數 `0` 表示自動，macOS 最多 4 個，其他平台最多 8 個且不超過 CPU 數量。終端機的 `Ctrl+C` 會傳播取消狀態並終止 FFmpeg 子程序，清理未完成的暫存輸出。
+
+## 軟體更新
+
+「關於／更新」只查詢 `minhung1126/auto-reframe-videos` 的最新正式 GitHub Release。
+
+| 執行方式 | 更新流程 |
+| --- | --- |
+| 桌面安裝版 | 儲存並驗證設定後，開啟瀏覽器下載對應 OS／CPU 的安裝檔；關閉程式，再手動安裝新版。桌面版自動安裝尚未實作 |
+| 解壓縮的原始碼 Release ZIP | 可下載原始碼更新，驗證 GitHub SHA-256 digest 與逐檔 manifest，再備份、交易式安裝並重新啟動；失敗時回滾 |
+| Git checkout | 停用自動安裝，請以 Git 更新 |
+
+原始碼更新保留使用者資料，舊程式備份留在 `.update-backups/`。`.release-manifest.json` 用於核對 managed files；缺少可信 manifest 或偵測到本機修改時，會拒絕自動安裝。處理影片期間無法安裝更新。桌面版的瀏覽器下載由使用者自行完成安裝檔驗證與安裝。
+
+## 開發、驗證與發布
+
+本節使用完整的 Git checkout；原始碼 Release ZIP 僅包含執行所需檔案，不含測試、建置腳本與開發文件。Windows／macOS 是主要使用平台，Linux 由 CI 驗證核心邏輯與封裝。
+
+```text
+auto_reframe_core/       應用程式、GUI、處理核心、更新器與統一入口
+packaging/               桌面打包規格、安裝器、固定依賴與授權來源
+scripts/                 FFmpeg／桌面／原始碼 Release 建置與成品驗證
+tests/                   核心、GUI、取消、影片資訊及更新安全測試
+docs/                    桌面分發規範與發布檢查表
+fonts/                   內附字型與授權
+config.json.example      完整 GUI 預設設定
+run.bat / run.command    Windows／macOS 原始碼 GUI 啟動器
+```
+
+修改前請閱讀 [`AGENTS.md`](https://github.com/minhung1126/auto-reframe-videos/blob/main/AGENTS.md)。基本驗證：
 
 ```bash
 python -m compileall -q auto_reframe_core tests scripts
 python -m auto_reframe_core --help
-python3 -m unittest discover -s tests
+python -m unittest discover -s tests
 git diff --check
 ```
 
----
+GUI 測試需要 Tk；Linux 無顯示環境時可使用 Xvfb。FFmpeg／FFprobe 可用時，影片資訊測試會執行實際整合驗證。Linux CI 亦執行 frozen 資源與轉碼測試，原生安裝體驗依[桌面驗收矩陣](https://github.com/minhung1126/auto-reframe-videos/blob/main/docs/DESKTOP_DISTRIBUTION.md)另行確認。
 
-## 建立 Release
+原始碼 Release 封裝與 staging 驗證：
 
-`.github/workflows/release.yml` 由 `vX.Y.Z` tag push 自動觸發：
+```bash
+python scripts/build_release.py
+python -m scripts.verify_release
+```
 
-1. 更新 `auto_reframe_core/version.py` 的 `VERSION`。
-2. 確認根目錄的 `LICENSE` 保留所有權利聲明仍符合發佈意圖。
-3. 將通過測試的版本推送到 `main`。
-4. 在相同 commit 建立並推送對應 tag，例如 `v3.0.7`。
+取得允許且有非敏感測試影片時，可執行短片 smoke test；測試使用系統暫存目錄並於結束後清理：
 
-Workflow 會直接從 `auto_reframe_core.version.__version__` 取得版本，確認 tag
-完全一致且指向 `main` 上的 commit，再於 Windows、macOS、Linux 跑完整測試，
-最後建立含逐檔 manifest 的 ZIP、SHA-256 checksum 與 GitHub Release。Action
-dependency 固定至完整 commit SHA，Release job 只有最小的 `contents: write`
-權限。
+```bash
+python tests/input_smoke.py path/to/video.mp4 --seconds 2
+```
 
-公開與首次發佈前，請完成
-[`docs/PUBLIC_RELEASE_CHECKLIST.md`](docs/PUBLIC_RELEASE_CHECKLIST.md)，特別是啟用
-GitHub Immutable Releases、private vulnerability reporting 與 branch protection。
+版本唯一來源為 [`auto_reframe_core/version.py`](auto_reframe_core/version.py)。發布時依[公開發布檢查表](https://github.com/minhung1126/auto-reframe-videos/blob/main/docs/PUBLIC_RELEASE_CHECKLIST.md)完成隱私、授權、Release immutability 與 repository hardening 檢查，將通過驗證的變更推送到 default branch，再於相同 commit 建立並推送完全一致的 `vX.Y.Z` tag。
+
+Release workflow 由 tag push 觸發，驗證版本與 default branch commit、執行 Windows／macOS／Linux 測試及三種原生桌面建置，通過版本／commit／checksum gate 後才發布原始碼 ZIP、三份未簽署安裝檔、checksum 與 build records。原始碼 ZIP 依明確 allowlist 建置並含逐檔 manifest；桌面 FFmpeg 的固定來源、對應原始碼與授權要求見[桌面分發文件](https://github.com/minhung1126/auto-reframe-videos/blob/main/docs/DESKTOP_DISTRIBUTION.md)。
 
 ## 授權
 
-本專案採 **All Rights Reserved（保留所有權利）**，不是開放原始碼授權。
-公開可見不等於取得使用、修改、建立衍生作品或再散布的權利；完整條款見根目錄
-[`LICENSE`](LICENSE)。內建 Noto Serif TC 字型不受上述限制，而是依 SIL Open
-Font License 1.1 授權，完整文字已隨附於 `fonts/LICENSE`，來源與固定雜湊詳見
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
+專案程式碼採 **All Rights Reserved（保留所有權利）**，完整條款見 [`LICENSE`](LICENSE)。公開可見不代表取得使用、修改、建立衍生作品或再散布的權利。
 
-使用真實輸入的四格 smoke test（在系統暫存目錄擷取短片，結束後自動清理）：
-
-```bash
-python tests/input_smoke.py input/MVI_0156.MP4 --seconds 2
-```
+內附 Noto Serif TC 字型依 SIL Open Font License 1.1 授權，授權文字見 [`fonts/LICENSE`](fonts/LICENSE)，固定來源與雜湊見 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。桌面版另隨附 Python、Tcl/Tk、TkDND 與 FFmpeg 等元件的授權及來源紀錄。
