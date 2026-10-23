@@ -43,7 +43,7 @@ jobs:
       - name: Install Windows native toolchain
         if: runner.os == 'Windows'
         id: msys2
-        uses: msys2/setup-msys2@40677d36a502eb2cf0fb808cc9dec31bf6152638 # v2.28.0
+        uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
         with:
           msystem: MINGW64
           update: true
