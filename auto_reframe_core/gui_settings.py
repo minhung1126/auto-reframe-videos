@@ -5,6 +5,7 @@ import math
 
 from auto_reframe_core.config_store import ConfigStoreError, load_config
 from auto_reframe_core.gui_options import CODEC_LABELS, RESOLUTION_LABELS
+from auto_reframe_core.output_plans import normalize_output_subfolder
 from auto_reframe_core.watermark import WATERMARK_POSITIONS, parse_watermark_opacity
 
 
@@ -178,6 +179,12 @@ def normalize_gui_settings(settings: dict, *, validation_mode=None) -> dict:
     normalized["output_folder"] = _string(
         settings.get("output_folder", ""), "輸出資料夾（output_folder）"
     ).strip()
+    try:
+        normalized["output_subfolder"] = normalize_output_subfolder(
+            settings.get("output_subfolder", "")
+        )
+    except ValueError as exc:
+        raise ConfigStoreError(str(exc)) from exc
     for key, default in (
         ("include_subfolders", False), ("skip_existing", True), ("debug", False)
     ):
@@ -211,14 +218,17 @@ def normalize_gui_settings(settings: dict, *, validation_mode=None) -> dict:
     return normalized
 
 
-def load_effective_settings(example_path, config_path):
+def load_effective_settings(example_path, config_path, *, legacy_paths=(), store=None):
     """Keep the complete committed example as the sole default source."""
     defaults = load_config(example_path)
     if defaults is None:
         raise ConfigStoreError(f"找不到預設設定: {example_path}")
     defaults = normalize_gui_settings(defaults)
+    if legacy_paths:
+        from auto_reframe_core.config_migration import migrate_config
+        migrate_config(config_path, legacy_paths, defaults, normalize_gui_settings)
     effective = deepcopy(defaults)
-    saved = load_config(config_path)
+    saved = store.load() if store is not None else load_config(config_path)
     if saved:
         effective.update(saved)
     return defaults, normalize_gui_settings(effective)

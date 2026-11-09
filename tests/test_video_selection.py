@@ -174,7 +174,7 @@ class ConfigOpeningTests(unittest.TestCase):
             folder = Path(temp) / 'data/watermark'
             app = AutoReframeGUI.__new__(AutoReframeGUI)
             app.root = object()
-            with patch('auto_reframe_core.gui.open_directory') as opener:
+            with patch('auto_reframe_core.gui_update_view.open_directory') as opener:
                 app._open_directory(folder)
                 self.assertTrue(folder.is_dir())
                 opener.assert_called_once_with(folder)

@@ -42,6 +42,19 @@ def watermark_root():
     return user_data_root() / "watermark"
 
 
+def legacy_config_paths():
+    """Known installation locations only; never import an arbitrary working directory."""
+    roots = [resource_root()]
+    if is_frozen():
+        executable = Path(sys.executable).resolve()
+        roots.append(executable.parent)
+        for parent in executable.parents:
+            if parent.suffix.lower() == ".app":
+                roots.append(parent)
+                break
+    return tuple(dict.fromkeys(root / "config.json" for root in roots))
+
+
 def logs_root(system=None, home=None, environ=None, *, create=True):
     system = system or sys.platform
     home = Path(home) if home is not None else Path.home()

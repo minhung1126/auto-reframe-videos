@@ -2,6 +2,7 @@
 """FFmpeg command builders for compress and fixed-layout reframe jobs."""
 
 from collections import OrderedDict
+from auto_reframe_core.job_models import OutputTarget
 from pathlib import Path
 from typing import Callable
 
@@ -22,7 +23,7 @@ from auto_reframe_core.video_utils import (
 def _collect_hwaccels(outputs: list, encoder_hwaccel_for_codec: Callable[[str], str]) -> set:
     hwaccels = set()
     for entry in outputs:
-        vcodec = entry[5] if len(entry) > 5 else h265
+        vcodec = entry.codec if isinstance(entry, OutputTarget) else entry[5] if len(entry) > 5 else h265
         hw = encoder_hwaccel_for_codec(vcodec)
         if hw:
             hwaccels.add(hw)
@@ -50,6 +51,7 @@ def build_reframe_split_command(
     layout: TextLayoutConfig,
     watermark: WatermarkConfig = WatermarkConfig(),
 ) -> list:
+    outputs = [entry if isinstance(entry, OutputTarget) else OutputTarget(*entry[:5], entry[5] if len(entry) > 5 else h265) for entry in outputs]
     cmd = [ffmpeg_path, "-hide_banner", "-y"]
     cmd += detect_hwaccel_for_cmd(
         _collect_hwaccels(outputs, lambda codec: h265_hwaccel if codec == h265 else h264_hwaccel)
@@ -74,7 +76,7 @@ def build_reframe_split_command(
 
     res_groups = OrderedDict()
     for index, entry in enumerate(outputs):
-        key = (entry[0], entry[1])
+        key = (entry.width, entry.height)
         res_groups.setdefault(key, []).append(index)
 
     split_count = len(res_groups)
@@ -125,8 +127,8 @@ def build_reframe_split_command(
     cmd += ["-filter_complex", ";".join(filters)]
 
     for index, entry in enumerate(outputs):
-        _, _, _, bitrate, out_file = entry[:5]
-        vcodec = entry[5] if len(entry) > 5 else h265
+        bitrate, out_file = entry.bitrate, entry.path
+        vcodec = entry.codec if isinstance(entry, OutputTarget) else entry[5] if len(entry) > 5 else h265
         cmd += ["-map", final_video_maps[index]]
         if info["has_audio"]:
             cmd += ["-map", "0:a:0"]
@@ -147,6 +149,7 @@ def build_compress_split_command(
     h265_hwaccel: str,
     watermark: WatermarkConfig = WatermarkConfig(),
 ) -> list:
+    outputs = [entry if isinstance(entry, OutputTarget) else OutputTarget(*entry[:5], entry[5] if len(entry) > 5 else h265) for entry in outputs]
     cmd = [ffmpeg_path, "-hide_banner", "-y"]
     cmd += detect_hwaccel_for_cmd(
         _collect_hwaccels(outputs, lambda codec: h265_hwaccel if codec == h265 else h264_hwaccel)
@@ -157,7 +160,7 @@ def build_compress_split_command(
 
     res_groups = OrderedDict()
     for index, entry in enumerate(outputs):
-        key = (entry[0], entry[1])
+        key = (entry.width, entry.height)
         res_groups.setdefault(key, []).append(index)
 
     num_resolutions = len(res_groups)

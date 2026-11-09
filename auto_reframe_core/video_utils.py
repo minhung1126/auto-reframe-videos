@@ -12,6 +12,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from queue import Queue
 from threading import Event, Lock
+from auto_reframe_core.process_runner import (
+    ProcessRunner, ProcessCancellation, TaskCancelled, terminate_process,
+)
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from auto_reframe_core.encoder_profiles import (
@@ -169,20 +172,28 @@ def _stream_rotation(v_stream: Dict[str, Any]) -> float:
     return 0.0
 
 
-def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, Any]]:
+def get_video_info(ffprobe_path: str, input_file: Path, *, task_context=None) -> Optional[Dict[str, Any]]:
     """呼叫 FFprobe 獲取影片資訊；width/height 為 FFmpeg autorotate 後的顯示尺寸。"""
     try:
-        res = subprocess.run(
+        res = ProcessRunner(task_context).capture(
             [ffprobe_path, "-v", "quiet", "-print_format", "json",
              "-show_streams", "-show_format", str(input_file)],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+            timeout=30,
             **hidden_subprocess_kwargs(),
         )
         if res.returncode != 0 or not res.stdout.strip():
             print(f"  [警告] FFprobe 無法解析影片: {input_file.name}")
             return None
         data = json.loads(res.stdout)
+    except TaskCancelled:
+        raise
     except Exception as e:
+        if task_context is not None:
+            task_context.errors[Path(input_file)] = (
+                "probe_timeout" if isinstance(e, subprocess.TimeoutExpired) else "probe",
+                f"FFprobe 無法讀取影片：{e}",
+            )
+            task_context.emit("log", f"FFprobe：{type(e).__name__}: {e}")
         print(f"  [警告] 無法取得影片資訊: {input_file.name} ({e})")
         return None
 
@@ -228,6 +239,11 @@ def get_video_info(ffprobe_path: str, input_file: Path) -> Optional[Dict[str, An
         "fps": round(fps, 3),
         "duration": max(duration, 0.0),
         "has_audio": a_stream is not None,
+        "pix_fmt": v_stream.get("pix_fmt", ""),
+        "color_transfer": v_stream.get("color_transfer", ""),
+        "color_primaries": v_stream.get("color_primaries", ""),
+        "hdr": v_stream.get("color_transfer") in {"smpte2084", "arib-std-b67"},
+        "bit_depth": _safe_int(v_stream.get("bits_per_raw_sample"), 10 if "10" in v_stream.get("pix_fmt", "") else 8),
     }
 
 
@@ -349,262 +365,114 @@ def tqdm_write(msg: str) -> None:
         print(msg)
 
 
-def _terminate_process(process: subprocess.Popen, timeout: float = 3.0) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        process.terminate()
-    except OSError:
-        return
-    try:
-        process.wait(timeout=max(0.0, timeout))
-    except subprocess.TimeoutExpired:
-        try:
-            process.kill()
-            process.wait()
-        except OSError:
-            pass
+# Compatibility names remain public; all new jobs pass TaskContext explicitly.
+_terminate_process = terminate_process
+FFmpegCancellation = ProcessCancellation
 
 
-class FFmpegCancellation:
-    """Thread-safe cancellation state and registry for active FFmpeg processes."""
-
-    def __init__(self) -> None:
-        self._event = Event()
-        self._lock = Lock()
-        self._processes = set()
+class PositionQueue(Queue):
+    """Legacy callback adapter; internal ownership resides in TaskContext."""
+    def __init__(self, context):
+        super().__init__()
+        self.context = context
 
     @property
-    def cancelled(self) -> bool:
-        return self._event.is_set()
-
-    @property
-    def active_process_count(self) -> int:
-        with self._lock:
-            return len(self._processes)
-
-    def wait(self, timeout: Optional[float] = None) -> bool:
-        return self._event.wait(timeout)
-
-    def register(self, process: subprocess.Popen) -> None:
-        terminate_immediately = False
-        with self._lock:
-            if self._event.is_set():
-                terminate_immediately = True
-            else:
-                self._processes.add(process)
-        if terminate_immediately:
-            _terminate_process(process)
-
-    def unregister(self, process: subprocess.Popen) -> None:
-        with self._lock:
-            self._processes.discard(process)
-
-    def cancel(self, timeout: float = 3.0) -> None:
-        """Stop every registered child, escalating to kill after one shared deadline."""
-        self._event.set()
-        with self._lock:
-            processes = list(self._processes)
-
-        for process in processes:
-            if process.poll() is None:
-                try:
-                    process.terminate()
-                except OSError:
-                    pass
-
-        deadline = time.monotonic() + max(0.0, timeout)
-        for process in processes:
-            if process.poll() is not None:
-                continue
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                break
-            try:
-                process.wait(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                break
-
-        for process in processes:
-            if process.poll() is None:
-                try:
-                    process.kill()
-                except OSError:
-                    pass
+    def cancellation(self):
+        return self.context.cancellation
 
 
-def run_ffmpeg_with_progress(
-    cmd: List[str],
-    info: Dict[str, Any],
-    desc: str,
-    position_q: Queue,
-    debug_log_path=None,
-    progress_callback: Optional[Callable[[int], None]] = None,
-) -> Tuple[int, List[str]]:
-    """
-    以 Popen 執行 FFmpeg 指令，並透過 callback、tqdm 或純文字顯示即時進度。
-    回傳 (returncode, stderr_log_tail)。
-    position_q 用於 tqdm 多列進度條的位置管理，執行完畢後自動歸還。
-    """
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        universal_newlines=True, encoding="utf-8", errors="replace",
-        **hidden_subprocess_kwargs(),
-    )
-    cancellation = getattr(position_q, "cancellation", None)
-    if cancellation is not None:
-        cancellation.register(proc)
+def run_ffmpeg_with_progress(cmd, info, desc, position_q, debug_log_path=None,
+                             progress_callback=None, *, task_context=None, status_callback=None):
+    if task_context is None:
+        task_context = getattr(position_q, "context", None)
+        if task_context is None and getattr(position_q, "cancellation", None) is not None:
+            from auto_reframe_core.job_models import TaskContext
+            task_context = TaskContext(cancellation=position_q.cancellation)
+    position = position_q.get()
+    last_step = [-1]
 
-    pos = None
-    pbar = None
-    stderr_log: List[str] = []
-    debug_fd = None
-    try:
-        pos = position_q.get()
-        use_tqdm = progress_callback is None and _HAS_TQDM and sys.stderr.isatty()
-        progress_step = -1
+    def report(percent):
         if progress_callback is not None:
-            progress_callback(0)
-            progress_step = 0
-        elif use_tqdm:
-            pbar = _tqdm(
-                total=info["duration"], desc=desc, position=pos, leave=False,
-                bar_format="{desc}: {percentage:3.0f}%|{bar:20}| {elapsed}<{remaining}",
-            )
-        else:
-            print(f"[處理] {desc}：0%")
-
-        if debug_log_path:
-            debug_fd = open(debug_log_path, "w", encoding="utf-8")
-            debug_fd.write(f"{' '.join(shlex.quote(s) for s in cmd)}\n\n")
-
-        if proc.stdout is not None:
-            for line in proc.stdout:
-                stderr_log.append(line)
-                if len(stderr_log) > 15:
-                    stderr_log.pop(0)
-                if debug_fd:
-                    debug_fd.write(line)
-                    debug_fd.flush()
-                if "time=" in line:
-                    # 支援變長的小時數與 1~3 位的毫秒數 (例如 00:00:05.3 或 00:00:05.123)
-                    m = re.search(r"time=(\d+:\d{2}:\d{2}(?:\.\d+)?)", line)
-                    if m and pbar:
-                        pbar.n = min(parse_ffmpeg_time(m.group(1)), info["duration"])
-                        pbar.refresh()
-                    elif m:
-                        elapsed = min(parse_ffmpeg_time(m.group(1)), info["duration"])
-                        duration = info["duration"]
-                        percent = int(elapsed * 100 / duration) if duration else 0
-                        step = min(100, percent // 5 * 5)
-                        if step > progress_step:
-                            progress_step = step
-                            if progress_callback is not None:
-                                progress_callback(step)
-                            else:
-                                print(f"[進度] {desc}：{step}%")
-
-        proc.wait()
-        if proc.returncode == 0 and progress_callback is not None and progress_step < 100:
-            progress_callback(100)
-    except BaseException:
-        _terminate_process(proc)
-        raise
+            progress_callback(percent)
+        elif percent // 5 > last_step[0]:
+            last_step[0] = percent // 5
+            print(f"[進度] {desc}：{percent // 5 * 5}%")
+    try:
+        return ProcessRunner(task_context).ffmpeg(cmd, info, report, status=status_callback,
+                                                  debug_path=debug_log_path)
     finally:
-        if pbar:
-            pbar.close()
-        if debug_fd:
-            debug_fd.close()
-        if proc.stdout is not None:
-            proc.stdout.close()
-        if pos is not None:
-            position_q.put(pos)
-        if cancellation is not None:
-            cancellation.unregister(proc)
-
-    return proc.returncode, stderr_log
+        position_q.put(position)
 
 
-def run_parallel(
-    tasks: list,
-    process_fn,
-    workers: int,
-    progress_callback: VideoProgressCallback = None,
-) -> Tuple[int, List[str]]:
-    """
-    以 ThreadPoolExecutor 平行執行任務並彙整結果。
-    process_fn 簽名：(task_info, position_q) -> bool
-    task_info 格式：(idx, total, Path)
-    回傳 (success_count, failed_file_names)。
-    """
-    cancellation = FFmpegCancellation()
-    position_q: Queue = Queue()
-    position_q.cancellation = cancellation
-    for i in range(workers):
-        position_q.put(i)
+def run_parallel(tasks, process_fn, workers, progress_callback=None, *, task_context=None, detailed=False):
+    from auto_reframe_core.job_models import TaskContext, VideoResult, BatchResult, ResultStatus
+    from auto_reframe_core.job_errors import describe_error
+    context = task_context or TaskContext()
+    positions = PositionQueue(context)
+    for index in range(workers):
+        positions.put(index)
+    results = {}
     for task in tasks:
-        emit_video_progress(
-            progress_callback,
-            task,
-            kind="queued",
-            progress=0,
-            phase="等待處理",
-        )
-
-    success_count = 0
-    failed_files: List[str] = []
+        emit_video_progress(progress_callback, task, kind="queued", progress=0, phase="等待處理")
 
     def execute_task(task):
-        emit_video_progress(
-            progress_callback,
-            task,
-            kind="started",
-            progress=0,
-            phase="讀取影片資訊",
-        )
-        return process_fn(task, position_q)
+        context.check()
+        emit_video_progress(progress_callback, task, kind="started", progress=0, phase="讀取影片資訊")
+        return process_fn(task, positions)
+
+    def collect(task, future):
+        path = Path(task[2])
+        message, error_kind = "", ""
+        try:
+            success = future.result()
+        except TaskCancelled:
+            success = False
+        except Exception as exc:
+            success = False
+            error_kind, message = describe_error(exc)
+        targets = tuple(context.target_results.get(path, {}).values())
+        if success:
+            status = (ResultStatus.SKIPPED if targets and all(target.status == ResultStatus.SKIPPED for target in targets)
+                      else ResultStatus.SUCCESS)
+        elif context.cancellation.cancelled:
+            status = ResultStatus.CANCELLED
+        elif any(target.status == ResultStatus.SUCCESS for target in targets):
+            status = ResultStatus.PARTIAL
+        else:
+            status = ResultStatus.FAILED
+        if not success and not message:
+            error_kind, message = context.errors.get(path, ("cancelled", "工作已取消") if status == ResultStatus.CANCELLED else ("encoding", "處理未完成"))
+        expected = getattr(context, "planned_targets", {}).get(path, ())
+        missing = [target for target in expected if target not in {entry.path for entry in targets}]
+        context.record_targets(path, missing, status, message, error_kind)
+        targets = tuple(context.target_results.get(path, {}).values())
+        results[path] = VideoResult(path, status, targets, error_kind, message)
+        kind = {ResultStatus.SUCCESS: "completed", ResultStatus.SKIPPED: "skipped",
+                ResultStatus.CANCELLED: "cancelled"}.get(status, "failed")
+        emit_video_progress(progress_callback, task, kind=kind,
+                            progress=100 if success else None, message=message)
 
     executor = ThreadPoolExecutor(max_workers=workers)
-    interrupted = False
     futures = {}
+    interrupted = False
     try:
-        futures = {executor.submit(execute_task, t): t for t in tasks}
-        for fut in as_completed(futures):
-            t = futures[fut]
-            try:
-                if fut.result():
-                    success_count += 1
-                    emit_video_progress(
-                        progress_callback,
-                        t,
-                        kind="completed",
-                        progress=100,
-                    )
-                else:
-                    failed_files.append(t[2].name)
-                    emit_video_progress(
-                        progress_callback,
-                        t,
-                        kind="failed",
-                        message="處理未完成",
-                    )
-            except Exception as e:
-                failed_files.append(t[2].name)
-                emit_video_progress(
-                    progress_callback,
-                    t,
-                    kind="failed",
-                    message=str(e),
-                )
-                print(f"\n[錯誤] 處理 {t[2].name} 時發生異常: {e}")
+        futures = {executor.submit(execute_task, task): task for task in tasks}
+        for future in as_completed(futures):
+            collect(futures[future], future)
     except KeyboardInterrupt:
         interrupted = True
-        cancellation.cancel()
-        for fut in futures:
-            fut.cancel()
-        print("\n[中斷] 已收到停止指令，正在終止執行中與尚未開始的任務。")
-        raise
+        context.cancellation.cancel()
+        for future in futures:
+            future.cancel()
+        if not detailed:
+            raise
     finally:
         executor.shutdown(wait=True, cancel_futures=interrupted)
-
-    return success_count, failed_files
+    for future, task in futures.items():
+        if Path(task[2]) not in results:
+            if future.cancelled():
+                results[Path(task[2])] = VideoResult(Path(task[2]), ResultStatus.CANCELLED)
+            else:
+                collect(task, future)
+    batch = BatchResult(context.job_id, tuple(results[Path(task[2])] for task in tasks))
+    return batch if detailed else batch.legacy()

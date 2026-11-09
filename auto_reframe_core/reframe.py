@@ -57,6 +57,7 @@ class ReframeConfig:
     output_dir: str = "output"
     video_files: tuple | None = None
     output_mode: str = "specified"
+    output_subfolder: str = ""
     prepared_batch: object | None = field(default=None, repr=False, compare=False)
 
     # --- 裁切與輸出目標 (重要設定) ---
@@ -110,7 +111,10 @@ class ReframeConfig:
     bottom_text_override: Optional[str] = None
 
 class VideoReframer:
-    def __init__(self, config: ReframeConfig, progress_callback=None):
+    def __init__(self, config: ReframeConfig, progress_callback=None, *, task_context=None):
+        self.task_context = task_context
+        if task_context is not None:
+            task_context.check()
         self.config = config
         self.progress_callback = progress_callback
         self.script_dir = resource_root()
@@ -118,7 +122,8 @@ class VideoReframer:
         self.config.ffprobe_path = tool_path("ffprobe", self.config.ffprobe_path)
         self._validate_config()
         self.load_texts()
-        profiles = detect_target_encoders(self.config.ffmpeg_path, {t["vcodec"] for t in self.config.targets})
+        profiles = detect_target_encoders(self.config.ffmpeg_path, {t["vcodec"] for t in self.config.targets},
+                                          **({"task_context": task_context} if task_context is not None else {}))
         self.h265_encoder, self.h265_hwaccel = profiles.get(h265, ("libx265", None))
         self.h264_encoder, self.h264_hwaccel = profiles.get(h264, ("libx264", None))
 
@@ -258,14 +263,16 @@ class VideoReframer:
             active_maps, self.h264_encoder, self.h265_encoder,
         )
 
-    def process_single_video(self, task_info: Tuple[int, int, Path], position_q: Queue) -> bool:
+    def process_single_video(self, task_info: Tuple[int, int, Path], position_q: Queue, *, task_context=None) -> bool:
         idx, total, file_path = task_info
-        cancellation = getattr(position_q, "cancellation", None)
+        context = task_context or getattr(self, "task_context", None)
+        cancellation = context.cancellation if context is not None else getattr(position_q, "cancellation", None)
         if cancellation is not None and cancellation.cancelled:
             return False
         prepared = getattr(self.config, "prepared_batch", None)
         info = (dict(prepared.validate_video(file_path).info) if prepared is not None
-                else get_video_info(self.config.ffprobe_path, file_path))
+                else get_video_info(self.config.ffprobe_path, file_path,
+                                    **({"task_context": context} if context is not None else {})))
         if not info:
             return False
         if cancellation is not None and cancellation.cancelled:
@@ -290,6 +297,9 @@ class VideoReframer:
                     if prepared is not None else build_reframe_output_plan(
                         self.config, out_dir, file_path, info, dims, rt_w, rt_h, targets))
 
+            if context is not None and prepared is not None:
+                all_paths = next(snapshot.finals for ratio, snapshot in prepared.entries[file_path].plans if ratio == (rt_w, rt_h))
+                context.record_targets(file_path, [path for path in all_paths if path not in plan.finals], "skipped")
             if not plan.has_work:
                 emit_video_progress(
                     getattr(self, "progress_callback", None),
@@ -310,10 +320,19 @@ class VideoReframer:
                 phase=phase, description=f"({idx}/{total}) {file_path.stem[:12]} [{rt_w}:{rt_h}]",
                 progress_callback=getattr(self, "progress_callback", None), debug_log_path=debug_log_path,
                 before_promotion=(lambda: prepared.validate_video(file_path)) if prepared is not None else None,
+            task_context=context,
             )
             all_success = all_success and success
 
         return all_success
+
+    def run_result(self, task_context=None):
+        from auto_reframe_core.batch_runner import run_video_batch_result
+        return run_video_batch_result(
+            self.config, self.process_single_video, "處理",
+            progress_callback=getattr(self, "progress_callback", None),
+            task_context=task_context or getattr(self, "task_context", None),
+        )
 
     def run(self):
         return run_video_batch(
@@ -324,13 +343,15 @@ class VideoReframer:
         )
 
 
-def main(input_dir="input", output_dir="output"):
+def main(input_dir="input", output_dir="output", *, output_subfolder=""):
     print("=" * 60)
     print("  Auto Reframe Video v2.0 - H.265 高效能優化版")
     print("=" * 60)
 
-    config = ReframeConfig(input_dir=input_dir, output_dir=output_dir)
-    app = VideoReframer(config)
+    config = ReframeConfig(input_dir=input_dir, output_dir=output_dir, output_subfolder=output_subfolder)
+    from auto_reframe_core.job_models import TaskContext
+    context = TaskContext()
+    app = VideoReframer(config, task_context=context)
 
     # --- 確認目標參數與文字內容 ---
     print("\n【目標參數】")
@@ -363,6 +384,8 @@ def main(input_dir="input", output_dir="output"):
     print()
 
     app.run()
+    if context.cancellation.cancelled:
+        return 130
 
     pause_for_windows_shell()
 

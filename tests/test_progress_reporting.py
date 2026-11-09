@@ -91,7 +91,7 @@ class VideoProgressEventTests(unittest.TestCase):
         command = [
             sys.executable,
             "-c",
-            "print('frame=1 time=00:00:05.0')",
+            "print('out_time_us=5000000'); print('progress=continue')",
         ]
 
         with redirect_stdout(captured):

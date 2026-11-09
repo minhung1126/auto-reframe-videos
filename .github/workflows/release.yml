@@ -82,6 +82,11 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Set up supported Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+
       - name: Install Linux GUI test dependency
         if: runner.os == 'Linux'
         run: |
@@ -90,6 +95,21 @@ jobs:
 
       - name: Install GUI drag/drop dependency
         run: python -m pip install -r requirements.txt
+
+      - name: Qualify GUI runtime and record platform evidence
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            xvfb-run -a python -m scripts.check_runtime --require-gui --report build/runtime.json
+          else
+            python -m scripts.check_runtime --require-gui --report build/runtime.json
+          fi
+
+      - name: Save runtime evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: runtime-${{ matrix.os }}-${{ github.workflow }}
+          path: build/runtime.json
 
       - name: Compile Python sources
         run: python -m compileall -q auto_reframe_core tests scripts
@@ -145,10 +165,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          release_notes="docs/releases/v$RELEASE_VERSION.md"
+          notes_args=(--generate-notes)
+          if [[ -f "$release_notes" ]]; then
+            notes_args=(--notes-file "$release_notes")
+          fi
           gh release create "v$RELEASE_VERSION" \
             "dist/auto-reframe-videos-v$RELEASE_VERSION.zip" \
             "dist/SHA256SUMS-v$RELEASE_VERSION.txt" \
             dist/desktop/* \
             --verify-tag \
             --title "Auto Reframe Videos v$RELEASE_VERSION" \
-            --generate-notes
+            "${notes_args[@]}"

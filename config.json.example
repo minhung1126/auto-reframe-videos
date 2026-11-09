@@ -66,6 +66,7 @@
     "bottom_text": "",
     "output_mode": "source",
     "output_folder": "",
+    "output_subfolder": "",
     "include_subfolders": false
   }
 }

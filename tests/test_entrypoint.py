@@ -37,6 +37,12 @@ class UnifiedEntrypointTests(unittest.TestCase):
 
         self.assertEqual(args.mode, "gui")
 
+    def test_custom_output_subfolder_reaches_both_cli_modes(self):
+        for mode in ("reframe", "compress"):
+            with patch(f"auto_reframe_core.{mode}.main") as run:
+                self.assertEqual(cli.main([mode, "--output-subfolder", "中文 場次"]), 0)
+                run.assert_called_once_with("input", "output", output_subfolder="中文 場次")
+
     def test_each_mode_routes_through_the_unified_entry(self):
         targets = {
             "gui": "auto_reframe_core.gui.main",

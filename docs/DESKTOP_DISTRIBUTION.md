@@ -240,3 +240,28 @@ and the completion-page launch checkbox. Check the Chinese font, glyph visibilit
 bounds, row height and spacing, and click/keyboard operation. Archive screenshots with scaling,
 OS, installer version and scope. No native qualification or screenshot evidence was available
 in the Linux implementation environment; do not mark this gate passed from `.iss` alone.
+
+
+## v3.0.14 refactor qualification
+
+CI and desktop jobs select Python 3.12. `scripts.check_runtime --require-gui`
+requires Tcl/Tk 8.x and a real TkDND root and stores Python, Tk, TkDND,
+FFmpeg, OS, CPU and scaling evidence. A skipped GUI suite cannot satisfy this gate.
+Frozen smoke now constructs `AutoReframeGUI` and operates the file list, native
+TkDND registration, custom output subfolder, both modes, save and restore,
+before exercising both codecs and watermarks with PATH cleared.
+
+Linux development verification additionally passed on Python 3.13.5,
+Tcl/Tk 8.6.16, TkDND 2.9.4 and FFmpeg 7.1.5. This is a core/GUI/frozen
+verification result, not qualification of native installers or a change to the
+supported desktop Python baseline. CI artifacts supply the final commit and
+native runtime records.
+
+The following v3.0.14 physical-device evidence remains Pending: Windows 11 and
+Windows 10 22H2 install/upgrade/uninstall in both scopes; app and installer at
+100/125/150/200% DPI and across monitors; macOS arm64/x64, Retina, external
+displays and the minimum-OS candidate; IME/trackpad behavior; UNC/long paths,
+external/network disks; real GPU sessions, VFR/long media and native-player
+compatibility. Record version, commit, OS, CPU/GPU, Python/Tk, scaling and result
+when equipment becomes available. No hardware, minimum-OS or unsigned-install
+experience claim follows from the automated tests alone.

@@ -1,11 +1,12 @@
 """Shared original-file selection, independent of any workspace."""
 import os
 from pathlib import Path
+from auto_reframe_core.process_runner import TaskCancelled
 
 VIDEO_EXTENSIONS = frozenset({'.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.ts', '.m4v'})
 
 
-def collect_videos(items, existing=(), recursive=False):
+def collect_videos(items, existing=(), recursive=False, *, task_context=None):
     videos = list(existing)
     seen = {os.path.normcase(str(Path(path).resolve())) for path in videos}
     identities = set()
@@ -17,16 +18,25 @@ def collect_videos(items, existing=(), recursive=False):
             pass
     errors = []
     for item in items:
+        if task_context is not None:
+            task_context.check()
         path = Path(item).expanduser()
         try:
             if path.is_dir():
-                candidates = sorted(path.rglob('*') if recursive else path.iterdir())
+                candidates = []
+                for candidate in (path.rglob('*') if recursive else path.iterdir()):
+                    if task_context is not None:
+                        task_context.check()
+                    candidates.append(candidate)
+                candidates.sort()
                 candidates = [p for p in candidates if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS]
                 if not candidates:
                     errors.append(f'{path}：沒有支援的影片')
             else:
                 candidates = [path]
             for candidate in candidates:
+                if task_context is not None:
+                    task_context.check()
                 if candidate.suffix.lower() not in VIDEO_EXTENSIONS:
                     errors.append(f'{candidate}：不支援的格式')
                     continue
@@ -42,8 +52,12 @@ def collect_videos(items, existing=(), recursive=False):
                         videos.append(resolved)
                         seen.add(key)
                         identities.add(identity)
+                except TaskCancelled:
+                    raise
                 except (OSError, ValueError) as exc:
                     errors.append(f'{candidate}：無法讀取（{exc}）')
+        except TaskCancelled:
+            raise
         except OSError as exc:
             errors.append(f'{path}：無法讀取（{exc}）')
     return tuple(videos), errors

@@ -113,3 +113,24 @@ Repository hardening verified through the authenticated GitHub API on 2026-10-12
 - [ ] Confirm all installers and source ZIP match the same version and commit.
 - [ ] Verify clean machines, physical hardware acceleration/cancellation and upgrade/data retention.
 - [ ] Confirm the three unsigned installer sidecars and checksums pass `scripts.verify_desktop_set`.
+
+
+## v3.0.14 release audit — 2026-11-09
+
+- The repository remains public, with `main` as default branch.
+- The active Protect main ruleset was read again: deletion/force pushes are
+  blocked, the three Python CI checks and resolved review threads are required,
+  and the existing repository-administrator bypass remains unchanged.
+- The latest prior release v3.0.13 is immutable and has the expected source ZIP,
+  checksum and three unsigned installers with SHA-256 digests and build records.
+- Workflow changes retain full-SHA Action pins, read-only default tokens and
+  the release job's existing minimal `contents: write` permission.
+- The connector does not expose the Actions default-token permission endpoint;
+  the one-time settings above retain their last authenticated audit date.
+- Runtime settings, local art, synthetic media, logs and build output remain
+  outside the release allowlist. New Python modules are covered by the existing
+  flat `auto_reframe_core/*.py` allowlist and production PyInstaller analysis.
+- The source archive must pass build/staging verification, and all three CI
+  test jobs and unsigned native installer jobs must succeed before v3.0.14 is
+  tagged. Physical-device UX/GPU qualification remains explicitly Pending in
+  DESKTOP_DISTRIBUTION.md.

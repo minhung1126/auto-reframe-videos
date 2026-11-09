@@ -9,10 +9,15 @@ import os
 import tempfile
 import sys
 import unicodedata
+import json
+from uuid import uuid4
 from dataclasses import replace
 from types import MappingProxyType
 from stat import S_ISREG
 from typing import List, Mapping
+from auto_reframe_core.job_models import OutputTarget
+from auto_reframe_core.job_errors import replace_with_retry
+from auto_reframe_core.output_locks import path_identity
 
 from auto_reframe_core.video_utils import (
     RESOLUTION_MAP,
@@ -53,6 +58,7 @@ def _planning_signature(config, mode: str) -> tuple:
     return (mode, targets, tuple(getattr(config, "final_ratio", ())),
             getattr(config, "output_mode", "specified"),
             str(Path(config.output_dir).expanduser().resolve()),
+            normalize_output_subfolder(getattr(config, "output_subfolder", "")),
             bool(getattr(config, "watermark_enabled", False)), resource_settings)
 
 
@@ -106,7 +112,9 @@ class PreparedVideoBatch:
                           [entry[2] for entry in outputs])
 
 
-def validate_prepared_batch(config, mode: str) -> PreparedVideoBatch:
+def validate_prepared_batch(config, mode: str, *, task_context=None) -> PreparedVideoBatch:
+    if task_context is not None:
+        task_context.check()
     prepared = getattr(config, "prepared_batch", None)
     if not isinstance(prepared, PreparedVideoBatch):
         raise ValueError("尚未完成影片與輸出檢查。")
@@ -265,20 +273,43 @@ def promote_temp_outputs(tmps: List[Path], finals: List[Path], *, cancellation=N
     backups = {}
     replaced = []
     keep_backups = set()
+    journal = finals[0].parent / f".arv-transaction-{uuid4().hex}.json" if finals else None
+
+    def record_transaction():
+        if journal is not None:
+            journal.write_text(json.dumps({"version": 1, "outputs": [str(path) for path in finals],
+                                          "backups": {str(path): str(backup) for path, backup in backups.items()},
+                                          "replaced": [str(path) for path in replaced]}, ensure_ascii=False), encoding="utf-8")
+
     try:
+        record_transaction()
         # Hard links preserve large existing videos without another full copy on
         # native filesystems. Unsupported filesystems use a same-directory copy.
         for final in finals:
+            if cancellation is not None and cancellation.cancelled:
+                raise InterruptedError("輸出替換已取消。")
             if final.exists():
                 fd, name = tempfile.mkstemp(prefix=".arv-promote-", suffix=".bak", dir=final.parent)
                 os.close(fd)
                 backup = Path(name)
                 backups[final] = backup
+                record_transaction()
                 backup.unlink()
                 try:
                     os.link(final, backup)
                 except OSError:
-                    shutil.copy2(final, backup)
+                    if shutil.disk_usage(final.parent).free < final.stat().st_size:
+                        import errno
+                        raise OSError(errno.ENOSPC, f"備份原輸出所需磁碟空間不足：{final}")
+                    if cancellation is None:
+                        shutil.copy2(final, backup)
+                    else:
+                        with final.open("rb") as source, backup.open("wb") as destination:
+                            while chunk := source.read(1024 * 1024):
+                                if cancellation.cancelled:
+                                    raise InterruptedError("輸出備份已取消。")
+                                destination.write(chunk)
+                        shutil.copystat(final, backup)
         for tmp, final in zip(tmps, finals):
             if cancellation is not None and cancellation.cancelled:
                 raise InterruptedError("輸出替換已取消。")
@@ -289,8 +320,9 @@ def promote_temp_outputs(tmps: List[Path], finals: List[Path], *, cancellation=N
                 raise ValueError(f"輸出路徑在替換期間已變更：{final}")
             if not tmp.is_file() or tmp.stat().st_size == 0:
                 raise ValueError(f"缺少完整暫存輸出：{tmp}")
-            tmp.replace(final)
+            replace_with_retry(tmp, final, cancellation=cancellation)
             replaced.append(final)
+            record_transaction()
     except BaseException as exc:
         rollback_errors = []
         for final in reversed(replaced):
@@ -316,6 +348,8 @@ def promote_temp_outputs(tmps: List[Path], finals: List[Path], *, cancellation=N
         for backup in backups.values():
             if backup not in keep_backups:
                 backup.unlink(missing_ok=True)
+        if journal is not None and not keep_backups:
+            journal.unlink(missing_ok=True)
 
 
 def build_compress_output_plan(config, out_dir: Path, file_path: Path, info: dict, *, prepare=True) -> OutputPlan:
@@ -362,7 +396,7 @@ def build_compress_output_plan(config, out_dir: Path, file_path: Path, info: dic
             sub_dir.mkdir(parents=True, exist_ok=True)
         tmp_file = target_file.with_name(target_file.name + ".tmp")
         bitrate = get_youtube_bitrate(effective_short, info["fps"])
-        active_maps.append((out_w, out_h, label, bitrate, tmp_file, vcodec))
+        active_maps.append(OutputTarget(out_w, out_h, label, bitrate, tmp_file, vcodec))
         tmps.append(tmp_file)
         finals.append(target_file)
 
@@ -427,25 +461,38 @@ def build_reframe_output_plan(
             sub_dir.mkdir(parents=True, exist_ok=True)
         tmp_file = target_file.with_name(target_file.name + ".tmp")
         bitrate = get_youtube_bitrate(effective_short, info["fps"])
-        active_maps.append((out_w, out_h, label, bitrate, tmp_file, vcodec))
+        active_maps.append(OutputTarget(out_w, out_h, label, bitrate, tmp_file, vcodec))
         tmps.append(tmp_file)
         finals.append(target_file)
 
     return OutputPlan(active_maps, tmps, finals)
 
 
+def normalize_output_subfolder(value):
+    """Accept one portable directory name, never a path outside the output root."""
+    if not isinstance(value, str):
+        raise ValueError("輸出子資料夾（output_subfolder）必須是文字。")
+    name = value.strip()
+    if not name:
+        return ""
+    if (name in {".", ".."} or name.endswith(".")
+            or any(char in '<>:"/\\|?*' or ord(char) < 32 or ord(char) == 127 for char in name)
+            or re.fullmatch(r"(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?", name, re.IGNORECASE)):
+        raise ValueError("輸出子資料夾（output_subfolder）必須是有效的單一資料夾名稱，不可包含路徑或保留名稱。")
+    return name
+
+
 def output_root_for(config, file_path):
     if getattr(config, "output_mode", "specified") == "source":
-        return Path(file_path).resolve().parent / "auto-reframe"
-    return Path(config.output_dir).expanduser().resolve()
+        root = Path(file_path).resolve().parent / "auto-reframe"
+    else:
+        root = Path(config.output_dir).expanduser().resolve()
+    subfolder = normalize_output_subfolder(getattr(config, "output_subfolder", ""))
+    return root / subfolder if subfolder else root
 
 
 def _output_path_key(path):
-    value = str(Path(path).resolve())
-    # Reject ambiguous names conservatively on the usual case-insensitive native filesystems.
-    if sys.platform in {"win32", "darwin"}:
-        return unicodedata.normalize("NFC", value).casefold()
-    return os.path.normcase(value)
+    return path_identity(path)
 
 
 def _validate_output_paths(videos, finals, expected_keys=None, *, source_keys=None):
@@ -471,10 +518,46 @@ def _validate_output_paths(videos, finals, expected_keys=None, *, source_keys=No
 
 
 def _check_output_writes(destinations, finals):
+    expected = {_output_path_key(path) for path in finals}
+    for directory in {p.parent for p in finals}:
+        if directory.is_dir():
+            for journal in directory.glob(".arv-transaction-*.json"):
+                try:
+                    data = json.loads(journal.read_text(encoding="utf-8"))
+                    affected = {_output_path_key(path) for path in data["outputs"]}
+                except (OSError, ValueError, TypeError, KeyError):
+                    affected = expected
+                if affected & expected:
+                    raise ValueError(f"發現上次未完成的輸出交易；請先查看紀錄及備份，程式不會自動刪除：{journal}")
     for directory in set(destinations) | {p.parent for p in finals}:
         directory.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(prefix=".arv-write-", dir=directory):
             pass
+
+
+def check_batch_space(prepared, *, skip_existing=True):
+    """Conservative bitrate estimate plus backup copies; not a free-space guarantee."""
+    volumes = {}
+    for entry in prepared.entries.values():
+        duration = max(0, entry.info.get("duration", 0))
+        for _, plan in entry.plans:
+            for output, final in zip(plan.active_maps, plan.finals):
+                if skip_existing and final.exists():
+                    continue
+                directory = final.parent
+                volume = directory.stat().st_dev
+                estimate, _ = volumes.get(volume, (0, directory))
+                bitrate = output.bitrate.upper()
+                scale = 1_000_000 if bitrate.endswith("M") else 1000 if bitrate.endswith("K") else 1
+                value = float(bitrate[:-1] if scale != 1 else bitrate)
+                estimate += int((value + 192_000) * duration / 8 * 1.15)
+                # A hard-link backup may have to fall back to a full copy.
+                estimate += final.stat().st_size if final.exists() else 0
+                volumes[volume] = estimate, directory
+    for estimate, directory in volumes.values():
+        if shutil.disk_usage(directory).free < estimate:
+            import errno
+            raise OSError(errno.ENOSPC, f"輸出磁碟可用空間不足；含備份估計需要 {estimate / 1024**2:.1f} MiB：{directory}")
 
 
 def _validate_batch_resources(config, mode):
@@ -509,7 +592,7 @@ def _validate_batch_resources(config, mode):
             source.read(1)
 
 
-def prepare_video_batch(config, mode) -> PreparedVideoBatch:
+def prepare_video_batch(config, mode, *, task_context=None) -> PreparedVideoBatch:
     """Probe once and validate all identities before any worker or deletion starts."""
     from auto_reframe_core.video_utils import get_video_info
     if mode not in {"reframe", "compress"}:
@@ -526,10 +609,14 @@ def prepare_video_batch(config, mode) -> PreparedVideoBatch:
     if mode == "reframe":
         from auto_reframe_core.reframe_geometry import calculate_reframe_dimensions
     for video in videos:
+        if task_context is not None:
+            task_context.check()
         stamp = _source_stamp(video)
-        info = get_video_info(config.ffprobe_path, video)
+        info = get_video_info(config.ffprobe_path, video,
+                              **({"task_context": task_context} if task_context is not None else {}))
         if not info:
-            raise ValueError(f"無法讀取影片資訊：{video}")
+            reason = task_context.errors.get(video, ("", ""))[1] if task_context is not None else ""
+            raise ValueError(f"無法讀取影片資訊：{video}" + (f"；{reason}" if reason else ""))
         if _source_stamp(video) != stamp:
             raise ValueError(f"來源影片在讀取資訊期間已變更：{video}")
         root = output_root_for(config, video)

@@ -41,11 +41,11 @@ class JobConfirmationMessageTests(unittest.TestCase):
                 with (
                     patch("auto_reframe_core.gui.sys.platform", platform_name),
                     patch(
-                        "auto_reframe_core.gui.prepare_video_batch",
+                        "auto_reframe_core.output_plans.prepare_video_batch",
                         return_value=SimpleNamespace(destinations=(), finals=()),
                     ),
                     patch(
-                        "auto_reframe_core.gui.messagebox.askyesno",
+                        "auto_reframe_core.gui_job_view.messagebox.askyesno",
                         return_value=False,
                     ) as confirmation,
                 ):

@@ -186,7 +186,7 @@ auto_reframe_core/gui_options.py
   `reframe` 與 `compress` mode。
 - Windows／macOS 雙擊啟動器分別為 `run.bat` 與 `run.command`，兩者都只啟動
   統一入口的 GUI mode。
-- 專案尚未首次發布，不保留舊版入口、設定匯入、工作區遷移或相容分支。
+- 不保留舊版入口或工作區遷移。依本次使用者指示，只有 config.json 保留五個版本的自動遷移：v3.0.14～v3.0.18；v3.0.19 起停止相容並移除 `config_migration.py` 及呼叫點。新檔驗證成功後才刪舊檔，既有新設定不可被舊檔覆寫。
 - GUI 使用共用待處理影片清單，支援多選、資料夾掃描與 Windows/macOS 拖曳；直接處理
   原始檔，不複製或搬移，不建立固定 `input/`、`output/`，不讀寫 `workspace.json`。
 - 設定與浮水印放在 `runtime_paths.user_data_root()`：Windows
@@ -198,6 +198,10 @@ auto_reframe_core/gui_options.py
   外部修改下次啟動載入，提醒先關閉程式。GUI 上下方文字只由 GUI 編輯並保存在設定檔。
 - 輸出預設為各影片來源目錄的 `auto-reframe/`，也支援共用指定資料夾；處理開始前固定清單、
   檢查所有實際輸出、寫入權限、跨來源碰撞與原始檔保護。不得靜默覆寫碰撞。
+- GUI／CLI／Python API 支援選填 `output_subfolder`，只能是單一有效資料夾名稱。輸出規劃快照、鎖及碰撞檢查必須包含該名稱。
+- 所有工作由 `JobController`／`TaskContext` 持有 job ID、取消與輸出所有權；內部不可再把取消物件動態掛到 queue。`PositionQueue` 僅供既有 callback API 相容。
+- 輸出鎖必須跨程序、按固定順序取得，涵蓋 tmp 清理到提交；設定使用 `ConfigSession` 做內容版本檢查及唯一暫存檔原子寫入。
+- GUI 背景工作不得全域 redirect stdout/stderr；事件以 job ID 過濾、進度合併、每次 drain 有預算。取消不可等候事件佇列；Tk 主執行緒不可 join 或回收子程序。
 - CLI 保留 `--input-dir`、`--output-dir`。所有來源／輸出規劃維持既有命名與取消、tmp 清理、promotion 契約。
 - 設定檔寫入必須維持版本驗證、UTF-8 與 temporary-file replace 的原子流程。
 - Tk widget 只能在主執行緒更新；背景處理、更新檢查與下載結果透過 queue／`after()`
@@ -323,6 +327,7 @@ tests/
 
 ```bash
 python -m compileall -q auto_reframe_core tests scripts
+python -m scripts.check_runtime --require-gui
 python -m unittest discover -s tests
 git diff --check
 ```

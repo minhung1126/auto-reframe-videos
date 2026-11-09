@@ -2,6 +2,7 @@
 """Hardware encoder detection and FFmpeg encoder argument profiles."""
 
 import subprocess
+from auto_reframe_core.process_runner import ProcessRunner, TaskCancelled
 from typing import List, Optional, Tuple
 
 from .platform_profile import (
@@ -69,16 +70,16 @@ def _encoder_probe_cmd(ffmpeg_path: str, encoder: str) -> List[str]:
     return cmd
 
 
-def _list_encoders(ffmpeg_path: str, profile=None) -> str:
+def _list_encoders(ffmpeg_path: str, profile=None, *, task_context=None) -> str:
     try:
-        res = subprocess.run(
+        res = ProcessRunner(task_context).capture(
             [ffmpeg_path, "-hide_banner", "-encoders"],
-            capture_output=True,
-            text=True, encoding="utf-8", errors="replace",
             timeout=10,
             **hidden_subprocess_kwargs(profile),
         )
         encoders = res.stdout
+    except TaskCancelled:
+        raise
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise RuntimeError(
             f"呼叫 {ffmpeg_path} 失敗，請確認 FFmpeg 是否已安裝且路徑正確。"
@@ -96,39 +97,46 @@ def _detect_hw_encoder(
     profile: Optional[PlatformProfile] = None,
     *,
     available_encoders: Optional[str] = None,
+    task_context=None,
 ) -> Tuple[str, Optional[str]]:
     """Detect the first usable hardware encoder for h265 or h264."""
-    encoders = _list_encoders(ffmpeg_path, profile) if available_encoders is None else available_encoders
+    encoders = _list_encoders(ffmpeg_path, profile, task_context=task_context) if available_encoders is None else available_encoders
 
     label = codec.upper()
     for enc, hw in _encoder_candidates(codec, profile):
+        if task_context is not None:
+            task_context.check()
         if enc in encoders:
             try:
-                test = subprocess.run(
+                test = ProcessRunner(task_context).capture(
                     _encoder_probe_cmd(ffmpeg_path, enc),
-                    capture_output=True,
-                    text=True, encoding="utf-8", errors="replace",
                     timeout=30,
                     **hidden_subprocess_kwargs(profile),
                 )
+            except TaskCancelled:
+                raise
             except (OSError, subprocess.TimeoutExpired):
                 continue
             if test.returncode == 0:
                 print(f"  [核心系統] 已啟用硬體加速編碼器 ({label}): {enc} ({hw})")
                 return enc, hw
+            if task_context is not None:
+                task_context.emit("log", f"{enc} 無法使用，嘗試下一個編碼器：{test.stderr[-1000:]}")
 
     sw = _SW_FALLBACK[codec]
+    if task_context is not None:
+        task_context.emit("log", f"{label} 未發現可用的硬體編碼器，使用 {sw}")
     print(f"  [核心系統] 未發現可用硬體加速 ({label})，回退至軟體編碼 ({sw})")
     return sw, None
 
 
-def detect_target_encoders(ffmpeg_path: str, codecs, profile=None) -> dict:
+def detect_target_encoders(ffmpeg_path: str, codecs, profile=None, *, task_context=None) -> dict:
     """Probe only selected codecs, sharing the encoder listing within this batch."""
     requested = set(codecs)
     if not requested or not requested <= _SW_FALLBACK.keys():
         raise ValueError(f"不支援的目標 codecs: {sorted(requested)}")
-    encoders = _list_encoders(ffmpeg_path, profile)
-    return {codec: _detect_hw_encoder(ffmpeg_path, codec, profile, available_encoders=encoders)
+    encoders = _list_encoders(ffmpeg_path, profile, task_context=task_context)
+    return {codec: _detect_hw_encoder(ffmpeg_path, codec, profile, available_encoders=encoders, task_context=task_context)
             for codec in ("h265", "h264") if codec in requested}
 
 

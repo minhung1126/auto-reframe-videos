@@ -39,6 +39,11 @@ def run_desktop_smoke(report, *, verify_tk=True):
                         'testsrc2=size=320x180:rate=12:duration=1',
                         '-c:v', 'libx264', '-pix_fmt', 'yuv420p', str(source)],
                        check=True, timeout=60, **hidden_subprocess_kwargs())
+        gui_evidence = None
+        if verify_tk:
+            progress('Exercise complete GUI')
+            from auto_reframe_core.gui_smoke import exercise_gui
+            gui_evidence = exercise_gui(source, workspace)
         def chunk(kind, data):
             return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
         watermark = workspace / '浮水印 圖.png'
@@ -70,7 +75,7 @@ def run_desktop_smoke(report, *, verify_tk=True):
         info = [get_video_info(ffprobe, path) for path in outputs]
         if any(not entry or entry['duration'] < 0.8 or entry['width'] % 2 or entry['height'] % 2 for entry in info):
             raise RuntimeError('Invalid transcoded media')
-        payload = {'status': 'passed' if verify_tk else 'media-only', 'tk': tk_version, 'tkdnd': tkdnd_version, 'outputs': [p.name for p in outputs],
+        payload = {'status': 'passed' if verify_tk else 'media-only', 'tk': tk_version, 'tkdnd': tkdnd_version, 'gui': gui_evidence, 'outputs': [p.name for p in outputs],
                    'build': json.loads((resource_root() / 'build-info.json').read_text(encoding='utf-8')) if (resource_root() / 'build-info.json').is_file() else {'source': True}}
     Path(report).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
     return 0

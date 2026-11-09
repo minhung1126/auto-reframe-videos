@@ -29,6 +29,21 @@ class PlatformProfile:
             return 4
         return min(8, self.cpu_count)
 
+    @property
+    def shortcut_modifier(self):
+        return "Command" if self.is_macos else "Control"
+
+    @property
+    def case_fold_output_paths(self):
+        return self.system in {"win32", "darwin"}
+
+    def wheel_units(self, delta=0, button=None):
+        if button in (4, 5):
+            return -1 if button == 4 else 1
+        if self.is_macos:
+            return -int(delta) if abs(delta) >= 1 else (-1 if delta > 0 else 1 if delta < 0 else 0)
+        return -int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1 if delta < 0 else 0)
+
 
 def current_platform() -> PlatformProfile:
     return PlatformProfile(
@@ -36,6 +51,20 @@ def current_platform() -> PlatformProfile:
         os_name=os.name,
         cpu_count=os.cpu_count() or 2,
     )
+
+
+def initialize_gui_platform(profile=None):
+    """Request per-monitor Windows DPI before Tk creates any native windows."""
+    if not (profile or current_platform()).is_windows:
+        return
+    import ctypes
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except (AttributeError, OSError):
+            pass
 
 
 def resolve_workers(max_workers: int, profile: Optional[PlatformProfile] = None) -> int:

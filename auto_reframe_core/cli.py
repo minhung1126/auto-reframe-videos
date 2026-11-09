@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--desktop-smoke", metavar="REPORT", help=argparse.SUPPRESS)
     parser.add_argument("--input-dir", default="input")
     parser.add_argument("--output-dir", default="output")
+    parser.add_argument("--output-subfolder", default="", help="輸出位置下的單一子資料夾名稱（選填）")
     return parser
 
 
@@ -83,5 +84,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         from auto_reframe_core.compress import main as run
 
-    result = run() if args.mode == "gui" else run(args.input_dir, args.output_dir)
+    if args.mode == "gui":
+        result = run()
+    elif args.output_subfolder:
+        result = run(args.input_dir, args.output_dir, output_subfolder=args.output_subfolder)
+    else:
+        result = run(args.input_dir, args.output_dir)
     return result if isinstance(result, int) else 0

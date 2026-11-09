@@ -46,11 +46,14 @@ class GUIBackgroundTests(unittest.TestCase):
         self.app.notebook = Mock()
         self.app.activity_tab = object()
         self.app._run_worker = Mock()
+        self.app.last_request = None
+        self.app._ensure_controller()
         self.app.check_update_button = Mock()
         self.app.install_update_button = Mock()
         self.app.update_status_var = MainThreadVariable('ready')
         self.app._set_release_notes = Mock()
-        self.dialogs = patch('auto_reframe_core.gui.messagebox').start()
+        self.dialogs = patch('auto_reframe_core.gui_job_view.messagebox').start()
+        patch('auto_reframe_core.gui_update_view.messagebox', self.dialogs).start()
         self.addCleanup(patch.stopall)
 
     def join_worker(self, worker):
@@ -61,7 +64,7 @@ class GUIBackgroundTests(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         thread_ids = []
 
-        def scan(items, existing, recursive):
+        def scan(items, existing, recursive, *, task_context=None):
             thread_ids.append(threading.get_ident())
             self.assertEqual(items, ('new.mp4',))
             self.assertEqual(existing, (Path('existing.mp4'),))
@@ -110,14 +113,14 @@ class GUIBackgroundTests(unittest.TestCase):
         prepared = SimpleNamespace(finals=(final,))
         thread_ids = []
 
-        def prepare(*_args):
+        def prepare(*_args, **_kwargs):
             thread_ids.append(threading.get_ident())
             entered.set()
             if not release.wait(5):
                 raise AssertionError('preflight was never released')
             return prepared
 
-        with patch('auto_reframe_core.gui.prepare_video_batch', side_effect=prepare), patch(
+        with patch('auto_reframe_core.output_plans.prepare_video_batch', side_effect=prepare), patch(
             'auto_reframe_core.gui.OutputConflictDialog.ask', return_value=OUTPUT_CONFLICT_CANCEL
         ) as ask:
             try:
@@ -142,12 +145,16 @@ class GUIBackgroundTests(unittest.TestCase):
 
     def test_changed_source_after_confirmation_never_deletes_or_starts_encoding(self):
         self.app.running = self.app.preflight_busy = True
+        from auto_reframe_core.job_controller import JobState
+        self.app.job_controller.begin(JobState.PREPARING)
         final = Path('existing-output.mp4')
         config = SimpleNamespace(skip_existing=True, prepared_batch=SimpleNamespace(finals=(final,)))
-        with patch('auto_reframe_core.gui.OutputConflictDialog.ask', return_value=OUTPUT_CONFLICT_DELETE), patch(
-            'auto_reframe_core.gui.build_job_confirmation_message', return_value='confirm'
-        ), patch('auto_reframe_core.gui.validate_prepared_batch', side_effect=ValueError('source changed')), patch(
-            'auto_reframe_core.gui.delete_planned_conflicts'
+        from auto_reframe_core.job_models import JobRequest
+        self.app.last_request = JobRequest('compress', config)
+        with patch('auto_reframe_core.batch_runner.OutputLocks'), patch('auto_reframe_core.gui.OutputConflictDialog.ask', return_value=OUTPUT_CONFLICT_DELETE), patch(
+            'auto_reframe_core.gui_job_view.build_job_confirmation_message', return_value='confirm'
+        ), patch('auto_reframe_core.output_plans.validate_prepared_batch', side_effect=ValueError('source changed')), patch(
+            'auto_reframe_core.output_plans.delete_planned_conflicts'
         ) as delete:
             self.dialogs.askyesno.return_value = True
             self.app._finish_preflight(('compress', config, (final,)))
@@ -164,7 +171,7 @@ class GUIBackgroundTests(unittest.TestCase):
         self.app.running = self.app.preflight_busy = True
         config = SimpleNamespace(skip_existing=True)
         self.app.event_queue.put(('preflight_done', ('compress', config, ())))
-        with patch('auto_reframe_core.gui.build_job_confirmation_message', side_effect=OSError('unavailable')):
+        with patch('auto_reframe_core.gui_job_view.build_job_confirmation_message', side_effect=OSError('unavailable')):
             self.app._drain_events()
         self.assertFalse(self.app.running)
         self.assertFalse(self.app.preflight_busy)
@@ -177,18 +184,24 @@ class GUIBackgroundTests(unittest.TestCase):
         from auto_reframe_core.gui import build_job_confirmation_message
         config = CompressConfig(video_files=(Path('source.mp4'),))
         config.prepared_batch = SimpleNamespace(destinations=(Path('cached-output'),))
-        with patch('auto_reframe_core.gui.output_root_for', side_effect=AssertionError('UI filesystem access')):
+        with patch('auto_reframe_core.gui_dialogs.output_root_for', side_effect=AssertionError('UI filesystem access')):
             message = build_job_confirmation_message('compress', config)
         self.assertIn('cached-output', message)
 
     def test_validated_delete_runs_off_main_thread_and_encoding_waits_for_dispatch(self):
         self.app.running = self.app.preflight_busy = True
+        from auto_reframe_core.job_controller import JobState
+        self.app.job_controller.begin(JobState.PREPARING)
         final = Path('existing-output.mp4')
         config = SimpleNamespace(skip_existing=False, prepared_batch=SimpleNamespace(finals=(final,)))
+        from auto_reframe_core.job_models import JobRequest
+        self.app.last_request = JobRequest('compress', config)
         actions = []
-        with patch('auto_reframe_core.gui.validate_prepared_batch', side_effect=lambda *_: actions.append(
+        self.app.job_controller.transition(JobState.CONFIRMING)
+        self.app.job_controller.transition(JobState.VALIDATING)
+        with patch('auto_reframe_core.batch_runner.OutputLocks'), patch('auto_reframe_core.output_plans.check_batch_space'), patch('auto_reframe_core.output_plans.validate_prepared_batch', side_effect=lambda *_, **__: actions.append(
             ('validate', threading.get_ident())
-        )), patch('auto_reframe_core.gui.delete_planned_conflicts', side_effect=lambda *_: actions.append(
+        )), patch('auto_reframe_core.output_plans.delete_planned_conflicts', side_effect=lambda *_: actions.append(
             ('delete', threading.get_ident())
         )):
             worker = threading.Thread(target=self.app._validate_job,
@@ -213,7 +226,7 @@ class GUIBackgroundTests(unittest.TestCase):
                     thread.assert_not_called()
                 setattr(self.app, phase, False)
         self.app.scan_busy = True
-        with patch('auto_reframe_core.gui.is_frozen') as frozen:
+        with patch('auto_reframe_core.gui_update_view.is_frozen') as frozen:
             self.app.install_update()
             frozen.assert_not_called()
 
