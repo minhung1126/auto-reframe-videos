@@ -9,15 +9,20 @@ from auto_reframe_core.job_models import ResultStatus
 from auto_reframe_core.runtime_report import runtime_report
 
 
-def exercise_gui(source, temporary, *, timeout=90):
+def exercise_gui(source, temporary, *, timeout=90, root=None, progress=None):
     from tkinterdnd2 import TkinterDnD
     from auto_reframe_core.gui import AutoReframeGUI, MODE_LABELS
 
-    root = TkinterDnD.Tk()
+    record = progress or (lambda stage: None)
+    owned_root = root is None
+    record("GUI: initialize Tk")
+    root = root if root is not None else TkinterDnD.Tk()
     root.withdraw()
     temporary = Path(temporary)
     try:
+        record("GUI: qualify runtime")
         report = runtime_report(require_gui=True, root=root)
+        record("GUI: construct application")
         app = AutoReframeGUI(root, data_root=temporary / "gui-data")
         app.output_mode_var.set("specified")
         app.output_folder_var.set(str(temporary / "gui-output"))
@@ -33,6 +38,7 @@ def exercise_gui(source, temporary, *, timeout=90):
                 time.sleep(0.01)
             root.update()
 
+        record("GUI: scan original source")
         app._drop_videos(SimpleNamespace(data=root.tk.call("list", str(source))))
         pump_until(lambda: not app.scan_busy)
         if app.video_files != (Path(source).resolve(),):
@@ -45,6 +51,7 @@ def exercise_gui(source, temporary, *, timeout=90):
             patch("tkinter.messagebox.showerror") as errors,
         ):
             for mode in ("reframe", "compress"):
+                record("GUI: " + mode)
                 target = {"resolution": "source", "vcodec": "h264"}
                 if mode == "reframe":
                     target["ratio"] = (4, 5)
@@ -64,7 +71,9 @@ def exercise_gui(source, temporary, *, timeout=90):
                         f"GUI {mode} 工作沒有成功：{app.status_var.get()}"
                     )
                 outcomes.append(mode)
+            record("GUI: save settings")
             app.save_button.invoke()
+            record("GUI: restore settings")
             app.restore_button.invoke()
             if errors.called:
                 raise RuntimeError(f"GUI 顯示錯誤：{errors.call_args}")
@@ -78,4 +87,5 @@ def exercise_gui(source, temporary, *, timeout=90):
         ]
         return report
     finally:
-        root.destroy()
+        if owned_root:
+            root.destroy()

@@ -21,6 +21,7 @@ def run_desktop_smoke(report, *, verify_tk=True):
     progress('Tk initialization')
     tk_version = None
     tkdnd_version = None
+    root = None
     if verify_tk:
         root = TkinterDnD.Tk()
         root.drop_target_register(DND_FILES)
@@ -29,7 +30,6 @@ def run_desktop_smoke(report, *, verify_tk=True):
         root.update()
         tk_version = root.tk.call('info', 'patchlevel')
         tkdnd_version = root.tk.call('package', 'require', 'tkdnd')
-        root.destroy()
     progress('Generate source media')
     ffmpeg, ffprobe = tool_path('ffmpeg'), tool_path('ffprobe')
     with tempfile.TemporaryDirectory(prefix='arv-中文 空白-') as temp:
@@ -43,7 +43,11 @@ def run_desktop_smoke(report, *, verify_tk=True):
         if verify_tk:
             progress('Exercise complete GUI')
             from auto_reframe_core.gui_smoke import exercise_gui
-            gui_evidence = exercise_gui(source, workspace)
+            try:
+                # Aqua Tk must keep a single interpreter throughout this process.
+                gui_evidence = exercise_gui(source, workspace, root=root, progress=progress)
+            finally:
+                root.destroy()
         def chunk(kind, data):
             return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
         watermark = workspace / '浮水印 圖.png'

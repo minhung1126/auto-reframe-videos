@@ -60,8 +60,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.desktop_smoke:
         from auto_reframe_core.desktop_smoke import run_desktop_smoke
         import io
+        import faulthandler
         from contextlib import redirect_stdout, redirect_stderr
         transcript = io.StringIO()
+        from pathlib import Path
+        thread_report = Path(args.desktop_smoke).with_suffix(".threads.log")
+        thread_log = thread_report.open("w", encoding="utf-8")
+        faulthandler.dump_traceback_later(45, repeat=True, file=thread_log)
         try:
             with redirect_stdout(transcript), redirect_stderr(transcript):
                 return run_desktop_smoke(args.desktop_smoke)
@@ -73,6 +78,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 {"status": "failed", "error": traceback.format_exc(), "transcript": transcript.getvalue()[-40000:]},
                 ensure_ascii=False, indent=2), encoding="utf-8")
             return 1
+        finally:
+            faulthandler.cancel_dump_traceback_later()
+            thread_log.close()
 
     if is_frozen():
         from auto_reframe_core.platform_profile import register_installer_mutex
