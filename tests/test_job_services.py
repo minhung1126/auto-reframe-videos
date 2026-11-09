@@ -324,8 +324,9 @@ class ConfigMigrationTests(unittest.TestCase):
 
     def test_legacy_text_and_custom_font_paths_survive_move(self):
         save_config(self.old, {"font_path": "fonts/custom.ttf"})
-        (self.old.parent / "top_text.txt").write_text(
-            "\ufeff標題\r\n\r\n第二段\n", encoding="utf-8"
+        # Preserve exact CRLF bytes; write_text translates LF again on Windows.
+        (self.old.parent / "top_text.txt").write_bytes(
+            "\ufeff標題\r\n\r\n第二段\n".encode("utf-8")
         )
         self.migrate()
         settings = load_config(self.new)
