@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from urllib.parse import urlparse
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,26 @@ from scripts.desktop_icons import write_icons
 
 def run(*command, **kwargs):
     return subprocess.run(command, check=True, cwd=ROOT, **kwargs)
+
+
+def create_dmg(source, artifact):
+    """Retry only transient DiskImages contention, with a bounded backoff."""
+    command = ['hdiutil', 'create', '-volname', 'Auto Reframe Videos',
+               '-srcfolder', str(source), '-format', 'UDZO', str(artifact)]
+    artifact = Path(artifact)
+    for attempt in range(4):
+        artifact.unlink(missing_ok=True)
+        result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace', timeout=120)
+        if result.returncode == 0:
+            return
+        diagnostic = (result.stderr or '') + (result.stdout or '')
+        if 'resource busy' not in diagnostic.casefold() or attempt == 3:
+            print(diagnostic, file=sys.stderr, flush=True)
+            raise subprocess.CalledProcessError(result.returncode, command,
+                                                output=result.stdout, stderr=result.stderr)
+        print(f'DiskImages is busy; retry {attempt + 1}/3', flush=True)
+        time.sleep(2 ** attempt)
 
 
 WINDOWS_RUNTIME_DLLS = {'libgcc_s_seh-1.dll', 'libstdc++-6.dll', 'libwinpthread-1.dll'}
@@ -219,8 +240,7 @@ def main():
         dmg_source.mkdir()
         shutil.copytree(app, dmg_source / app.name, symlinks=True)
         (dmg_source / 'Applications').symlink_to('/Applications')
-        artifact.unlink(missing_ok=True)
-        run('hdiutil', 'create', '-volname', 'Auto Reframe Videos', '-srcfolder', str(dmg_source), '-format', 'UDZO', str(artifact))
+        create_dmg(dmg_source, artifact)
     else:
         run(args.iscc, f'/DAppVersion={__version__}', f'/DBuildRoot={app.parent}', f'/DOutputRoot={output}', str(ROOT / 'packaging' / 'windows.iss'))
     digest = hashlib.sha256(artifact.read_bytes()).hexdigest()

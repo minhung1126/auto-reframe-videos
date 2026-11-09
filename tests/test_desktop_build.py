@@ -3,6 +3,7 @@ import io
 import json
 from pathlib import Path
 import tempfile
+import subprocess
 import tarfile
 import unittest
 from unittest.mock import patch
@@ -14,10 +15,27 @@ from scripts.prepare_desktop_vendor import unpack_vendor
 from scripts.build_ffmpeg_vendor import prepare_source
 from scripts.verify_desktop_set import verify_set, TARGETS
 from scripts.verify_desktop import macho_minimum_versions
-from scripts.build_desktop import bundle_windows_runtime
+from scripts.build_desktop import bundle_windows_runtime, create_dmg
 
 
 class DesktopBuildTests(unittest.TestCase):
+    def test_dmg_creation_retries_only_transient_contention_with_a_limit(self):
+        busy = subprocess.CompletedProcess([], 1, stdout='', stderr='hdiutil: Resource busy')
+        invalid = subprocess.CompletedProcess([], 1, stdout='', stderr='invalid source')
+        success = subprocess.CompletedProcess([], 0, stdout='', stderr='')
+        cases = (([busy, success], 2, False), ([invalid], 1, True), ([busy] * 4, 4, True))
+        with tempfile.TemporaryDirectory() as directory:
+            for outcomes, calls, failure in cases:
+                with self.subTest(calls=calls, failure=failure), \
+                     patch('scripts.build_desktop.subprocess.run', side_effect=outcomes) as runner, \
+                     patch('scripts.build_desktop.time.sleep'):
+                    if failure:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            create_dmg(Path(directory), Path(directory) / 'test.dmg')
+                    else:
+                        create_dmg(Path(directory), Path(directory) / 'test.dmg')
+                    self.assertEqual(runner.call_count, calls)
+
     def test_windows_runtime_is_bundled_transitively_and_rejects_foreign_or_altered_dll(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

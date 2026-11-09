@@ -221,4 +221,4 @@ H.265 相容性依 OS／解碼器實測記錄，不承諾所有 Windows 環境�
 
 Windows 11／10 22H2 實機安裝、兩種安裝範圍、升級／解除安裝保留資料、Windows app 與 installer 的四種 DPI、macOS 兩架構與最低 OS、IME／觸控板／外接螢幕、UNC／長路徑／外接碟及真實 GPU／VFR／長片／系統播放器矩陣仍須實機證據。本次沒有可操作的相應設備，不能把 CI smoke 視為這些項目已通過；維持 `DESKTOP_DISTRIBUTION.md` 的 Pending 狀態。
 
-最終本機驗證：206 項單元／整合測試全部通過，無跳過；來源 ZIP 建置與 updater staging、完整 GUI、Linux frozen 清空 PATH smoke、隱私掃描與 Action SHA 檢查通過。原生三平台最終結果以本次 CI 為準。
+最終本機驗證：207 項單元／整合測試全部通過，無跳過；來源 ZIP 建置與 updater staging、完整 GUI、Linux frozen 清空 PATH smoke、隱私掃描與 Action SHA 檢查通過。原生三平台最終結果以本次 CI 為準。
