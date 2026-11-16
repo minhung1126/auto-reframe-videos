@@ -45,6 +45,7 @@ def exercise_gui(source, temporary, *, timeout=90, root=None, progress=None):
             raise RuntimeError("GUI 原始影片清單或拖曳失敗。")
         outcomes = []
         with (
+            patch("auto_reframe_core.gui_job_view.JobConfirmationDialog.ask", return_value=True),
             patch("tkinter.messagebox.askyesno", return_value=True),
             patch("tkinter.messagebox.showinfo"),
             patch("tkinter.messagebox.showwarning"),

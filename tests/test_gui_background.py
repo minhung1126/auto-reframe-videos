@@ -153,10 +153,11 @@ class GUIBackgroundTests(unittest.TestCase):
         self.app.last_request = JobRequest('compress', config)
         with patch('auto_reframe_core.batch_runner.OutputLocks'), patch('auto_reframe_core.gui.OutputConflictDialog.ask', return_value=OUTPUT_CONFLICT_DELETE), patch(
             'auto_reframe_core.gui_job_view.build_job_confirmation_message', return_value='confirm'
-        ), patch('auto_reframe_core.output_plans.validate_prepared_batch', side_effect=ValueError('source changed')), patch(
+        ), patch('auto_reframe_core.gui_job_view.JobConfirmationDialog.ask', return_value=True), patch(
+            'auto_reframe_core.output_plans.validate_prepared_batch', side_effect=ValueError('source changed')
+        ), patch(
             'auto_reframe_core.output_plans.delete_planned_conflicts'
         ) as delete:
-            self.dialogs.askyesno.return_value = True
             self.app._finish_preflight(('compress', config, (final,)))
             self.join_worker(self.app.worker)
             delete.assert_not_called()

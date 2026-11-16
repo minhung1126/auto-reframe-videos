@@ -134,3 +134,21 @@ Repository hardening verified through the authenticated GitHub API on 2026-10-12
   test jobs and unsigned native installer jobs must succeed before v3.0.14 is
   tagged. Physical-device UX/GPU qualification remains explicitly Pending in
   DESKTOP_DISTRIBUTION.md.
+
+## v3.0.15 release audit — 2026-11-16
+
+- Re-read repository metadata and the active Protect main ruleset: the repository
+  is public, `main` remains the default, deletion/force pushes are blocked, and
+  the three Python CI checks and resolved review threads remain required.
+  The existing administrator bypass is unchanged.
+- The latest prior release v3.0.14 is immutable and includes the source ZIP,
+  checksum and three unsigned installers with SHA-256 digests and build records.
+- Workflows, Action pins, token permissions, release allowlist and ignored
+  runtime/private data patterns are unchanged. Settings endpoints unavailable
+  through the connector retain their last authenticated audit date above.
+- The release change contains dialog layout, related GUI checks, the version
+  and release documentation only; it adds no user settings, media, art or secrets.
+- Regression checks cover long summaries/paths, 800×600 screens, enlarged
+  fonts, minimum window sizes, default actions and cancellation. Native CI and
+  all three unsigned installers must pass before tagging. Physical Windows/macOS
+  DPI and multi-monitor qualification remains pending.

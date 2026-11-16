@@ -19,6 +19,7 @@ from auto_reframe_core.gui_constants import (
     SCRIPT_DIR,
 )
 from auto_reframe_core.gui_dialogs import (
+    JobConfirmationDialog,
     OutputConflictDialog,
     build_job_confirmation_message,
 )
@@ -188,11 +189,9 @@ class JobView:
                 return
             config.skip_existing = conflict_action == OUTPUT_CONFLICT_SKIP
 
-        if not messagebox.askyesno(
-            "確認開始處理",
+        if not JobConfirmationDialog.ask(
+            self.root,
             build_job_confirmation_message(mode, config, conflict_action),
-            parent=self.root,
-            default=messagebox.YES,
         ):
             self._cancel_preflight()
             return

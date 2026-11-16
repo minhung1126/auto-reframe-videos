@@ -17,31 +17,120 @@ from auto_reframe_core.gui_constants import (
 )
 
 
-class OutputConflictDialog:
+class _ScrollableDialog:
+    """Keep long messages scrollable and actions outside the scrolling area."""
+
+    def __init__(self, parent, title: str, message: str):
+        self.window = tk.Toplevel(parent)
+        self.window.withdraw()
+        self.window.title(title)
+        self.window.transient(parent)
+        self.window.protocol("WM_DELETE_WINDOW", self._cancel)
+        self.window.bind("<Escape>", lambda _event: self._cancel())
+        self.window.columnconfigure(0, weight=1)
+        self.window.rowconfigure(0, weight=1)
+
+        body = ttk.Frame(self.window, padding=(16, 16, 16, 0))
+        body.grid(row=0, column=0, sticky="nsew")
+        body.columnconfigure(0, weight=1)
+        body.rowconfigure(0, weight=1)
+        self.message = tk.Text(
+            body, wrap="word", width=76, height=20, font="TkDefaultFont",
+            padx=12, pady=12,
+        )
+        self.message.insert("1.0", message)
+        self.message.configure(state="disabled")
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=self.message.yview)
+        self.message.configure(yscrollcommand=scrollbar.set)
+        self.message.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        self.message.bind("<Tab>", self._focus_next)
+        self.message.bind("<Shift-Tab>", self._focus_previous)
+        self.message.bind("<ISO_Left_Tab>", self._focus_previous)
+
+        self.buttons = ttk.Frame(self.window, padding=16)
+        self.buttons.grid(row=1, column=0, sticky="e")
+
+    @staticmethod
+    def _focus_next(event):
+        event.widget.tk_focusNext().focus_set()
+        return "break"
+
+    @staticmethod
+    def _focus_previous(event):
+        event.widget.tk_focusPrev().focus_set()
+        return "break"
+
+    def _show(self, parent, default_button):
+        self.window.update_idletasks()
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+        max_width = max(1, screen_width - 48)
+        max_height = max(1, screen_height - 96)
+        width = min(self.window.winfo_reqwidth(), max_width)
+        height = min(self.window.winfo_reqheight(), max_height)
+        self.window.minsize(
+            min(width, max(360, self.buttons.winfo_reqwidth())),
+            min(height, self.buttons.winfo_reqheight() + 120),
+        )
+        self.window.maxsize(max_width, max_height)
+        x = min(
+            max(0, parent.winfo_rootx() + (parent.winfo_width() - width) // 2),
+            max(0, screen_width - width - 24),
+        )
+        y = min(
+            max(0, parent.winfo_rooty() + (parent.winfo_height() - height) // 2),
+            max(0, screen_height - height - 64),
+        )
+        self.window.geometry(f"{width}x{height}+{x}+{y}")
+        self.window.deiconify()
+        default_button.configure(default="active")
+        default_button.focus_set()
+        self.window.bind("<Return>", lambda _event: self._invoke_focused(default_button))
+        self.window.grab_set()
+
+    def _invoke_focused(self, default_button):
+        focused = self.window.focus_get()
+        if focused not in self.buttons.winfo_children():
+            focused = default_button
+        focused.invoke()
+        return "break"
+
+
+class JobConfirmationDialog(_ScrollableDialog):
+    """Modal job summary with an always-visible start button."""
+
+    def __init__(self, parent, message: str):
+        self.result = False
+        super().__init__(parent, "確認開始處理", message)
+        start_button = ttk.Button(
+            self.buttons, text="開始處理", command=lambda: self._choose(True),
+        )
+        start_button.grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(self.buttons, text="取消", command=self._cancel).grid(row=0, column=1)
+        self._show(parent, start_button)
+
+    def _choose(self, result: bool):
+        self.result = result
+        self.window.destroy()
+
+    def _cancel(self):
+        self._choose(False)
+
+    @classmethod
+    def ask(cls, parent, message: str) -> bool:
+        dialog = cls(parent, message)
+        parent.wait_window(dialog.window)
+        return dialog.result
+
+
+class OutputConflictDialog(_ScrollableDialog):
     """Modal four-choice dialog for existing target output folders."""
 
     def __init__(self, parent, conflicts: list[Path], prefer_skip: bool):
         self.result = OUTPUT_CONFLICT_CANCEL
-        self.window = tk.Toplevel(parent)
-        self.window.title("已有相同輸出目標")
-        self.window.transient(parent)
-        self.window.resizable(True, False)
-        self.window.protocol("WM_DELETE_WINDOW", self._cancel)
-
-        body = ttk.Frame(self.window, padding=16)
-        body.grid(row=0, column=0, sticky="nsew")
-        self.window.columnconfigure(0, weight=1)
-        body.columnconfigure(0, weight=1)
-
-        ttk.Label(
-            body,
-            text=build_output_conflict_message(conflicts),
-            justify="left",
-            wraplength=680,
-        ).grid(row=0, column=0, columnspan=4, sticky="w")
-
-        buttons = ttk.Frame(body)
-        buttons.grid(row=1, column=0, columnspan=4, sticky="e", pady=(16, 0))
+        super().__init__(parent, "已有相同輸出目標", build_output_conflict_message(conflicts))
+        buttons = self.buttons
         skip_button = ttk.Button(
             buttons,
             text="略過既有檔",
@@ -53,29 +142,17 @@ class OutputConflictDialog:
             text="覆寫同名檔",
             command=lambda: self._choose(OUTPUT_CONFLICT_OVERWRITE),
         )
-        overwrite_button.grid(row=0, column=1, padx=(0, 8))
+        overwrite_button.grid(row=0, column=1)
         delete_button = ttk.Button(
             buttons,
             text="刪除本次輸出檔",
             command=lambda: self._choose(OUTPUT_CONFLICT_DELETE),
         )
-        delete_button.grid(row=0, column=2, padx=(0, 8))
-        ttk.Button(buttons, text="取消", command=self._cancel).grid(row=0, column=3)
+        delete_button.grid(row=1, column=0, padx=(0, 8), pady=(8, 0))
+        ttk.Button(buttons, text="取消", command=self._cancel).grid(row=1, column=1, pady=(8, 0))
 
         default_button = skip_button if prefer_skip else overwrite_button
-        default_button.focus_set()
-        self.window.bind(
-            "<Return>",
-            lambda _event: self._choose(
-                OUTPUT_CONFLICT_SKIP if prefer_skip else OUTPUT_CONFLICT_OVERWRITE
-            ),
-        )
-        self.window.bind("<Escape>", lambda _event: self._cancel())
-        self.window.update_idletasks()
-        self.window.geometry(
-            f"+{parent.winfo_rootx() + 40}+{parent.winfo_rooty() + 40}"
-        )
-        self.window.grab_set()
+        self._show(parent, default_button)
 
     def _choose(self, result: str):
         self.result = result
